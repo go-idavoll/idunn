@@ -54,7 +54,7 @@ jobs:
       # interesting ones into corpus/<class>/ by hand.
       - name: Upload proposed candidates
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: redteam-proposed
           path: test/redteam/corpus/_proposed/
