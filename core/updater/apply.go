@@ -72,6 +72,14 @@ func (u *Updater) apply(ctx context.Context, r *Release) (hook.Phase, func(), er
 	d := r.Descriptor
 	unlock := func() {}
 
+	// Apply does not refresh metadata — CheckForUpdate did — so the clock is
+	// checked again here rather than assumed to still be sane. An update that
+	// was resolved honestly and is applied after the clock was turned back is
+	// the same rollback attack with an extra step (§14.7, T22).
+	if err := u.floor.Check(u.now()); err != nil {
+		return hook.PhaseCheck, unlock, err
+	}
+
 	// An interrupted transaction has to be settled before a new one opens: the
 	// journal keeps one history, and BEGIN replaces it. Running recovery here
 	// rather than trusting the caller to have done it means a crashed update is

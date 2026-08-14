@@ -1093,6 +1093,13 @@ fail-closed. The behavior is **correct** — the fix is observability + user gui
   certainly wrong (too far back). This is harmless — it helps no attacker, it only rejects
   impossible-past clocks — and simultaneously defends **clock rollback attacks** (turning
   the clock back to reactivate expired metadata).
+> **As built:** `core/timefloor` persists the floor in the install root (not beside
+> the disposable TUF cache) and is consulted before every refresh and before an
+> apply; every successful refresh raises it. "Timestamp of the last validly seen
+> metadata" is read as *the local clock at that moment*: TUF metadata carries only
+> `expires`, which lies in the future by construction and would refuse every honest
+> clock if used as a lower bound.
+
 - **Server `Date` header only as a hint:** may serve to *diagnose/display* the deviation,
   **never** to override TUF expiry (MITM-controllable, would reopen the freeze defense).
 - **App keeps running:** with updates paused the installed version stays runnable; retry

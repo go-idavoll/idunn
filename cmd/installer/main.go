@@ -36,7 +36,9 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-idavoll/idunn/core/elevate"
 	"github.com/go-idavoll/idunn/core/fetch"
@@ -74,6 +76,19 @@ const defaultChannel = "stable"
 // mishandling a layout it does not implement. A build that leaves it unset
 // refuses any release that demands a minimum.
 var clientVersion = ""
+
+// buildTime is when this binary was built, as RFC3339 or as a Unix timestamp,
+// set at build time alongside clientVersion:
+//
+//	go build -ldflags "-X main.clientVersion=1.3.0 -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" ./cmd/installer
+//
+// It is the first floor under the system clock: a binary cannot have been built
+// after the moment it runs, so a clock below it is wrong before anything else is
+// known (§14.7, T22). A build that leaves it unset simply has no floor until the
+// first successful refresh records one — it is a defence in depth, not a
+// precondition. Like clientVersion it is a linker variable rather than a flag:
+// an operator who could set it could also lower it.
+var buildTime = ""
 
 // userAgent identifies this client to proxies and servers.
 const userAgent = "idunn-installer"
@@ -366,6 +381,12 @@ func options(c config, stdout, stderr io.Writer) (installer.Options, int) {
 		return installer.Options{}, exitError
 	}
 
+	stamp, err := parseBuildTime(buildTime)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "idunn installer: this build carries an unusable build time: %v\n", err)
+		return installer.Options{}, exitError
+	}
+
 	o := installer.Options{
 		Updater: updater.Options{
 			Trust:         tc,
@@ -374,6 +395,7 @@ func options(c config, stdout, stderr io.Writer) (installer.Options, int) {
 			Root:          c.root,
 			Channel:       c.channel,
 			ClientVersion: clientVersion,
+			BuildTime:     stamp,
 			Policy: updater.Policy{
 				// A first install has nothing to roll back to, but the tree it
 				// leaves behind is the one the updater will roll back into.
@@ -438,6 +460,27 @@ func wireElevation(o *installer.Options, c config) (int, error) {
 	o.Updater.Elevator = el
 	o.Updater.Policy.Elevation = updater.ElevationInteractive
 	return exitOK, nil
+}
+
+// parseBuildTime reads the linker-set stamp. Both spellings are accepted because
+// both are what a build system has to hand: RFC3339 from `date -u`, and a Unix
+// timestamp from SOURCE_DATE_EPOCH.
+//
+// An unparsable stamp is an error rather than a silent zero: a build that meant
+// to carry a floor and does not would look identical to one that never had one.
+func parseBuildTime(raw string) (time.Time, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, nil
+	}
+	if t, err := time.Parse(time.RFC3339, raw); err == nil {
+		return t.UTC(), nil
+	}
+	secs, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("%q is neither RFC3339 nor a Unix timestamp", raw)
+	}
+	return time.Unix(secs, 0).UTC(), nil
 }
 
 // defaultCacheDir is where trusted TUF metadata and the target cache live.

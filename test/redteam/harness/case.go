@@ -38,6 +38,26 @@ const (
 	// ClassResolve is a rejection because two authentic documents do not agree —
 	// the pointer and the descriptor describe different releases or platforms.
 	ClassResolve ErrorClass = "resolve"
+	// ClassClock is a rejection by the monotonic known-good time floor: the
+	// local clock is below a point this installation has already passed. The
+	// repository may be flawless — the attack is on the client's environment,
+	// not on the bytes it is served (§14.7, T22).
+	ClassClock ErrorClass = "clock"
+)
+
+// ClockAttack is a manipulation of the client's clock rather than of the
+// repository. It is a second axis of a case: every other class mutates what the
+// server sends, this one changes what the client believes the time is.
+type ClockAttack string
+
+const (
+	// ClockNone leaves the clock alone, which is what every repository case
+	// wants.
+	ClockNone ClockAttack = ""
+
+	// ClockRollback turns the clock back after the client has already run, to
+	// bring expired metadata back inside its validity window.
+	ClockRollback ClockAttack = "rollback"
 )
 
 // Case is one adversarial scenario, loaded from a case.yaml.
@@ -54,6 +74,11 @@ type Case struct {
 	ErrorClass  ErrorClass `yaml:"error_class"`
 	Mutator     string     `yaml:"mutator"`
 	Notes       string     `yaml:"notes"`
+
+	// Clock names an attack on the client's clock. A case that sets it needs no
+	// mutator: the repository is the honest baseline, and what is tampered with
+	// is the machine the client runs on.
+	Clock ClockAttack `yaml:"clock"`
 }
 
 // LoadCases walks root (typically test/redteam/corpus) and returns every case in
@@ -122,15 +147,24 @@ func loadCase(dir string) (Case, error) {
 		return c, fmt.Errorf("harness: %s: expect must be \"reject\", got %q", dir, c.Expect)
 	}
 	switch c.ErrorClass {
-	case ClassVerify, ClassDescriptor, ClassResolve:
+	case ClassVerify, ClassDescriptor, ClassResolve, ClassClock:
 	default:
 		return c, fmt.Errorf("harness: %s: unknown error_class %q", dir, c.ErrorClass)
 	}
-	if c.Mutator == "" {
-		return c, fmt.Errorf("harness: %s: no mutator", dir)
+	switch c.Clock {
+	case ClockNone, ClockRollback:
+	default:
+		return c, fmt.Errorf("harness: %s: unknown clock %q", dir, c.Clock)
 	}
-	if _, ok := Mutators[c.Mutator]; !ok {
-		return c, fmt.Errorf("harness: %s: unknown mutator %q", dir, c.Mutator)
+	// A case attacks the repository, the clock, or both — but it has to attack
+	// something, or it is a baseline dressed up as an adversary.
+	if c.Mutator == "" && c.Clock == ClockNone {
+		return c, fmt.Errorf("harness: %s: neither a mutator nor a clock attack", dir)
+	}
+	if c.Mutator != "" {
+		if _, ok := Mutators[c.Mutator]; !ok {
+			return c, fmt.Errorf("harness: %s: unknown mutator %q", dir, c.Mutator)
+		}
 	}
 	return c, nil
 }
