@@ -180,6 +180,22 @@ func (c *Client) LatestRelease(channel, goos, goarch string) (*release.Descripto
 	return d, nil
 }
 
+// Target returns the verified bytes of one TUF target.
+//
+// It is what core/stage consumes: the trust layer hands over bytes go-tuf has
+// checked against the signed hash and length, and the staging code does every
+// write itself, through fsx, with the destination path already sanitized. The
+// alternative — letting the trust layer write to a caller-supplied path — would
+// put file placement inside the package that is supposed to answer only "which
+// bytes may I trust?".
+//
+// TODO(stage): large payload targets are held whole in memory here, because
+// go-tuf's DownloadTarget returns a byte slice. Streaming needs a fetcher that
+// exposes the response body; the verification story is unchanged either way.
+func (c *Client) Target(targetPath string) ([]byte, error) {
+	return c.target(targetPath)
+}
+
 // MaterializeTarget places the verified bytes of a TUF target at dst, reusing the
 // local cache only when the cached bytes match the signed hash and length. A
 // cached file is never trusted on name alone (AGENTS.md §1.5).

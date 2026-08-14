@@ -203,6 +203,12 @@ func (m *Mem) requireDir(p, op, name string) error {
 }
 
 // fail consults the injected failure hook.
+//
+// It is called WITHOUT the filesystem lock held, so a hook may mutate the
+// filesystem itself — planting a symlink between a check and the write that
+// follows it, for instance. Simulating that race is much of what the hook is
+// for, and a hook that deadlocked the moment it touched the filesystem would be
+// useless for it. Set Fail before the filesystem is shared between goroutines.
 func (m *Mem) fail(op, name string) error {
 	if m.Fail == nil {
 		return nil
@@ -282,17 +288,18 @@ func (m *Mem) ReadDir(name string) ([]fs.DirEntry, error) {
 // O_CREAT does: that is exactly why core/stage checks with Lstat before writing
 // rather than trusting the write itself to stay inside the root.
 func (m *Mem) Create(name string, mode fs.FileMode) (io.WriteCloser, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	if name == "" {
 		return nil, pathErr("create", name, fs.ErrInvalid)
 	}
-	p, err := m.resolve(name, true)
-	if err != nil {
+	if err := m.fail("create", canon(name)); err != nil {
 		return nil, err
 	}
-	if err := m.fail("create", p); err != nil {
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	p, err := m.resolve(name, true)
+	if err != nil {
 		return nil, err
 	}
 	if n, ok := m.nodes[p]; ok && n.isDir() {
@@ -308,17 +315,18 @@ func (m *Mem) Create(name string, mode fs.FileMode) (io.WriteCloser, error) {
 
 // MkdirAll creates name and every missing parent.
 func (m *Mem) MkdirAll(name string, mode fs.FileMode) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	if name == "" {
 		return pathErr("mkdirall", name, fs.ErrInvalid)
 	}
-	p, err := m.resolve(name, true)
-	if err != nil {
+	if err := m.fail("mkdirall", canon(name)); err != nil {
 		return err
 	}
-	if err := m.fail("mkdirall", p); err != nil {
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	p, err := m.resolve(name, true)
+	if err != nil {
 		return err
 	}
 
@@ -342,14 +350,15 @@ func (m *Mem) MkdirAll(name string, mode fs.FileMode) error {
 // Remove deletes name. It never follows a final symlink — removing a link must
 // remove the link, not what it points at — and refuses a non-empty directory.
 func (m *Mem) Remove(name string) error {
+	if err := m.fail("remove", canon(name)); err != nil {
+		return err
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	p, _, err := m.node(name, false)
 	if err != nil {
-		return err
-	}
-	if err := m.fail("remove", p); err != nil {
 		return err
 	}
 	if len(m.childrenOf(p)) > 0 {
@@ -362,17 +371,18 @@ func (m *Mem) Remove(name string) error {
 // RemoveAll deletes name and everything under it. A missing name is not an error,
 // which is what makes abort and recovery paths idempotent.
 func (m *Mem) RemoveAll(name string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	if name == "" {
 		return pathErr("removeall", name, fs.ErrInvalid)
 	}
-	p, err := m.resolve(name, false)
-	if err != nil {
+	if err := m.fail("removeall", canon(name)); err != nil {
 		return err
 	}
-	if err := m.fail("removeall", p); err != nil {
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	p, err := m.resolve(name, false)
+	if err != nil {
 		return err
 	}
 	if _, ok := m.nodes[p]; !ok {
@@ -392,6 +402,13 @@ func (m *Mem) RemoveAll(name string) error {
 // symlink, so repointing `current` replaces the link rather than writing through
 // it into the old version directory.
 func (m *Mem) Rename(oldname, newname string) error {
+	if newname == "" {
+		return pathErr("rename", newname, fs.ErrInvalid)
+	}
+	if err := m.fail("rename", canon(newname)); err != nil {
+		return err
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -399,14 +416,8 @@ func (m *Mem) Rename(oldname, newname string) error {
 	if err != nil {
 		return err
 	}
-	if newname == "" {
-		return pathErr("rename", newname, fs.ErrInvalid)
-	}
 	to, err := m.resolve(newname, false)
 	if err != nil {
-		return err
-	}
-	if err := m.fail("rename", to); err != nil {
 		return err
 	}
 	if err := m.requireDir(to, "rename", newname); err != nil {
@@ -448,17 +459,18 @@ func (m *Mem) Rename(oldname, newname string) error {
 // state the recovery must be able to observe rather than be prevented from
 // creating.
 func (m *Mem) Symlink(target, linkname string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	if linkname == "" || target == "" {
 		return pathErr("symlink", linkname, fs.ErrInvalid)
 	}
-	p, err := m.resolve(linkname, false)
-	if err != nil {
+	if err := m.fail("symlink", canon(linkname)); err != nil {
 		return err
 	}
-	if err := m.fail("symlink", p); err != nil {
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	p, err := m.resolve(linkname, false)
+	if err != nil {
 		return err
 	}
 	if _, ok := m.nodes[p]; ok {
@@ -489,13 +501,15 @@ func (m *Mem) Readlink(name string) (string, error) {
 // SyncDir succeeds: there is no dirty directory entry to flush, and the rename
 // that preceded it was already as durable as this medium gets.
 func (m *Mem) SyncDir(name string) error {
+	if err := m.fail("sync", canon(name)); err != nil {
+		return err
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if _, _, err := m.node(name, true); err != nil {
-		return err
-	}
-	return m.fail("sync", canon(name))
+	_, _, err := m.node(name, true)
+	return err
 }
 
 // childrenOf returns every key strictly below p. The caller holds the lock.
@@ -523,14 +537,15 @@ type memWriter struct {
 }
 
 func (w *memWriter) Write(p []byte) (int, error) {
+	if err := w.fs.fail("write", w.path); err != nil {
+		return 0, err
+	}
+
 	w.fs.mu.Lock()
 	defer w.fs.mu.Unlock()
 
 	if w.closed {
 		return 0, pathErr("write", w.path, fs.ErrClosed)
-	}
-	if err := w.fs.fail("write", w.path); err != nil {
-		return 0, err
 	}
 	w.node.data = append(w.node.data, p...)
 	return len(p), nil
@@ -539,13 +554,17 @@ func (w *memWriter) Write(p []byte) (int, error) {
 // Sync satisfies Syncer so WriteFileAtomic exercises the same code path here as
 // it does against a real disk.
 func (w *memWriter) Sync() error {
+	if err := w.fs.fail("sync", w.path); err != nil {
+		return err
+	}
+
 	w.fs.mu.Lock()
 	defer w.fs.mu.Unlock()
 
 	if w.closed {
 		return pathErr("sync", w.path, fs.ErrClosed)
 	}
-	return w.fs.fail("sync", w.path)
+	return nil
 }
 
 func (w *memWriter) Close() error {

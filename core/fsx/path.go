@@ -51,6 +51,10 @@ func Base(name string) string { return path.Base(Slash(name)) }
 // Clean returns the shortest equivalent spelling of name in slash space.
 func Clean(name string) string { return path.Clean(Slash(name)) }
 
+// Split returns the elements of name. Callers walk a destination component by
+// component so each one can be checked before it is created.
+func Split(name string) []string { return strings.Split(Clean(name), "/") }
+
 // IsAbs reports whether name is rooted.
 //
 // It judges Windows spellings on every host, not just on Windows: filepath.IsAbs
