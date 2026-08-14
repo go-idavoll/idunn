@@ -1,0 +1,34 @@
+{
+	"signatures": [
+		{
+			"keyid": "bbf0f8fa0041d56e5cb91ac937aade674706f0a8508efb055fcc63e132b62dd6",
+			"sig": "ee8c995b04be20c1f03846d6573f10006f63c1c63efc469644a32dff8dd4e4afe6afa7bd2eb411bfdb46d069e6f1ab5bcbac40dcabe2ba9c2e32b99010c19f0d"
+		}
+	],
+	"signed": {
+		"_type": "targets",
+		"expires": "2026-04-01T00:00:00Z",
+		"spec_version": "1.0.31",
+		"targets": {
+			"payloads/v1/3e9b36da9300a0debdbd8bd675aee53fd42692d88e8166a75dcc66ff0d0e5b6b": {
+				"hashes": {
+					"sha256": "3e9b36da9300a0debdbd8bd675aee53fd42692d88e8166a75dcc66ff0d0e5b6b"
+				},
+				"length": 30
+			},
+			"payloads/v1/ebc1f6345e3a3fc87197d78ee7a7b5720dbdde2edeb2f287bd515077d36da7f9": {
+				"hashes": {
+					"sha256": "ebc1f6345e3a3fc87197d78ee7a7b5720dbdde2edeb2f287bd515077d36da7f9"
+				},
+				"length": 30
+			},
+			"releases/linux-amd64/1.2.0.json": {
+				"hashes": {
+					"sha256": "d2e12cfdb37343411e34d472a8d99e5172d1ecc8f953580a9de8574e801da84e"
+				},
+				"length": 602
+			}
+		},
+		"version": 1
+	}
+}

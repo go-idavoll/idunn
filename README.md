@@ -91,6 +91,7 @@ github.com/go-idavoll/idunn          # core library (this repo)
   core/elevate    # privileged apply (per-OS)
   core/fsx        # filesystem abstraction (interface + OS + in-memory)
   internal/safepath # the single validator for untrusted install-relative paths
+  internal/packer   # the publishing engine: pack.yaml -> signed TUF repository
   cmd/installer   # thin installer binary
   cmd/packer      # go:generate TUF repo maintenance + build tool
   test/redteam    # standing adversarial corpus + harness (build tag: redteam)
@@ -189,7 +190,8 @@ What exists today:
 | Apply path: staging, journal, crash recovery, hooks, GC (`core/stage`, `core/txn`, `core/updater`, `core/installer`) | implemented, tested |
 | Elevation (`core/elevate`) | Windows `ElevationInteractive` implemented; privileged helper service and POSIX prompts fail closed |
 | Delta stage 1 (content-addressed reuse) | go-tuf cache reuse only; local relink from retained versions not implemented |
-| Launcher, `BusyDeferToRestart`, delta stage 2, packer, installer binary | not implemented |
+| Packer (`cmd/packer`, `internal/packer`) | publishes a delegated, reproducible TUF repository; retention not implemented |
+| Launcher, `BusyDeferToRestart`, delta stage 2, installer binary | not implemented |
 
 The full section-by-section reconciliation against the design lives in
 [`docs/status.md`](docs/status.md); the open work is tracked in

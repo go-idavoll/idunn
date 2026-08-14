@@ -11,31 +11,28 @@ a *trustworthy* one, P2 items are hardening and reach.
 
 ## P0 — blocks a first end-to-end release
 
-### IDN-01 — Packer: publish a TUF repository (§9)
-`cmd/packer` prints "not implemented". Nothing in this repo can produce the
-repository the client already knows how to consume; only the red-team harness builds
-one, with test keys, for tests.
+### IDN-01 — Packer: publish a TUF repository (§9) — **done**
+`cmd/packer publish` reads `pack.yaml` and produces a repository `core/trust`
+resolves end to end. Engine in `internal/packer`, contract in
+[`packer.md`](packer.md). Two deviations from the sketch in the design, both argued
+there: payload targets are content-addressed (which is what makes the §4.1 dedup
+claim true), and `custom` is not used (`dst`/`mode`/`kind` are properties of a
+release's *use* of a target and already live in the descriptor).
 
-Scope: read `pack.yaml`; add each payload file as a target with `dst`/`mode`/`kind` in
-`custom`; write the release descriptor and the channel pointer as targets; sign the
-delegated targets role, then `snapshot` and `timestamp`; consistent snapshots on.
-
-Done when: a `publish` run produces a repository that `core/trust` resolves end to
-end; role keys come from env/HSM only and a missing key aborts before any file is
-written (T13); output is byte-identical across two runs with the same inputs
-(AGENTS.md §1.7); golden test on the emitted metadata.
-
-### IDN-02 — Packer: delegations from day 1 (§4.1)
-Targets must land in a delegated role per channel and major (`stable-v2`, `beta`), not
-in the top-level `targets.json`. The design calls this mandatory rather than optional
-because retrofitting it later is a migration for every client.
-
-Done when: `targets.json` contains delegations only, and a client that follows one
-channel loads only that delegation.
+### IDN-02 — Packer: delegations from day 1 (§4.1) — **done**
+`targets.json` holds delegations and no targets. The split is per channel
+(`stable`) and per release line (`v2`) rather than one role per `(channel, major)`
+pair, because a descriptor's target path deliberately carries no channel and the
+patterns would otherwise overlap; the property the design asks for — disjoint
+patterns, a client loading only what it follows — holds and is tested against
+go-tuf's own matcher. See [`packer.md`](packer.md) §5.
 
 ### IDN-03 — Packer: retention (§4.1, §9 step 4)
 Remove targets of retired releases beyond a keep window, respecting delta patch
 sources. Without it the delegation grows for the lifetime of the product.
+
+Content addressing makes this a reference-counting problem rather than a
+path-guessing one: a payload target is retired when no retained descriptor names it.
 
 ### IDN-04 — `cmd/installer`: the actual binary (§5)
 `core/installer` is complete and tested; the binary around it is a stub. Needs the

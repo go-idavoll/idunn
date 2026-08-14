@@ -1,0 +1,51 @@
+{
+	"signatures": [
+		{
+			"keyid": "bbf0f8fa0041d56e5cb91ac937aade674706f0a8508efb055fcc63e132b62dd6",
+			"sig": "da6f72dc676f4a5af0db0e4f60d784cac8588f6fc1425a423200eb722c5d005e3a1223b5e9d5fc91b183a2e07ffc0ff90fad67e56a6685d5287fd0b6850f8707"
+		}
+	],
+	"signed": {
+		"_type": "targets",
+		"delegations": {
+			"keys": {
+				"bbf0f8fa0041d56e5cb91ac937aade674706f0a8508efb055fcc63e132b62dd6": {
+					"keytype": "ed25519",
+					"keyval": {
+						"public": "aec32fe01c92d6716449eb57479e5b13980039964c73e20e5582c3dc93fad5b5"
+					},
+					"scheme": "ed25519"
+				}
+			},
+			"roles": [
+				{
+					"keyids": [
+						"bbf0f8fa0041d56e5cb91ac937aade674706f0a8508efb055fcc63e132b62dd6"
+					],
+					"name": "stable",
+					"paths": [
+						"channels/stable/*/latest.json"
+					],
+					"terminating": true,
+					"threshold": 1
+				},
+				{
+					"keyids": [
+						"bbf0f8fa0041d56e5cb91ac937aade674706f0a8508efb055fcc63e132b62dd6"
+					],
+					"name": "v1",
+					"paths": [
+						"releases/*/1.*.json",
+						"payloads/v1/*"
+					],
+					"terminating": true,
+					"threshold": 1
+				}
+			]
+		},
+		"expires": "2026-04-01T00:00:00Z",
+		"spec_version": "1.0.31",
+		"targets": {},
+		"version": 1
+	}
+}

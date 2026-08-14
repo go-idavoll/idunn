@@ -3,10 +3,9 @@
 What of [`design.md`](design.md) exists in code today, section by section. This file is
 the map; [`backlog.md`](backlog.md) is the list of work that follows from the gaps.
 
-Reconciled against the tree at branch `feat/elevate-windows-interactive`
-(`fb7767d`). Legend: **done** — implemented and tested; **partial** — the path
-exists but a named piece of the section is missing; **open** — contract only, or
-nothing.
+Reconciled against the tree at branch `claude/idn-packer-delegations-1g5v9s`.
+Legend: **done** — implemented and tested; **partial** — the path exists but a named
+piece of the section is missing; **open** — contract only, or nothing.
 
 ## Summary
 
@@ -16,7 +15,7 @@ nothing.
 | §3.1 | Payload files as TUF targets | **done** |
 | §3.2 | Release descriptor & channel pointer | **done** — `core/release`, strict parse, fuzzed |
 | §4 | TUF roles & key management (client side) | **done** — embedded root, `Refresh`, resolve |
-| §4.1 | Delegations, dedup, retention | **open** — no delegated roles are produced (packer) or required (client) |
+| §4.1 | Delegations, dedup, retention | **partial** — the packer delegates per channel and per release line from the first publish, and content-addressed payload targets deduplicate; retention is open (IDN-03) |
 | §5 | Installer flow | **partial** — `core/installer` complete; `cmd/installer` is a stub |
 | §6.1 | Blue/green layout + pointer | **done** — `internal/layout`, symlink (POSIX) / pointer file (Windows) |
 | §6.2 | Transaction flow, journal, recovery | **done** — `core/txn`, crash-injection tests |
@@ -25,8 +24,8 @@ nothing.
 | §6.4 | Delta stage 2 (binary patches) | **open** — `stage.ApplyPatch` fails closed |
 | §7 | Hook system | **done** — all six hooks defined and wired |
 | §8 | Headless default, UI sidecars | **done** in `core` (no UI dependency); sidecar repos are out of tree |
-| §9 | Packer | **open** — `cmd/packer` prints "not implemented" |
-| §10 | TUF repository layout | **partial** — the client resolves it; only the red-team harness produces one |
+| §9 | Packer | **partial** — `cmd/packer publish` builds and signs a release end to end (`internal/packer`); retention (step 4) is open |
+| §10 | TUF repository layout | **done** — the packer produces it, the client resolves it, a golden test pins the emitted bytes |
 | §11 | Security concept | **done** as a document; per-threat coverage below |
 | §12 | Test concept | **partial** — see coverage below; no mutation testing, one fuzz target missing |
 | §13 | Cross-platform specifics | **partial** — layout and elevation are per-OS; no launcher, no `MoveFileEx` self-update |
@@ -43,13 +42,14 @@ nothing.
 
 Enforced in code, with a test: T1–T6, T7 (`internal/safepath`, fuzzed), T8 (structural
 — no code is ever fetched), T9 (`VerifyAfterApply`), T10 (`core/txn`), T11
-(`Migrator.Rollback`), T12 (go-tuf), T14 (`SchemaVersion`, `MinClientVersion`), T15
+(`Migrator.Rollback`), T12 (go-tuf), T13 (`internal/packer` resolves every role key
+and verifies the repository before it writes anything, and refuses a root it cannot
+publish under), T14 (`SchemaVersion`, `MinClientVersion`), T15
 (`stage.GC`), T17 (quiesce), T19 (installer preflight), T20 (`Outcome` carries no paths
 or raw error strings), T21 (every staged byte re-checked against the signed hash).
 
 Not yet enforced:
 
-- **T13** (incompletely signed repo) — the packer that must hard-abort does not exist.
 - **T16, T23** (LPE via the helper, cache TOCTOU) — the helper service does not exist;
   `NewService` fails closed. The Windows interactive path enforces its half: three
   validated scalars cross the boundary, nothing else.
@@ -59,7 +59,7 @@ Not yet enforced:
 
 ## Test state
 
-`go test ./...` is green. `go test -covermode=atomic ./core/...`:
+`go test ./...` is green. `go test -covermode=atomic ./core/... ./internal/...`:
 
 | Package | Coverage |
 |---|---|
@@ -73,6 +73,7 @@ Not yet enforced:
 | `core/trust` | 0% by unit test — exercised end to end by the red-team corpus |
 | `core/fetch` | 0% — no test |
 | `core/hook` | no test files (interface definitions only) |
+| `internal/packer` | 86.1% — publish end to end against `core/trust`, plus golden metadata |
 
 The adversarial corpus (`make redteam-corpus`, build tag `redteam`) holds 18 cases
 across expiry, malformed descriptors, mix-and-match, path traversal, unknown key,

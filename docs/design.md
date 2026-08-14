@@ -289,6 +289,12 @@ many releases into a flat giant list that the client must fetch and parse on eve
   keep window (respecting delta patch sources, Sec. 6.4). An entire major delegation can
   be retired/removed at end-of-life.
 
+> **As built:** the packer delegates per channel (`stable`) *and* per release line
+> (`v2`) rather than one role per `(channel, major)` pair, because a descriptor's
+> target path deliberately carries no channel and the two pattern sets would
+> otherwise overlap. Payload targets are content-addressed, which is what makes the
+> dedup above literal. Both are argued in [`packer.md`](packer.md) §3 and §5.
+
 **Escalation path for extreme target counts:** TUF's **hash-bin delegations** (succinct
 delegations) distribute targets deterministically over N bounded bins — the approach with
 which PyPI (PEP 458) scales millions of targets. For an app with dozens of files ×
@@ -704,6 +710,13 @@ if targetsKey == "" || snapshotKey == "" || timestampKey == "" {
     return errors.New("packer: TUF role keys missing; refusing to publish")
 }
 ```
+
+> **As built:** steps 1–3 and 5 exist in `internal/packer`; step 4 (retention) does
+> not yet (IDN-03). Two details differ from the sketch above and are argued in
+> [`packer.md`](packer.md): payload targets are named by content hash, and `custom`
+> is not used — `dst`, `mode` and `kind` describe a release's *use* of a target, not
+> the target, and the descriptor already carries them where the client validates
+> them.
 
 Root signatures (key rotation) deliberately run **outside** the normal publish — via a
 separate, strictly controlled ceremony (offline, m-of-n), ideally with `tuf-on-ci`.
