@@ -10,7 +10,9 @@ _Guarded by Algiz, renewed by Iðunn — built on Iðavöllr, the field where th
 [![Go Reference](https://pkg.go.dev/badge/github.com/go-idavoll/idunn.svg)](https://pkg.go.dev/github.com/go-idavoll/idunn)
 [![Go Report Card](https://goreportcard.com/badge/github.com/go-idavoll/idunn)](https://goreportcard.com/report/github.com/go-idavoll/idunn)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/status-design--stage-orange.svg)](#status)
+[![Status](https://img.shields.io/badge/status-early--implementation-orange.svg)](#status)
+[![CI](https://github.com/go-idavoll/idunn/actions/workflows/ci.yml/badge.svg)](https://github.com/go-idavoll/idunn/actions/workflows/ci.yml)
+[![Red team](https://github.com/go-idavoll/idunn/actions/workflows/redteam.yml/badge.svg)](https://github.com/go-idavoll/idunn/actions/workflows/redteam.yml)
 
 </div>
 
@@ -36,6 +38,9 @@ garbage collection, crash recovery, and UI.
 > idunn answers *"how do I apply them safely?"*
 
 ## Features
+
+_This is the designed scope, not a claim about today's code — see
+[Status](#status) for what is implemented._
 
 - **TUF-backed trust** (go-tuf v2): role separation, thresholds, key rotation
   without client redeploy, freeze/rollback/mix-and-match defense.
@@ -84,8 +89,11 @@ github.com/go-idavoll/idunn          # core library (this repo)
   core/updater    # Updater orchestration API
   core/installer  # first-time install orchestration
   core/elevate    # privileged apply (per-OS)
+  core/fsx        # filesystem abstraction (interface + OS + in-memory)
+  internal/safepath # the single validator for untrusted install-relative paths
   cmd/installer   # thin installer binary
   cmd/packer      # go:generate TUF repo maintenance + build tool
+  test/redteam    # standing adversarial corpus + harness (build tag: redteam)
 ```
 
 ### UI sidecars
@@ -102,9 +110,21 @@ optional `hook.Observer` / `hook.Prompter` interfaces — pick one at compile ti
 > The API is not yet stable — see [Status](#status).
 
 ```go
+fetcher, err := fetch.New(fetch.Options{UserAgent: "acme/1.0"}) // OS proxy + system CAs
+if err != nil { /* ... */ }
+
+trustClient, err := trust.New(trust.Options{
+    Root:        embeddedRootJSON, // the shipped trust anchor, never downloaded
+    MetadataURL: "https://updates.example.com/metadata/",
+    TargetsURL:  "https://updates.example.com/targets/",
+    LocalDir:    "/var/lib/acme/tuf",
+    Fetcher:     fetcher,
+})
+if err != nil { /* ... */ }
+
 u, err := updater.New(updater.Options{
-    Trust:   trustClient,        // go-tuf wrapper with an embedded root.json
-    Fetcher: fetch.OSDefault(),  // honours OS proxy/PAC and the system trust store
+    Trust:   trustClient,
+    Fetcher: fetcher,
     Root:    "/opt/acme",
     Channel: "stable",
     Migrate: myMigrator,         // optional: Migrate + Rollback
@@ -155,16 +175,32 @@ mark.
 
 ## Status
 
-**Design stage.** The architecture and security concept are complete and
-implementation-ready; the code and public API are still taking shape and **may
-change without notice**. Not yet suitable for production. Follow along or open an
-issue if you want to help shape it.
+**Early implementation.** The architecture and security concept are complete; the
+code and public API are still taking shape and **may change without notice**. Not yet
+suitable for production.
+
+What exists today:
+
+| Area | State |
+|---|---|
+| Descriptor & channel-pointer ingest (`core/release`, `internal/safepath`) | implemented, fuzzed, adversarially tested |
+| TUF trust client and resolve (`core/trust`, `core/fetch`) | implemented, adversarially tested |
+| Adversarial corpus (`test/redteam`) | 18 cases, gates every PR |
+| Apply path: staging, journal, hooks, elevation, GC (`core/stage`, `core/txn`, `core/updater`, `core/installer`, `core/elevate`) | contracts defined, not implemented |
+| Delta updates, packer, installer binary | not implemented |
+
+Unimplemented functions carry their contract as a doc comment and panic — a loud
+placeholder rather than a silent success.
 
 ## Contributing
 
-Issues and discussion are welcome. Please read `SECURITY.md` and `CONTRIBUTING.md`
-(coming soon) before opening a pull request.
+Issues and discussion are welcome. Read [`AGENTS.md`](AGENTS.md) (the binding
+contract, human or AI), [`CONTRIBUTING.md`](CONTRIBUTING.md), and
+[`SECURITY.md`](SECURITY.md) before opening a pull request. For vulnerabilities, use
+the private channel in `SECURITY.md` — never a public issue.
 
 ## License
 
-Apache-2.0 (placeholder — confirm before first tag). See [`LICENSE`](LICENSE).
+Apache-2.0 — see [`LICENSE`](LICENSE). Every source file carries the header, and CI
+enforces it (`make license`). By contributing you agree your work is licensed the same
+way.
