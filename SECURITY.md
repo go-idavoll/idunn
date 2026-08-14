@@ -15,7 +15,7 @@ invariants, and residual risks live in the architecture concept document.
 
 1. **Preferred:** open a private report via GitHub → *Security* →
    *Report a vulnerability* (private security advisory) on this repository.
-2. **Fallback:** email `security@<domain>` _(maintainers: set this address and,
+2. **Fallback:** email `leise.lehmig.9o@icloud.com` _(maintainers: set this address and,
    ideally, publish a PGP key / `security.txt` before the first release)_.
 
 Please include: affected version/commit, a description of the issue and its impact, and
