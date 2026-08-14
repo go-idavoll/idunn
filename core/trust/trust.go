@@ -31,6 +31,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/theupdateframework/go-tuf/v2/metadata"
 	tufconfig "github.com/theupdateframework/go-tuf/v2/metadata/config"
 	tufupdater "github.com/theupdateframework/go-tuf/v2/metadata/updater"
 
@@ -48,6 +49,18 @@ var ErrTrust = errors.New("trust")
 // with the platform and version they were requested for. TUF cannot catch these —
 // both documents are authentic, just not the pair we asked for.
 var ErrResolve = errors.New("resolve")
+
+// IsExpiry reports whether err is go-tuf's rejection of expired metadata.
+//
+// It exists so the updater can tell an operator "your system clock looks wrong"
+// instead of "update failed" (docs/design.md §14.7). The distinction is for
+// diagnosis only: expired metadata is refused either way, and nothing here or
+// above may weaken that check — a clock the client cannot trust is the reason
+// the freeze defence works.
+func IsExpiry(err error) bool {
+	var expired *metadata.ErrExpiredMetadata
+	return errors.As(err, &expired)
+}
 
 // Options configures the trust client.
 type Options struct {
@@ -177,6 +190,54 @@ func (c *Client) LatestRelease(channel, goos, goarch string) (*release.Descripto
 			ErrResolve, d.Channel, d.OS, d.Arch, d.Version, channel, goos, goarch, ptr.Version)
 	}
 
+	return d, nil
+}
+
+// Target returns the verified bytes of one TUF target.
+//
+// It is what core/stage consumes: the trust layer hands over bytes go-tuf has
+// checked against the signed hash and length, and the staging code does every
+// write itself, through fsx, with the destination path already sanitized. The
+// alternative — letting the trust layer write to a caller-supplied path — would
+// put file placement inside the package that is supposed to answer only "which
+// bytes may I trust?".
+//
+// TODO(stage): large payload targets are held whole in memory here, because
+// go-tuf's DownloadTarget returns a byte slice. Streaming needs a fetcher that
+// exposes the response body; the verification story is unchanged either way.
+func (c *Client) Target(targetPath string) ([]byte, error) {
+	return c.target(targetPath)
+}
+
+// ReleaseVersion resolves one explicitly named version, bypassing the channel
+// pointer.
+//
+// It exists for the installer's `--version` and for pinned deployments. The
+// descriptor is still a signed TUF target and is verified exactly as the channel
+// head would be; what is bypassed is only the publisher's statement about which
+// version is current. TUF's metadata rollback protection is untouched — an
+// operator naming an old version is choosing it, not being served it — and the
+// installer's own downgrade preflight still applies on top (docs/design.md
+// §14.6).
+func (c *Client) ReleaseVersion(goos, goarch, version string) (*release.Descriptor, error) {
+	if !release.ValidVersion(version) {
+		return nil, fmt.Errorf("%w: version %q is not SemVer", ErrResolve, version)
+	}
+	raw, err := c.target(release.DescriptorPath(goos, goarch, version))
+	if err != nil {
+		return nil, err
+	}
+	d, err := release.ParseDescriptor(raw)
+	if err != nil {
+		return nil, fmt.Errorf("%w: descriptor: %w", ErrTrust, err)
+	}
+	// The path a descriptor lives at states what it describes. A document that
+	// disagrees with its own location is a valid target substituted for another
+	// one, so we refuse rather than believe the contents over the path.
+	if d.Version != version || d.OS != goos || d.Arch != goarch {
+		return nil, fmt.Errorf("%w: descriptor for %s-%s@%s describes %s-%s@%s",
+			ErrResolve, goos, goarch, version, d.OS, d.Arch, d.Version)
+	}
 	return d, nil
 }
 
