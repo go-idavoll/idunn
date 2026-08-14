@@ -8,7 +8,7 @@
 _Guarded by Algiz, renewed by Iðunn — built on Iðavöllr, the field where the gods rebuild._
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/go-idavoll/idunn.svg)](https://pkg.go.dev/github.com/go-idavoll/idunn)
-[![Coverage](https://img.shields.io/badge/coverage-88.4%25-green.svg)](https://github.com/go-idavoll/idunn/actions/workflows/ci.yml)
+[![Coverage](https://img.shields.io/badge/coverage-90.1%25-brightgreen.svg)](https://github.com/go-idavoll/idunn/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Status](https://img.shields.io/badge/status-early--implementation-orange.svg)](#status)
 [![CI](https://github.com/go-idavoll/idunn/actions/workflows/ci.yml/badge.svg)](https://github.com/go-idavoll/idunn/actions/workflows/ci.yml)
