@@ -191,7 +191,8 @@ What exists today:
 | Elevation (`core/elevate`) | Windows `ElevationInteractive` implemented; privileged helper service and POSIX prompts fail closed |
 | Delta stage 1 (content-addressed reuse) | go-tuf cache reuse only; local relink from retained versions not implemented |
 | Packer (`cmd/packer`, `internal/packer`) | publishes a delegated, reproducible TUF repository; retention not implemented |
-| Launcher, `BusyDeferToRestart`, delta stage 2, installer binary | not implemented |
+| Installer binary (`cmd/installer`) | implemented: embedded anchor, elevation decision, privileged `apply` verb |
+| Launcher, `BusyDeferToRestart`, delta stage 2 | not implemented |
 
 The full section-by-section reconciliation against the design lives in
 [`docs/status.md`](docs/status.md); the open work is tracked in

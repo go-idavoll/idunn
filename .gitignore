@@ -59,3 +59,10 @@ secrets/
 *~
 .DS_Store
 Thumbs.db
+
+# The installer's build-time trust anchor. A host project drops its own
+# root.json and repository.json into cmd/installer/anchor/ before building;
+# idunn's own tree must never carry one, because a placeholder trust anchor is
+# the one file that must not be shippable by accident. See the README there and
+# TestThisTreeEmbedsNoAnchor, which fails if one is committed anyway.
+cmd/installer/anchor/*.json
