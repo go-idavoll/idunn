@@ -1,0 +1,22 @@
+{
+	"signatures": [
+		{
+			"keyid": "bbf0f8fa0041d56e5cb91ac937aade674706f0a8508efb055fcc63e132b62dd6",
+			"sig": "0a7bb941820fe2b5d2c51d178a03dcae6e5b8ebc09c8256933422e935f8270d2c6cb7a63ac37f9b491ced0ae4d54bcf22115bc4a501f4bc1ae5c05c4cbdbbb07"
+		}
+	],
+	"signed": {
+		"_type": "targets",
+		"expires": "2026-04-01T00:00:00Z",
+		"spec_version": "1.0.31",
+		"targets": {
+			"channels/stable/linux-amd64/latest.json": {
+				"hashes": {
+					"sha256": "be0c8f313c2e61ad825581785b7d0900b252bebfdf3acc55d1690a4174adf433"
+				},
+				"length": 157
+			}
+		},
+		"version": 1
+	}
+}
