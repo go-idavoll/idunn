@@ -15,14 +15,19 @@
 package harness
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 
+	"github.com/go-idavoll/idunn/core/fsx"
+	"github.com/go-idavoll/idunn/core/installer"
 	"github.com/go-idavoll/idunn/core/release"
+	"github.com/go-idavoll/idunn/core/timefloor"
 	"github.com/go-idavoll/idunn/core/trust"
+	"github.com/go-idavoll/idunn/core/updater"
 )
 
 // Result is the outcome of running the client under test against one repository.
@@ -84,12 +89,63 @@ func Run(srv *Server, rootBytes []byte, workDir string, refTime time.Time, opts 
 	return res
 }
 
+// RunInstall drives the real first-install path — core/installer, and through it
+// the updater, the time floor and the apply transaction — against srv at the
+// given local time.
+//
+// Run points a bare trust client at a repository, which is the right instrument
+// for an attack on the bytes. It is the wrong one for an attack on the clock: the
+// known-good floor lives with the installation, so only a run that owns an
+// install root can have one at all.
+//
+// Everything the client persists stays under workDir, and calling it twice with
+// the same workDir is the point — that is one machine, running twice.
+func RunInstall(srv *Server, rootBytes []byte, workDir string, at time.Time, opts BuildOptions) Result {
+	installRoot := filepath.Join(workDir, "install")
+	res := Result{InstallRoot: installRoot}
+
+	c, err := trust.New(trust.Options{
+		Root:        rootBytes,
+		MetadataURL: srv.MetadataURL(),
+		TargetsURL:  srv.TargetsURL(),
+		LocalDir:    filepath.Join(workDir, "cache"),
+		Now:         func() time.Time { return at },
+	})
+	if err != nil {
+		res.Err, res.Class = err, classify(err)
+		return res
+	}
+	c.UnsafeSetRefTime(at)
+
+	err = installer.Install(context.Background(), installer.Options{
+		Updater: updater.Options{
+			Trust:   c,
+			FS:      fsx.OS(),
+			Root:    installRoot,
+			Channel: opts.Channel,
+			OS:      opts.OS,
+			Arch:    opts.Arch,
+			Now:     func() time.Time { return at },
+		},
+	})
+	res.Err, res.Class = err, classify(err)
+	return res
+}
+
+// InstalledVersion reports what RunInstall left installed, or "" for nothing.
+func InstalledVersion(installRoot string) (string, error) {
+	return installer.InstalledVersion(installRoot)
+}
+
 // classify buckets an error for the corpus check. It deliberately distinguishes
 // only the two layers a case can be refused by; finer classification belongs to
 // the Reporter taxonomy, not here.
 func classify(err error) ErrorClass {
 	// Order matters: trust wraps the errors it forwards, so the most specific
 	// classification has to be tested first.
+	if errors.Is(err, timefloor.ErrClockRollback) {
+		return ClassClock
+	}
 	if errors.Is(err, release.ErrInvalid) {
 		return ClassDescriptor
 	}

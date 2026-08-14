@@ -21,6 +21,7 @@ test/redteam/
     wrong-length/            # length mismatch vs. target metadata
     expired/                 # metadata past expiry (uses UnsafeSetRefTime)
     clock-rollback/          # local clock moved back to revive expired metadata
+    resolve/                 # pointer and descriptor are authentic and disagree
     wrong-key/               # role signed by a key not trusted by root
     unknown-key/             # unknown key id / threshold not met
     path-traversal/          # descriptor Dst escapes the install root (.., abs, symlink)
@@ -49,10 +50,10 @@ test/redteam/
 ```
 
 Classes that exist as directories but hold no case yet — `rollback`, `freeze`,
-`clock-rollback`, `downgrade`, `patch-poison`, `cache-poison` — need client-side prior
-state (a previously trusted metadata version, an installed version, a populated cache)
-or code that is not written yet (`stage.ApplyPatch`, `core/elevate`). They land as the
-harness grows; the corpus only ever grows.
+`downgrade`, `patch-poison`, `cache-poison` — need client-side prior state (a previously
+trusted metadata version, an installed version, a populated cache) or code that is not
+written yet (`stage.ApplyPatch`, `core/elevate`). They land as the harness grows; the
+corpus only ever grows.
 
 ## How a case is built
 
@@ -85,8 +86,32 @@ mutator: expired_timestamp   # a name from harness.Mutators
 notes: "expiry judged via UnsafeSetRefTime, never the wall clock"
 ```
 
+### The clock axis
+
+Not every attack is on the bytes. A case may instead name a manipulation of the
+client's *environment*:
+
+```yaml
+# corpus/clock-rollback/revive-expired-metadata/case.yaml
+description: "the local clock is turned back to bring expired metadata back inside its window"
+class: clock-rollback
+expect: reject
+error_class: clock
+clock: rollback              # no mutator: the repository is the honest baseline
+```
+
+A case has to attack something — the loader refuses one with neither a mutator nor a
+clock attack — but it may attack the repository, the clock, or both.
+
+A clock case is driven by `harness.RunInstall`, which runs the real first-install path
+(`core/installer`, and through it the updater, the time floor and the apply
+transaction) rather than a bare trust client. That is not decoration: the known-good
+time floor lives with the *installation*, so only a run that owns an install root has
+one at all. Calling it twice with the same work directory is the point — that is one
+machine, running twice.
+
 `error_class` is checked, not just recorded — a case that is rejected for the wrong
-reason fails. The three classes:
+reason fails. The four classes:
 
 - `verify` — the TUF trust layer refused: signature, threshold, expiry, freshness, or a
   target that does not match its signed hash/length.
@@ -94,6 +119,9 @@ reason fails. The three classes:
   traversal, duplicate destination, setuid bit).
 - `resolve` — two authentic documents disagree: the channel pointer and the descriptor
   name different versions, platforms, or paths. TUF cannot catch this; idunn must.
+- `clock` — the monotonic known-good time floor refused: the local clock is below a
+  point this installation has already passed (§14.7, T22). The repository may be
+  flawless; the attack is on the machine.
 
 `TestBaselineIsAccepted` is the control: a suite that rejects a *valid* repository too
 would be green and worthless.
@@ -113,6 +141,13 @@ builds the mutated repository, serves it, points a fresh client at it, and asser
 The client under test (`harness/client.go`) runs the real resolve path — `trust.Refresh`,
 channel pointer to descriptor, then materialize every target — because a repository that
 is refused at download time but accepted at resolve time is still a break.
+
+A clock case asserts a different shape, because its first step is a *legitimate* install
+that has to succeed: the honest run installs, the metadata later expires and is refused,
+the same repository is then resolved successfully by a bare trust client at the
+rolled-back clock — which is what proves the repository itself is happy with it — and
+only the run that owns a floor refuses. The installation is asserted unchanged
+afterwards.
 
 Fuzz targets live next to the code they attack, not here:
 `FuzzDescriptor` (`core/release`) and `FuzzDstSanitize` (`core/stage`).

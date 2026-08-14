@@ -78,10 +78,12 @@ Not yet enforced:
 | `internal/packer` | 86.1% — publish end to end against `core/trust`, plus golden metadata |
 | `cmd/installer` | not in the coverage universe, but tested: a real install against a served repository |
 
-The adversarial corpus (`make redteam-corpus`, build tag `redteam`) holds 21 cases
-across expiry, malformed descriptors, mix-and-match, path traversal, resolve
-(pointer/descriptor disagreement), unknown key, wrong hash, wrong key, and wrong
-length. Fuzzers: `FuzzDescriptor`, `FuzzDstSanitize`.
+The adversarial corpus (`make redteam-corpus`, build tag `redteam`) holds 22 cases
+across clock rollback, expiry, malformed descriptors, mix-and-match, path traversal,
+resolve (pointer/descriptor disagreement), unknown key, wrong hash, wrong key, and
+wrong length. All but one attack the repository; the clock case attacks the machine
+and is driven through the real install path, because the time floor only exists where
+there is an installation. Fuzzers: `FuzzDescriptor`, `FuzzDstSanitize`.
 `FuzzPatchApply` waits on a patch format (§6.4 stage 2).
 
 ## Deliberate non-goals for now

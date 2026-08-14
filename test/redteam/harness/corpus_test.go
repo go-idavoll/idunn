@@ -103,7 +103,7 @@ func TestAdversarialCorpus(t *testing.T) {
 			// precisely TUF's protection. Cases that attack the anchor itself
 			// set SeedMutatedRoot and hand the client the tampered root instead.
 			rootBytes := build.RootBytes
-			if !opts.Mutator.SeedMutatedRoot {
+			if opts.Mutator == nil || !opts.Mutator.SeedMutatedRoot {
 				baseline, err := harness.BuildRepo(filepath.Join(dir, "baseline"), harness.DefaultBuildOptions(keys))
 				if err != nil {
 					t.Fatalf("build baseline root: %v", err)
@@ -113,6 +113,11 @@ func TestAdversarialCorpus(t *testing.T) {
 
 			srv := harness.Serve(repoDir)
 			defer srv.Close()
+
+			if c.Clock != harness.ClockNone {
+				runClockCase(t, c, srv, rootBytes, dir, opts)
+				return
+			}
 
 			res := harness.Run(srv, rootBytes, filepath.Join(dir, "client"), refTime(opts), opts)
 			if res.Err == nil {
@@ -125,5 +130,64 @@ func TestAdversarialCorpus(t *testing.T) {
 				t.Fatalf("fail-closed violated: %v", err)
 			}
 		})
+	}
+}
+
+// runClockCase drives the clock-rollback story end to end.
+//
+// The repository is the honest baseline throughout: what is attacked is the
+// machine. The four steps are the attack as it actually happens, and step three
+// is the one that gives the case its teeth — it shows the repository alone is
+// perfectly happy to be resolved at the rolled-back time, so the refusal in step
+// four is the floor doing it and nothing else.
+func runClockCase(t *testing.T, c harness.Case, srv *harness.Server, rootBytes []byte, dir string, opts harness.BuildOptions) {
+	t.Helper()
+	machine := filepath.Join(dir, "machine")
+
+	// 1. An honest run inside the validity window. This is what records the
+	//    known-good time.
+	first := harness.RunInstall(srv, rootBytes, machine, refTime(opts), opts)
+	if first.Err != nil {
+		t.Fatalf("the honest install failed, so the case proves nothing: %v", first.Err)
+	}
+	installed, err := harness.InstalledVersion(first.InstallRoot)
+	if err != nil || installed != opts.Version {
+		t.Fatalf("installed %q (%v), want %s", installed, err, opts.Version)
+	}
+
+	// 2. Time passes and the metadata expires. The client says so, which is the
+	//    freeze defence working as designed.
+	expired := harness.RunInstall(srv, rootBytes, machine, opts.Now.AddDate(0, 0, 30), opts)
+	if expired.Err == nil {
+		t.Fatal("expired metadata was accepted a month later")
+	}
+	if expired.Class != harness.ClassVerify {
+		t.Fatalf("expired metadata was rejected as %q, want %q: %v", expired.Class, harness.ClassVerify, expired.Err)
+	}
+
+	// 3. The attacker's move: at a clock turned back into the old window, the
+	//    repository verifies again. A client with no memory of where it has been
+	//    would take it, and stay frozen on that metadata forever.
+	revived := opts.Now.Add(time.Minute)
+	naive := harness.Run(srv, rootBytes, filepath.Join(dir, "naive"), revived, opts)
+	if naive.Err != nil {
+		t.Fatalf("the case is not testing what it claims: the repository is refused at the "+
+			"rolled-back clock for its own reasons (%v)", naive.Err)
+	}
+
+	// 4. The same move against a machine that remembers. Nothing about the
+	//    repository changed between this and step three.
+	res := harness.RunInstall(srv, rootBytes, machine, revived, opts)
+	if res.Err == nil {
+		t.Fatal("VULNERABILITY: a clock turned back below the known-good floor was ACCEPTED")
+	}
+	if res.Class != c.ErrorClass {
+		t.Fatalf("rejected as %q, case expects %q: %v", res.Class, c.ErrorClass, res.Err)
+	}
+
+	// And the installation is exactly as step one left it.
+	after, err := harness.InstalledVersion(first.InstallRoot)
+	if err != nil || after != opts.Version {
+		t.Fatalf("after the refusal the install is %q (%v), want the untouched %s", after, err, opts.Version)
 	}
 }

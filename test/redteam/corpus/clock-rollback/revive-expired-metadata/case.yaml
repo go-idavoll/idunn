@@ -1,0 +1,27 @@
+# Copyright 2026 The idunn Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+description: "the local clock is turned back to bring expired metadata back inside its window"
+class: clock-rollback
+expect: reject
+error_class: clock
+clock: rollback
+notes: >-
+  The repository here is the honest baseline: nothing is tampered with except the
+  machine. TUF judges expiry against the local clock, so an attacker who can move
+  that clock can revive metadata that has expired and freeze the client on it —
+  the freeze defence, re-opened from below. The case proves the point rather than
+  asserting it: step three resolves the same repository at the same rolled-back
+  clock with a bare trust client and it succeeds, so the refusal in step four is
+  the known-good time floor and nothing else.
