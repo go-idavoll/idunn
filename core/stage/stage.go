@@ -384,6 +384,10 @@ func retained(versions []string, live string, retain int) (map[string]bool, erro
 // stage 1 — content-addressed targets plus the go-tuf cache — already keeps
 // unchanged files off the network. Returning an error rather than a best guess
 // keeps the fail-closed rule intact for any caller that reaches here early.
+//
+// no body yet; renaming them to _ would delete the only thing it currently says.
+//
+//nolint:revive // The parameter names are the contract of a function that has
 func ApplyPatch(base, patch []byte) ([]byte, error) {
 	return nil, fmt.Errorf("%w: intra-file delta patches are not implemented (docs/design.md §6.4 stage 2)", ErrStage)
 }

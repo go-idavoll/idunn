@@ -44,13 +44,7 @@ linters:
     revive:
       rules:
         - name: exported
-        # unused-parameter is off while the apply path is contract-only. Its
-        # functions carry their full signature as documentation and panic; the
-        # parameter names ARE the contract, and renaming them to _ would delete
-        # the only thing those stubs currently say. Turn this back on once the
-        # bodies exist.
         - name: unused-parameter
-          disabled: true
 
   exclusions:
     rules:

@@ -98,7 +98,7 @@ func TestWriteAtomicRemovesScratchOnFailure(t *testing.T) {
 	if err := m.MkdirAll("/root", 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	m.Fail = func(op, name string) error {
+	m.Fail = func(op, _ string) error {
 		if op == "write" {
 			return errors.New("disk full")
 		}
