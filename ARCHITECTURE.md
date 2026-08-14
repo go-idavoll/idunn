@@ -67,5 +67,9 @@ Rollback = repoint `current`. Old versions are kept per `RetainVersions` and GC'
 ## Where to look next
 
 - Full design, rationale, and the T1–T23 threat model: [`docs/design.md`](docs/design.md)
+- What of the design is built today: [`docs/status.md`](docs/status.md); what is not:
+  [`docs/backlog.md`](docs/backlog.md)
+- The two subsystems in depth: [`docs/updater.md`](docs/updater.md),
+  [`docs/packer.md`](docs/packer.md)
 - Security policy and reporting: [`SECURITY.md`](SECURITY.md)
 - Contributor & agent contract, red-team requirements: [`AGENTS.md`](AGENTS.md)
