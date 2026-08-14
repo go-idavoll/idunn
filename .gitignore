@@ -1,0 +1,56 @@
+# --- Go build & test artifacts ---
+# Binaries and compiled output (we build into ./bin or dist/, not the tree)
+/bin/
+/dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+# Go coverage & profiling
+coverage.out
+coverage.txt
+*.cover
+*.prof
+# Go workspace file (keep it local; the module graph is pinned by go.mod)
+go.work
+go.work.sum
+
+# --- Fuzzing ---
+# Keep committed seed corpora under testdata/fuzz/; ignore local fuzz cache.
+**/testdata/fuzz/**/crash-*
+**/testdata/fuzz/**/fuzz-*
+
+# --- SECURITY-CRITICAL: never commit key material or secrets ---
+# TUF role keys, test keys, HSM/KMS references, PGP keys, env files.
+# (See AGENTS.md §5: agents and humans must never commit secrets.)
+*.pem
+*.key
+*.pfx
+*.p12
+*.asc
+*.gpg
+.env
+.env.*
+secrets/
+# Generated TEST-ONLY TUF keys and the generated baseline repo — never versioned.
+/test/redteam/fixtures/keys/
+/test/redteam/fixtures/valid-repo/
+
+# --- Red-team: agent-proposed candidates are transient, not tracked ---
+# Promoted regression cases live under corpus/<class>/ and ARE committed;
+# the staging area for the LLM attacker is not.
+/test/redteam/corpus/_proposed/
+
+# --- Local TUF repo scratch (packer output during dev) ---
+/tuf-repo/
+
+# --- Editors / OS noise ---
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+Thumbs.db
