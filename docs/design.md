@@ -944,6 +944,48 @@ type Elevator interface {
 }
 ```
 
+#### 14.2.1 Windows `ElevationInteractive` (implemented)
+
+`elevate.NewInteractive` launches the configured apply helper through
+`ShellExecuteEx` with the verb `runas` — the only documented way to obtain the UAC
+consent dialog — and waits on the returned process handle
+(`SEE_MASK_NOCLOSEPROCESS`). `shell32.dll` is loaded from `%SystemRoot%\System32`
+only, so a planted DLL on the search path is not what elevates.
+
+The request that crosses the boundary is the whole contract:
+
+```text
+<helper> apply --root <install root> --channel <channel> --version <version>
+```
+
+Three validated scalars, quoted with `EscapeArg` so the helper's own
+`CommandLineToArgvW` reproduces them exactly. No file list, no hashes, no staged
+path, no URL: everything else the helper obtains and verifies itself (T16). Values
+that cannot be expressed in that grammar — a relative or dot-laden root, a channel
+or version outside a narrow charset, anything with a quote, a control character,
+or a NUL — are refused before a privileged process exists, rather than escaped and
+forwarded.
+
+Outcomes map to `ErrDeclined` (prompt dismissed, or helper exit code
+`ERROR_CANCELLED`), `ErrHelper` (launch failure or non-zero exit), and `ErrRequest`
+(refused before launch). Cancelling the context stops the *wait*, never the apply:
+the elevated process owns the swap once it starts, and killing it mid-write is the
+half-installed state the journal exists to prevent.
+
+`elevate.NeedsElevation` answers by creating and deleting a probe file in the
+deepest existing directory of the root — the same operation the apply performs —
+because predicting the kernel's access check from an ACL is a second
+implementation of it. Access denied means "needs elevation"; anything ambiguous is
+an error *and* `true`.
+
+Residual risk: the helper binary runs with full administrator rights, so it must
+live where only administrators can write. That is an install-time property; it
+cannot be established at update time without a TOCTOU of its own. What is enforced
+here is that the path is absolute, local (never UNC), existing, and a regular file.
+
+`ElevationService` (the privileged helper and its authenticated IPC, 14.8) is not
+built yet and fails closed.
+
 ### 14.3 Graceful shutdown & external file locks
 
 The `Migrator` touches shared state **outside** the install directory (e.g. a SQLite DB
