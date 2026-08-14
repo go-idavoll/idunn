@@ -27,6 +27,7 @@ import (
 // append-only: never renumber or reuse them.
 type State string
 
+// The journal states, in the order a successful transaction passes through them.
 const (
 	StateBegin      State = "BEGIN"
 	StateStaged     State = "STAGED"

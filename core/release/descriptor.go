@@ -54,6 +54,7 @@ type Descriptor struct {
 // FileKind classifies a payload file for platform-specific apply handling.
 type FileKind string
 
+// The file kinds a descriptor may declare. Anything else is rejected on ingest.
 const (
 	KindExe  FileKind = "exe"  // executable; may need self-replace handling.
 	KindLib  FileKind = "lib"  // shared library (.dll/.so/.dylib).

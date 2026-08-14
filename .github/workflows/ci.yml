@@ -26,6 +26,20 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# go.mod pins the LANGUAGE version (the oldest Go we support), not the toolchain
+# CI should build with. Resolving `go-version-file: go.mod` installs exactly that
+# patch release, which is by definition the oldest one and therefore carries every
+# standard-library CVE fixed since — govulncheck rightly fails on it. Build with
+# the current stable patch instead.
+env:
+  GO_VERSION: stable
+
+# bash on all three runners, so one command line means one behaviour. PowerShell
+# mangles `-coverprofile=coverage.out` into two arguments.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   test:
     name: test (${{ matrix.os }})
@@ -39,7 +53,8 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
 
       - name: Build
         run: go build ./...
@@ -62,7 +77,8 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
 
       - name: gofmt
         run: |
@@ -74,9 +90,14 @@ jobs:
           go mod tidy
           git diff --exit-code -- go.mod go.sum
 
-      - uses: golangci/golangci-lint-action@v6
-        with:
-          version: latest
+      # Installed from source rather than via the action: the action's pinned
+      # binary is built with an older Go than go.mod targets, which makes it
+      # refuse the config outright ("Go language version used to build
+      # golangci-lint is lower than the targeted Go version").
+      - name: golangci-lint
+        run: |
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+          golangci-lint run
 
   vuln:
     name: govulncheck
@@ -86,7 +107,8 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
 
       - name: govulncheck
         run: |

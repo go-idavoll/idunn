@@ -68,7 +68,7 @@ func fieldSet(names ...string) map[string]bool {
 func checkKeys(raw []byte, allowed map[string]bool, where string) error {
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &obj); err != nil {
-		return fmt.Errorf("%w: %s: %v", ErrInvalid, where, err)
+		return fmt.Errorf("%w: %s: %w", ErrInvalid, where, err)
 	}
 	for key := range obj {
 		if !allowed[key] {
@@ -91,7 +91,7 @@ func decodeStrict(raw []byte, v any) error {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalid, err)
+		return fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	if dec.More() {
 		return fmt.Errorf("%w: trailing data after the document", ErrInvalid)
@@ -148,7 +148,7 @@ func ParseDescriptor(raw []byte) (*Descriptor, error) {
 
 		target, err := safepath.CleanTarget(f.Target)
 		if err != nil {
-			return nil, fmt.Errorf("%w: files[%d].target: %v", ErrInvalid, i, err)
+			return nil, fmt.Errorf("%w: files[%d].target: %w", ErrInvalid, i, err)
 		}
 		if target != f.Target {
 			return nil, fmt.Errorf("%w: files[%d].target %q is not in clean form", ErrInvalid, i, f.Target)
@@ -156,7 +156,7 @@ func ParseDescriptor(raw []byte) (*Descriptor, error) {
 
 		dst, err := safepath.Clean(f.Dst)
 		if err != nil {
-			return nil, fmt.Errorf("%w: files[%d].dst: %v", ErrInvalid, i, err)
+			return nil, fmt.Errorf("%w: files[%d].dst: %w", ErrInvalid, i, err)
 		}
 		if dst != f.Dst {
 			return nil, fmt.Errorf("%w: files[%d].dst %q is not in clean form", ErrInvalid, i, f.Dst)
@@ -197,7 +197,7 @@ func checkDescriptorKeys(raw []byte) error {
 		Requirements json.RawMessage   `json:"requirements"`
 	}
 	if err := json.Unmarshal(raw, &doc); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalid, err)
+		return fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	for i, f := range doc.Files {
 		if err := checkKeys(f, fileFields, fmt.Sprintf("files[%d]", i)); err != nil {
@@ -250,7 +250,7 @@ func ParsePointer(raw []byte) (*Pointer, error) {
 
 	target, err := safepath.CleanTarget(p.Descriptor)
 	if err != nil {
-		return nil, fmt.Errorf("%w: descriptor: %v", ErrInvalid, err)
+		return nil, fmt.Errorf("%w: descriptor: %w", ErrInvalid, err)
 	}
 	if target != p.Descriptor {
 		return nil, fmt.Errorf("%w: descriptor %q is not in clean form", ErrInvalid, p.Descriptor)

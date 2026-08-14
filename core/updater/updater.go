@@ -83,6 +83,7 @@ type Policy struct {
 // ElevationMode selects how a privileged apply is performed.
 type ElevationMode int
 
+// The supported elevation modes. The zero value is the unprivileged one.
 const (
 	ElevationNone        ElevationMode = iota // in-process; per-user install.
 	ElevationInteractive                      // request UAC/polkit prompt on demand.
@@ -92,6 +93,7 @@ const (
 // BusyPolicy decides what happens when running instances will not release the lock.
 type BusyPolicy int
 
+// The supported busy policies. The zero value fails rather than forces.
 const (
 	BusyAbort          BusyPolicy = iota // fail the update, retry later.
 	BusyDeferToRestart                   // stage now, apply+migrate at next launch.

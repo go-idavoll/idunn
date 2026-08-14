@@ -89,6 +89,7 @@ type Outcome struct {
 // values are stable and must not be renamed casually.
 type Phase string
 
+// The phases of one update transaction, in the order they are entered.
 const (
 	PhaseCheck    Phase = "check"
 	PhaseDownload Phase = "download"

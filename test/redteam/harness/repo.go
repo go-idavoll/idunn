@@ -97,12 +97,12 @@ type Build struct {
 	RootBytes []byte
 }
 
-// DescriptorTarget and PointerTarget are the target paths of the two app-level
-// documents.
+// DescriptorTarget is the target path of this build's release descriptor.
 func (b *Build) DescriptorTarget() string {
 	return release.DescriptorPath(b.Opts.OS, b.Opts.Arch, b.Opts.Version)
 }
 
+// PointerTarget is the target path of this build's channel pointer.
 func (b *Build) PointerTarget() string {
 	return release.PointerPath(b.Opts.Channel, b.Opts.OS, b.Opts.Arch)
 }
@@ -274,7 +274,7 @@ func (b *Build) sign() error {
 	return nil
 }
 
-// MetadataDir and TargetsDir are the two subtrees a repository is served from.
+// The two subtrees a repository is served from.
 const (
 	MetadataDir = "metadata"
 	TargetsDir  = "targets"

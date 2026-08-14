@@ -94,7 +94,7 @@ func New(o Options) (*Client, error) {
 
 	cfg, err := tufconfig.New(o.MetadataURL, o.Root)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrTrust, err)
+		return nil, fmt.Errorf("%w: %w", ErrTrust, err)
 	}
 	cfg.LocalMetadataDir = filepath.Join(o.LocalDir, "metadata")
 	cfg.LocalTargetsDir = filepath.Join(o.LocalDir, "targets")
@@ -105,12 +105,12 @@ func New(o Options) (*Client, error) {
 		cfg.Fetcher = o.Fetcher
 	}
 	if err := cfg.EnsurePathsExist(); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrTrust, err)
+		return nil, fmt.Errorf("%w: %w", ErrTrust, err)
 	}
 
 	up, err := tufupdater.New(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrTrust, err)
+		return nil, fmt.Errorf("%w: %w", ErrTrust, err)
 	}
 
 	now := o.Now
@@ -189,31 +189,31 @@ func (c *Client) MaterializeTarget(targetPath, dst string) error {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
-		return fmt.Errorf("%w: %v", ErrTrust, err)
+		return fmt.Errorf("%w: %w", ErrTrust, err)
 	}
 	// Write via a temp file in the destination directory so an interrupted
 	// materialization can never leave a half-written file where a complete one
 	// is expected.
 	tmp, err := os.CreateTemp(filepath.Dir(dst), ".idunn-*")
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrTrust, err)
+		return fmt.Errorf("%w: %w", ErrTrust, err)
 	}
 	tmpName := tmp.Name()
 	defer func() { _ = os.Remove(tmpName) }()
 
 	if _, err := tmp.Write(raw); err != nil {
 		_ = tmp.Close()
-		return fmt.Errorf("%w: %v", ErrTrust, err)
+		return fmt.Errorf("%w: %w", ErrTrust, err)
 	}
 	if err := tmp.Sync(); err != nil {
 		_ = tmp.Close()
-		return fmt.Errorf("%w: %v", ErrTrust, err)
+		return fmt.Errorf("%w: %w", ErrTrust, err)
 	}
 	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("%w: %v", ErrTrust, err)
+		return fmt.Errorf("%w: %w", ErrTrust, err)
 	}
 	if err := os.Rename(tmpName, dst); err != nil {
-		return fmt.Errorf("%w: %v", ErrTrust, err)
+		return fmt.Errorf("%w: %w", ErrTrust, err)
 	}
 	return nil
 }

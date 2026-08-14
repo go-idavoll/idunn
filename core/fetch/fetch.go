@@ -80,7 +80,14 @@ func New(o Options) (Fetcher, error) {
 		timeout = DefaultTimeout
 	}
 
-	tr := http.DefaultTransport.(*http.Transport).Clone()
+	base, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		// Something replaced the process-wide default transport. We refuse to
+		// build a fetcher on an unknown transport rather than silently losing
+		// the proxy and trust-store configuration below.
+		return nil, fmt.Errorf("fetch: http.DefaultTransport is %T, not *http.Transport", http.DefaultTransport)
+	}
+	tr := base.Clone()
 	tr.Proxy = http.ProxyFromEnvironment // honours WPAD/PAC via the OS on Windows
 	tr.TLSClientConfig = &tls.Config{
 		RootCAs:    pool,

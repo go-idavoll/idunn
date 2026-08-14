@@ -43,7 +43,8 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: stable
+          check-latest: true
 
       # Builds TEST-ONLY keys and the known-good baseline repo that every
       # mutation derives from. No production key ever enters this job.
@@ -62,7 +63,8 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: stable
+          check-latest: true
 
       - name: Fuzz parsers and path sanitizer
         run: make redteam-fuzz

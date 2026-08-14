@@ -34,6 +34,8 @@ func Serve(dir string) *Server {
 	return &Server{httptest.NewServer(mux)}
 }
 
-// MetadataURL and TargetsURL are what a client is pointed at.
+// MetadataURL is where the client fetches role metadata.
 func (s *Server) MetadataURL() string { return s.URL + "/metadata/" }
-func (s *Server) TargetsURL() string  { return s.URL + "/targets/" }
+
+// TargetsURL is where the client fetches target files.
+func (s *Server) TargetsURL() string { return s.URL + "/targets/" }
