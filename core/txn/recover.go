@@ -114,6 +114,40 @@ func RecoverResult(ctx context.Context, f fsx.FS, root string, m hook.Migrator) 
 	}
 }
 
+// Rollback undoes the transaction the journal currently holds, whatever state it
+// reached — including a completed swap.
+//
+// It is what the updater calls when a step fails in-process, so the failure path
+// and the crash path are the same code rather than two implementations that have
+// to be kept in agreement. It differs from Recover in one way, and deliberately:
+// Recover finishes a transaction that is already past the swap, because after a
+// crash the new version is live and undoing it would be a second failure. Here
+// the caller is still running and has decided the update is bad — a swap that
+// verification rejected, for instance — so the swap is undone too.
+//
+// A journal with nothing to undo is not an error; Rollback is safe to call on any
+// failure path without first asking how far the transaction got.
+func Rollback(ctx context.Context, f fsx.FS, root string, m hook.Migrator) error {
+	j, err := Open(f, root)
+	if err != nil {
+		return err
+	}
+	last, ok := j.Last()
+	if !ok {
+		return cleanOrphans(f, root)
+	}
+	switch last.State {
+	case StateCommitted, StateRolledBack:
+		return cleanOrphans(f, root)
+	case StateBegin:
+		// Nothing beyond the journal write happened, so there is no migration
+		// to undo (it only starts after STAGED).
+		return rollback(ctx, f, root, j, last, nil)
+	default:
+		return rollback(ctx, f, root, j, last, m)
+	}
+}
+
 // complete finishes a transaction whose swap already happened.
 func complete(f fsx.FS, root string, j *Journal, last Record) error {
 	// The pointer must actually be where the record says. If it is not, the

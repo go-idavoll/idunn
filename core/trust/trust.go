@@ -31,6 +31,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/theupdateframework/go-tuf/v2/metadata"
 	tufconfig "github.com/theupdateframework/go-tuf/v2/metadata/config"
 	tufupdater "github.com/theupdateframework/go-tuf/v2/metadata/updater"
 
@@ -48,6 +49,18 @@ var ErrTrust = errors.New("trust")
 // with the platform and version they were requested for. TUF cannot catch these —
 // both documents are authentic, just not the pair we asked for.
 var ErrResolve = errors.New("resolve")
+
+// IsExpiry reports whether err is go-tuf's rejection of expired metadata.
+//
+// It exists so the updater can tell an operator "your system clock looks wrong"
+// instead of "update failed" (docs/design.md §14.7). The distinction is for
+// diagnosis only: expired metadata is refused either way, and nothing here or
+// above may weaken that check — a clock the client cannot trust is the reason
+// the freeze defence works.
+func IsExpiry(err error) bool {
+	var expired *metadata.ErrExpiredMetadata
+	return errors.As(err, &expired)
+}
 
 // Options configures the trust client.
 type Options struct {
