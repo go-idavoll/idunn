@@ -185,8 +185,8 @@ What exists today:
 | Area | State |
 |---|---|
 | Descriptor & channel-pointer ingest (`core/release`, `internal/safepath`) | implemented, fuzzed, adversarially tested |
-| TUF trust client and resolve (`core/trust`, `core/fetch`) | implemented, adversarially tested |
-| Adversarial corpus (`test/redteam`) | 18 cases, gates every PR |
+| TUF trust client and resolve (`core/trust`, `core/fetch`) | implemented, unit-tested and adversarially tested |
+| Adversarial corpus (`test/redteam`) | 21 cases, gates every PR |
 | Apply path: staging, journal, crash recovery, hooks, GC (`core/stage`, `core/txn`, `core/updater`, `core/installer`) | implemented, tested |
 | Elevation (`core/elevate`) | Windows `ElevationInteractive` implemented; privileged helper service and POSIX prompts fail closed |
 | Delta stage 1 (content-addressed reuse) | go-tuf cache reuse only; local relink from retained versions not implemented |
