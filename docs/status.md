@@ -32,7 +32,7 @@ piece of the section is missing; **open** — contract only, or nothing.
 | §14.1 | GC / retention | **done** — `stage.GC`, soft-fails on locked dirs |
 | §14.2 | Elevation | **partial** — Windows `ElevationInteractive` done, and `cmd/installer apply` is the privileged helper it launches; `ElevationService` fails closed everywhere; POSIX interactive (`pkexec`, Authorization Services) not built |
 | §14.3 | Quiesce, app lock, `OnBusy` | **partial** — lock + coordinator + `BusyAbort`/`BusyForce` work; `BusyDeferToRestart` aborts instead of deferring (needs a launcher) |
-| §14.4 | Enterprise proxy / CA | **partial** — system trust store + `ExtraCAs` + env proxy; no PAC/WPAD resolution, no ranged resume, no mTLS |
+| §14.4 | Enterprise proxy / CA | **partial** — system trust store + `ExtraCAs` + env proxy, now under test; no PAC/WPAD resolution, no ranged resume, no mTLS |
 | §14.5 | Telemetry + staged rollout | **done** — `Reporter` with a closed error-class vocabulary; local rollout bucketing |
 | §14.6 | Installer downgrade preflight | **done** |
 | §14.7 | Clock skew | **partial** — expiry is classified as `clock_skew`; the monotonic known-good time floor does not exist |
@@ -70,15 +70,16 @@ Not yet enforced:
 | `core/updater` | 88.9% |
 | `core/installer` | 86.8% |
 | `core/txn` | 86.6% |
-| `core/trust` | 0% by unit test — exercised end to end by the red-team corpus |
-| `core/fetch` | 0% — no test |
+| `core/trust` | direct unit tests of the resolve layer (New 91.7%, LatestRelease 94.7%, `ReleaseVersion` 90.9%), plus the red-team corpus end to end |
+| `core/fetch` | `New` 95.2% — TLS trust store, user agent, timeout, and the refusals |
 | `core/hook` | no test files (interface definitions only) |
 | `internal/packer` | 86.1% — publish end to end against `core/trust`, plus golden metadata |
 | `cmd/installer` | not in the coverage universe, but tested: a real install against a served repository |
 
-The adversarial corpus (`make redteam-corpus`, build tag `redteam`) holds 18 cases
-across expiry, malformed descriptors, mix-and-match, path traversal, unknown key,
-wrong hash, wrong key, and wrong length. Fuzzers: `FuzzDescriptor`, `FuzzDstSanitize`.
+The adversarial corpus (`make redteam-corpus`, build tag `redteam`) holds 21 cases
+across expiry, malformed descriptors, mix-and-match, path traversal, resolve
+(pointer/descriptor disagreement), unknown key, wrong hash, wrong key, and wrong
+length. Fuzzers: `FuzzDescriptor`, `FuzzDstSanitize`.
 `FuzzPatchApply` waits on a patch format (§6.4 stage 2).
 
 ## Deliberate non-goals for now

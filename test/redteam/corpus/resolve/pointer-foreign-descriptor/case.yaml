@@ -1,0 +1,24 @@
+# Copyright 2026 The idunn Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+description: "a pointer names a descriptor path that is not the one for its version"
+class: resolve
+expect: reject
+error_class: resolve
+mutator: pointer_foreign_descriptor
+notes: >-
+  A pointer may not fetch a release it is not entitled to name. The client
+  derives the expected descriptor path from the version the pointer claims and
+  checks it before fetching, so a pointer aimed at another release is refused
+  without a request being made for it.
