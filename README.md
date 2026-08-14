@@ -186,11 +186,16 @@ What exists today:
 | Descriptor & channel-pointer ingest (`core/release`, `internal/safepath`) | implemented, fuzzed, adversarially tested |
 | TUF trust client and resolve (`core/trust`, `core/fetch`) | implemented, adversarially tested |
 | Adversarial corpus (`test/redteam`) | 18 cases, gates every PR |
-| Apply path: staging, journal, hooks, elevation, GC (`core/stage`, `core/txn`, `core/updater`, `core/installer`, `core/elevate`) | contracts defined, not implemented |
-| Delta updates, packer, installer binary | not implemented |
+| Apply path: staging, journal, crash recovery, hooks, GC (`core/stage`, `core/txn`, `core/updater`, `core/installer`) | implemented, tested |
+| Elevation (`core/elevate`) | Windows `ElevationInteractive` implemented; privileged helper service and POSIX prompts fail closed |
+| Delta stage 1 (content-addressed reuse) | go-tuf cache reuse only; local relink from retained versions not implemented |
+| Launcher, `BusyDeferToRestart`, delta stage 2, packer, installer binary | not implemented |
 
-Unimplemented functions carry their contract as a doc comment and panic — a loud
-placeholder rather than a silent success.
+The full section-by-section reconciliation against the design lives in
+[`docs/status.md`](docs/status.md); the open work is tracked in
+[`docs/backlog.md`](docs/backlog.md). Unimplemented functions carry their contract as
+a doc comment and fail closed with a typed error — a loud placeholder rather than a
+silent success.
 
 ## Contributing
 
