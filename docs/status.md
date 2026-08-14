@@ -16,7 +16,7 @@ piece of the section is missing; **open** — contract only, or nothing.
 | §3.2 | Release descriptor & channel pointer | **done** — `core/release`, strict parse, fuzzed |
 | §4 | TUF roles & key management (client side) | **done** — embedded root, `Refresh`, resolve |
 | §4.1 | Delegations, dedup, retention | **partial** — the packer delegates per channel and per release line from the first publish, and content-addressed payload targets deduplicate; retention is open (IDN-03) |
-| §5 | Installer flow | **partial** — `core/installer` complete; `cmd/installer` is a stub |
+| §5 | Installer flow | **done** — `core/installer` plus the `cmd/installer` binary: embedded anchor, flags, elevation decision, exit codes |
 | §6.1 | Blue/green layout + pointer | **done** — `internal/layout`, symlink (POSIX) / pointer file (Windows) |
 | §6.2 | Transaction flow, journal, recovery | **done** — `core/txn`, crash-injection tests |
 | §6.3 | Updater API (`CheckForUpdate`, `Apply`) | **done** |
@@ -30,7 +30,7 @@ piece of the section is missing; **open** — contract only, or nothing.
 | §12 | Test concept | **partial** — see coverage below; no mutation testing, one fuzz target missing |
 | §13 | Cross-platform specifics | **partial** — layout and elevation are per-OS; no launcher, no `MoveFileEx` self-update |
 | §14.1 | GC / retention | **done** — `stage.GC`, soft-fails on locked dirs |
-| §14.2 | Elevation | **partial** — Windows `ElevationInteractive` done; `ElevationService` fails closed everywhere; POSIX interactive (`pkexec`, Authorization Services) not built |
+| §14.2 | Elevation | **partial** — Windows `ElevationInteractive` done, and `cmd/installer apply` is the privileged helper it launches; `ElevationService` fails closed everywhere; POSIX interactive (`pkexec`, Authorization Services) not built |
 | §14.3 | Quiesce, app lock, `OnBusy` | **partial** — lock + coordinator + `BusyAbort`/`BusyForce` work; `BusyDeferToRestart` aborts instead of deferring (needs a launcher) |
 | §14.4 | Enterprise proxy / CA | **partial** — system trust store + `ExtraCAs` + env proxy; no PAC/WPAD resolution, no ranged resume, no mTLS |
 | §14.5 | Telemetry + staged rollout | **done** — `Reporter` with a closed error-class vocabulary; local rollout bucketing |
@@ -74,6 +74,7 @@ Not yet enforced:
 | `core/fetch` | 0% — no test |
 | `core/hook` | no test files (interface definitions only) |
 | `internal/packer` | 86.1% — publish end to end against `core/trust`, plus golden metadata |
+| `cmd/installer` | not in the coverage universe, but tested: a real install against a served repository |
 
 The adversarial corpus (`make redteam-corpus`, build tag `redteam`) holds 18 cases
 across expiry, malformed descriptors, mix-and-match, path traversal, unknown key,

@@ -34,11 +34,14 @@ sources. Without it the delegation grows for the lifetime of the product.
 Content addressing makes this a reference-counting problem rather than a
 path-guessing one: a payload target is retired when no retained descriptor names it.
 
-### IDN-04 — `cmd/installer`: the actual binary (§5)
-`core/installer` is complete and tested; the binary around it is a stub. Needs the
-embedded `root.json` (`go:embed`), flag parsing (`--root`, `--channel`, `--version`),
-the elevation decision via `elevate.NeedsElevation`, and exit codes that distinguish
-`ErrRefused` from a real failure.
+### IDN-04 — `cmd/installer`: the actual binary (§5) — **done**
+The binary carries its trust anchor and repository description in
+`cmd/installer/anchor/` (`go:embed`), parses `--root`/`--channel`/`--version`, makes
+the elevation decision via `elevate.NeedsElevation`, and distinguishes refusal (3),
+a declined prompt (4) and "needs privileges it cannot get" (5) from a real failure
+(1). It also implements the privileged `apply` verb, so a build that embeds an
+anchor is its own elevation helper — the three-scalar request grammar of §14.2 with
+nothing else crossing the boundary.
 
 ### IDN-05 — Launcher shim (§6.1, §13, §14.3)
 The layout the design draws starts with a small stable launcher that execs
