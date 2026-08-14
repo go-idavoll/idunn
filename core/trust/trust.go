@@ -209,6 +209,38 @@ func (c *Client) Target(targetPath string) ([]byte, error) {
 	return c.target(targetPath)
 }
 
+// ReleaseVersion resolves one explicitly named version, bypassing the channel
+// pointer.
+//
+// It exists for the installer's `--version` and for pinned deployments. The
+// descriptor is still a signed TUF target and is verified exactly as the channel
+// head would be; what is bypassed is only the publisher's statement about which
+// version is current. TUF's metadata rollback protection is untouched — an
+// operator naming an old version is choosing it, not being served it — and the
+// installer's own downgrade preflight still applies on top (docs/design.md
+// §14.6).
+func (c *Client) ReleaseVersion(goos, goarch, version string) (*release.Descriptor, error) {
+	if !release.ValidVersion(version) {
+		return nil, fmt.Errorf("%w: version %q is not SemVer", ErrResolve, version)
+	}
+	raw, err := c.target(release.DescriptorPath(goos, goarch, version))
+	if err != nil {
+		return nil, err
+	}
+	d, err := release.ParseDescriptor(raw)
+	if err != nil {
+		return nil, fmt.Errorf("%w: descriptor: %w", ErrTrust, err)
+	}
+	// The path a descriptor lives at states what it describes. A document that
+	// disagrees with its own location is a valid target substituted for another
+	// one, so we refuse rather than believe the contents over the path.
+	if d.Version != version || d.OS != goos || d.Arch != goarch {
+		return nil, fmt.Errorf("%w: descriptor for %s-%s@%s describes %s-%s@%s",
+			ErrResolve, goos, goarch, version, d.OS, d.Arch, d.Version)
+	}
+	return d, nil
+}
+
 // MaterializeTarget places the verified bytes of a TUF target at dst, reusing the
 // local cache only when the cached bytes match the signed hash and length. A
 // cached file is never trusted on name alone (AGENTS.md §1.5).
