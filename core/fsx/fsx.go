@@ -39,8 +39,15 @@ import (
 
 // FS is the write-capable filesystem contract used by stage, txn and installer.
 //
-// Rename must be atomic within the same directory on every supported platform;
-// the atomic swap of `current` depends on it (docs/design.md §6.1).
+// Rename replaces a FILE atomically within a directory on every supported
+// platform, and that is the guarantee the durable writes here rest on.
+//
+// It is deliberately NOT promised for a directory. On Windows os.Rename is
+// MoveFileEx with MOVEFILE_REPLACE_EXISTING, which refuses to replace an
+// existing directory — and a directory symlink counts as one, so a symlink to a
+// version directory cannot be swapped that way. internal/layout is where that
+// difference lives: the install pointer is a symlink on POSIX and a pointer file
+// on Windows, so the commit point stays atomic on both (docs/design.md §13).
 type FS interface {
 	fs.StatFS
 	fs.ReadDirFS
@@ -51,11 +58,15 @@ type FS interface {
 	Remove(name string) error
 	RemoveAll(name string) error
 
-	// Rename atomically replaces newname with oldname.
+	// Rename moves oldname to newname, replacing newname if it exists. See the
+	// note above on what is and is not atomic for directories.
 	Rename(oldname, newname string) error
 
-	// Symlink creates a symlink (junction on Windows) at linkname pointing to
-	// target. Used for `current` and for content-addressed delta relinks.
+	// Symlink creates a symlink at linkname pointing to target.
+	//
+	// Nothing in core calls this on Windows: creating a symlink there needs
+	// administrator rights or Developer Mode, which a per-user install does not
+	// have, so the install pointer takes its file form instead.
 	Symlink(target, linkname string) error
 
 	// Readlink returns the destination of the link at name.

@@ -18,6 +18,7 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -178,10 +179,24 @@ func TestCreateRequiresParent(t *testing.T) {
 	})
 }
 
-// Repointing `current` is the commit of an update: a rename over an existing
-// symlink must replace the link itself, never write through it.
+// Renaming a symlink over an existing symlink replaces the LINK — it must never
+// write through it into the directory the old link pointed at, which here is the
+// rollback target.
+//
+// This is a POSIX guarantee, and the in-memory filesystem models it on every
+// platform because the rest of the suite depends on that model. The real
+// filesystem is only asked for it where the platform provides it: on Windows
+// os.Rename is MoveFileEx with MOVEFILE_REPLACE_EXISTING, which refuses to
+// replace an existing directory, and a directory symlink is one. That is not a
+// gap in coverage — internal/layout does not use a symlink pointer there, and
+// its own tests exercise both pointer forms on every platform.
 func TestRenameReplacesSymlink(t *testing.T) {
 	each(t, func(t *testing.T, f fsx.FS, root string) {
+		if _, isMem := f.(*fsx.Mem); !isMem && runtime.GOOS == "windows" {
+			t.Skip("Windows cannot rename over an existing directory symlink; " +
+				"internal/layout uses the pointer-file form there instead")
+		}
+
 		for _, v := range []string{"1.2.0", "1.3.0"} {
 			if err := f.MkdirAll(fsx.Join(root, "versions", v), 0o755); err != nil {
 				t.Fatalf("MkdirAll: %v", err)
@@ -215,6 +230,29 @@ func TestRenameReplacesSymlink(t *testing.T) {
 		}
 		if target, err := f.Readlink(current); err != nil || target != "versions/1.3.0" {
 			t.Fatalf("Readlink = %q, %v; want versions/1.3.0", target, err)
+		}
+	})
+}
+
+// Replacing an existing FILE by rename is the guarantee every durable write here
+// rests on, and the one the Windows pointer form needs. Unlike the directory case
+// above, it holds on every platform, so it is asserted on every platform.
+func TestRenameReplacesFile(t *testing.T) {
+	each(t, func(t *testing.T, f fsx.FS, root string) {
+		name := fsx.Join(root, "current")
+		write(t, f, name, "versions/1.2.0")
+
+		next := fsx.Join(root, "current.next")
+		write(t, f, next, "versions/1.3.0")
+		if err := f.Rename(next, name); err != nil {
+			t.Fatalf("Rename: %v", err)
+		}
+
+		if got := read(t, f, name); got != "versions/1.3.0" {
+			t.Fatalf("after the swap the pointer holds %q", got)
+		}
+		if _, err := f.Stat(next); !fsx.IsNotExist(err) {
+			t.Fatalf("the source survived the rename: %v", err)
 		}
 	})
 }

@@ -56,7 +56,9 @@ func TestRecoverReportsFilesystemFailures(t *testing.T) {
 				return m
 			},
 			fail: func(op, name string) bool {
-				return op == "symlink" && strings.Contains(name, layout.CurrentName)
+				// The rename onto `current` is what both pointer forms do; the
+				// symlink is only the POSIX form's way of getting there.
+				return op == "rename" && strings.HasSuffix(name, "/"+layout.CurrentName)
 			},
 		},
 		{

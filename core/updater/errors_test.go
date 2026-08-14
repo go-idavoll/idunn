@@ -220,7 +220,7 @@ func TestVerifyAfterApplyReportsUnreadableFiles(t *testing.T) {
 	f.trust.targetErr["targets/plugin.so"] = nil
 	f.fs.Fail = func(op, name string) error {
 		// Remove a payload file the moment the swap makes it live.
-		if op == "symlink" && strings.Contains(name, layout.CurrentName) {
+		if op == "rename" && strings.HasSuffix(name, "/"+layout.CurrentName) {
 			f.fs.Fail = nil
 			return f.fs.RemoveAll("/opt/app/versions/1.3.0/app")
 		}

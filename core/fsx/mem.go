@@ -401,6 +401,11 @@ func (m *Mem) RemoveAll(name string) error {
 // rename of `current` (docs/design.md §6.1). Neither name follows a final
 // symlink, so repointing `current` replaces the link rather than writing through
 // it into the old version directory.
+//
+// It models POSIX, which is a deliberate choice and not an oversight: Windows
+// cannot replace an existing directory this way, and that difference is handled
+// once, in internal/layout, rather than by weakening the double until it can
+// prove nothing about either platform.
 func (m *Mem) Rename(oldname, newname string) error {
 	if newname == "" {
 		return pathErr("rename", newname, fs.ErrInvalid)

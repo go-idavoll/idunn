@@ -21,9 +21,14 @@
 // path differently, a crash would be recovered against a tree nobody else can
 // see. See docs/design.md §6.1.
 //
+// The pointer is not spelled the same everywhere: on POSIX `current` is a
+// symlink, on Windows a one-line file naming the same target. See pointer.go for
+// why, and docs/design.md §13. Nothing in core reads THROUGH `current`, so the
+// difference is confined to this package; the launcher is what resolves it.
+//
 //	<root>/
-//	  launcher(.exe)        # tiny, stable; execs current/app
-//	  current -> versions/1.3.0
+//	  launcher(.exe)        # tiny, stable; runs the version `current` names
+//	  current -> versions/1.3.0     # symlink (POSIX) / pointer file (Windows)
 //	  versions/
 //	    1.2.0/              # previous, kept for instant rollback
 //	    1.3.0/              # active
@@ -36,15 +41,10 @@ package layout
 import (
 	"errors"
 	"fmt"
-	"io/fs"
 
 	"github.com/go-idavoll/idunn/core/fsx"
 	"github.com/go-idavoll/idunn/core/release"
 )
-
-// fsModeSymlink is spelled out once so the pointer check below reads as the
-// question it asks rather than as a bit fiddle.
-const fsModeSymlink = fs.ModeSymlink
 
 // The fixed names of the layout. They are on-disk contract: an installed tree
 // written by one version of idunn is read by the next, so these are not free to
@@ -105,95 +105,6 @@ func ValidateVersion(version string) error {
 	}
 	if !release.ValidVersion(version) {
 		return fmt.Errorf("%w: version %q is not SemVer", ErrLayout, version)
-	}
-	return nil
-}
-
-// relVersionTarget is what `current` contains: a root-relative link, never an
-// absolute path. A relative pointer keeps the install tree movable and means a
-// copied or restored installation cannot be made to point outside itself.
-func relVersionTarget(version string) string {
-	return VersionsName + "/" + version
-}
-
-// PointerTarget returns the version `current` names, or "" when there is no
-// installation yet.
-//
-// A `current` that exists but is not a symlink is an error, not an empty answer:
-// something replaced the pointer, and continuing would mean writing an update
-// around whatever it now is.
-func PointerTarget(f fsx.FS, root string) (string, error) {
-	link := Current(root)
-	info, err := fsx.Lstat(f, link)
-	if err != nil {
-		if fsx.IsNotExist(err) {
-			return "", nil
-		}
-		return "", fmt.Errorf("%w: %w", ErrLayout, err)
-	}
-	if info.Mode()&fsModeSymlink == 0 {
-		return "", fmt.Errorf("%w: %s is not a symlink (mode %s)", ErrLayout, link, info.Mode())
-	}
-
-	target, err := f.Readlink(link)
-	if err != nil {
-		return "", fmt.Errorf("%w: %w", ErrLayout, err)
-	}
-	version, err := versionFromTarget(target)
-	if err != nil {
-		return "", err
-	}
-	return version, nil
-}
-
-// versionFromTarget parses `versions/<v>` back into <v>, refusing anything else.
-// The pointer is the one piece of install state that decides which code runs, so
-// a target that is not exactly the shape we write is refused rather than
-// interpreted.
-func versionFromTarget(target string) (string, error) {
-	clean := fsx.Clean(target)
-	prefix := VersionsName + "/"
-	if len(clean) <= len(prefix) || clean[:len(prefix)] != prefix {
-		return "", fmt.Errorf("%w: current points at %q, not at a version directory", ErrLayout, target)
-	}
-	version := clean[len(prefix):]
-	if err := ValidateVersion(version); err != nil {
-		return "", err
-	}
-	return version, nil
-}
-
-// SetPointer atomically repoints `current` at version.
-//
-// This is the commit point of an update and the whole of a rollback: a symlink is
-// created beside the pointer and renamed onto it, so a reader sees either the old
-// version or the new one. There is no window in which `current` is missing.
-func SetPointer(f fsx.FS, root, version string) error {
-	if err := ValidateVersion(version); err != nil {
-		return err
-	}
-	link := Current(root)
-	tmp := fsx.TempName(link)
-
-	if err := f.Symlink(relVersionTarget(version), tmp); err != nil {
-		return fmt.Errorf("%w: stage pointer: %w", ErrLayout, err)
-	}
-	if err := f.Rename(tmp, link); err != nil {
-		_ = f.Remove(tmp)
-		return fmt.Errorf("%w: swap pointer: %w", ErrLayout, err)
-	}
-	if err := fsx.SyncDir(f, root); err != nil {
-		return fmt.Errorf("%w: %w", ErrLayout, err)
-	}
-	return nil
-}
-
-// RemovePointer deletes `current`. It is used only when a first install is rolled
-// back, where there is no previous version to point at. A missing pointer is not
-// an error, so the rollback can be re-run.
-func RemovePointer(f fsx.FS, root string) error {
-	if err := f.Remove(Current(root)); err != nil && !fsx.IsNotExist(err) {
-		return fmt.Errorf("%w: %w", ErrLayout, err)
 	}
 	return nil
 }

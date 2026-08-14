@@ -98,15 +98,6 @@ func TestPointerRoundTrip(t *testing.T) {
 		t.Fatalf("PointerTarget = %q, want 1.4.0", got)
 	}
 
-	// The stored target is relative, so the whole install tree stays movable and
-	// cannot be made to point outside itself by being copied elsewhere.
-	target, err := m.Readlink(layout.Current(root))
-	if err != nil {
-		t.Fatalf("Readlink: %v", err)
-	}
-	if fsx.IsAbs(target) {
-		t.Fatalf("current stores the absolute path %q", target)
-	}
 }
 
 func TestSetPointerRejectsBadVersion(t *testing.T) {
@@ -116,18 +107,24 @@ func TestSetPointerRejectsBadVersion(t *testing.T) {
 	}
 }
 
-// Something replaced the pointer. Continuing would mean updating around whatever
-// it now is, so the answer is an error rather than a guess.
-func TestPointerTargetRejectsNonSymlink(t *testing.T) {
+// Something replaced the pointer with a directory. Continuing would mean
+// updating around whatever it now is, so the answer is an error rather than a
+// guess. A directory is refused by both pointer forms, which is what makes this
+// assertion mean the same thing on every platform; the form-specific rejections
+// live in the package's internal tests, where both forms are exercised.
+func TestPointerTargetRejectsADirectory(t *testing.T) {
 	m := newRoot(t)
-	if err := fsx.WriteFileAtomic(m, layout.Current(root), []byte("versions/1.3.0"), 0o644); err != nil {
-		t.Fatalf("write: %v", err)
+	if err := m.MkdirAll(layout.Current(root), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
 	}
 	if _, err := layout.PointerTarget(m, root); err == nil {
-		t.Fatal("a regular file was accepted as the current pointer")
+		t.Fatal("a directory was accepted as the current pointer")
 	}
 }
 
+// A pointer that names something other than a version directory is refused
+// whatever form it is stored in, so this drives it through the exported API with
+// whichever form this build selected.
 func TestPointerTargetRejectsForeignTargets(t *testing.T) {
 	for _, target := range []string{
 		"/etc",

@@ -235,7 +235,10 @@ func TestApplyRollsBackEveryFailure(t *testing.T) {
 			name: "the swap fails",
 			arrange: func(f *fixture) {
 				f.fs.Fail = func(op, name string) error {
-					if op == "symlink" && strings.Contains(name, layout.CurrentName) {
+					// Both pointer forms end in a rename onto `current`; the
+					// symlink form is not the one to hook, or this would stop
+					// injecting anything on Windows.
+					if op == "rename" && strings.HasSuffix(name, "/"+layout.CurrentName) {
 						return boom
 					}
 					return nil

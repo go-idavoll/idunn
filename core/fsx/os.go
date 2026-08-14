@@ -68,9 +68,13 @@ func (osFS) MkdirAll(name string, mode fs.FileMode) error {
 func (osFS) Remove(name string) error    { return os.Remove(native(name)) }
 func (osFS) RemoveAll(name string) error { return os.RemoveAll(native(name)) }
 
-// Rename is the commit point of the whole system: the atomic swap of `current`
-// is one call to it (docs/design.md §6.1). os.Rename replaces the destination
-// atomically within a filesystem on every platform idunn supports.
+// Rename is the commit point of the whole system: the swap of `current` is one
+// call to it (docs/design.md §6.1).
+//
+// It replaces an existing FILE atomically everywhere. It does NOT replace an
+// existing directory on Windows, where os.Rename is MoveFileEx with
+// MOVEFILE_REPLACE_EXISTING — see the FS interface comment, and internal/layout
+// for how the pointer stays atomic there anyway.
 func (osFS) Rename(oldname, newname string) error {
 	return os.Rename(native(oldname), native(newname))
 }
