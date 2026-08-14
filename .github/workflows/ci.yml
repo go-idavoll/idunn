@@ -62,15 +62,49 @@ jobs:
       - name: Vet
         run: go vet ./...
 
-      - name: Test (race, coverage)
-        run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+      - name: Test (race)
+        run: go test -race ./...
 
-      - name: Coverage summary (lifecycle code)
-        if: matrix.os == 'ubuntu-latest'
-        run: go tool cover -func=coverage.out | tail -1
+  # Coverage is measured once, on Linux, and deliberately not by the plain
+  # `go test ./...` above, which understates it badly:
+  #
+  #   * The adversarial corpus sits behind `//go:build redteam`, so an untagged
+  #     run never compiles it -- yet it is the test that exercises most of the
+  #     trust and stage paths end to end.
+  #   * Without -coverpkg, Go credits a package only for statements it covers in
+  #     itself. The corpus is an integration test, so its reach through trust,
+  #     stage and safepath would be attributed to nothing.
+  #   * ./... as the coverage universe counts cmd/ and the harness tooling,
+  #     which are build plumbing and will never carry tests.
+  #
+  # Scoping to ./core/... and ./internal/... measures the lifecycle code the
+  # README sets a 100% goal for -- 72% at the time of writing, against the 17%
+  # the untagged run reported.
+  coverage:
+    name: coverage (lifecycle code)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+
+      # The corpus resolves against a freshly built fixture repository.
+      - name: Baseline (test-only keys)
+        run: make baseline
+
+      - name: Test with coverage
+        run: |
+          go test -tags redteam -covermode=atomic \
+            -coverpkg=./core/...,./internal/... \
+            -coverprofile=coverage.out ./...
+
+      - name: Coverage summary
+        run: go tool cover -func=coverage.out | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Upload coverage profile
-        if: matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@v4
         with:
           name: coverage
@@ -82,15 +116,15 @@ jobs:
   # main so a pull request can never mutate the branch.
   badge:
     name: coverage badge
-    needs: test
+    needs: [test, coverage]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
           check-latest: true
