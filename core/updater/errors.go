@@ -21,6 +21,7 @@ import (
 	"net"
 
 	"github.com/go-idavoll/idunn/core/stage"
+	"github.com/go-idavoll/idunn/core/timefloor"
 	"github.com/go-idavoll/idunn/core/trust"
 	"github.com/go-idavoll/idunn/core/txn"
 	"github.com/go-idavoll/idunn/internal/layout"
@@ -102,7 +103,7 @@ func classify(err error) string {
 		return classNone
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		return classCancelled
-	case trust.IsExpiry(err):
+	case trust.IsExpiry(err), errors.Is(err, timefloor.ErrClockRollback):
 		return classClockSkew
 	case errors.As(err, &netErr):
 		return classNetwork

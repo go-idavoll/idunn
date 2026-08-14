@@ -33,6 +33,7 @@ import (
 	"github.com/go-idavoll/idunn/core/hook"
 	"github.com/go-idavoll/idunn/core/release"
 	"github.com/go-idavoll/idunn/core/stage"
+	"github.com/go-idavoll/idunn/core/timefloor"
 	"github.com/go-idavoll/idunn/internal/layout"
 )
 
@@ -93,6 +94,13 @@ type Options struct {
 	// empty, the update is refused: an unknown client version cannot be shown to
 	// be new enough.
 	ClientVersion string
+
+	// BuildTime is when this client was built. It is the first floor under the
+	// system clock: a program cannot have been built after the moment it runs,
+	// so a clock below it is wrong before anything else is known (§14.7, T22).
+	// Zero means the build stamped none, and then only observed refreshes
+	// establish the floor.
+	BuildTime time.Time
 
 	// ClientID is the stable identifier a staged rollout self-selects on
 	// (§14.5). It never leaves the machine — only the derived bucket decides —
@@ -205,6 +213,7 @@ type Updater struct {
 	goarch        string
 	clientVersion string
 	clientID      string
+	floor         timefloor.Floor
 
 	check      hook.Checker
 	migrate    hook.Migrator
@@ -290,6 +299,7 @@ func New(o Options) (*Updater, error) {
 		goarch:        goarch,
 		clientVersion: o.ClientVersion,
 		clientID:      o.ClientID,
+		floor:         timefloor.Floor{FS: o.FS, Root: o.Root, BuildTime: o.BuildTime},
 		check:         o.Check,
 		migrate:       o.Migrate,
 		observe:       o.Observe,
@@ -305,13 +315,29 @@ func New(o Options) (*Updater, error) {
 // CheckForUpdate runs trust.Refresh (TUF), resolves the channel pointer to the
 // newest applicable release Descriptor, and returns it or nil if already up to
 // date. All metadata trust (signatures, rollback, freeze, expiry) is go-tuf's.
+//
+// It is not read-only: a successful refresh raises the persisted known-good time
+// floor (§14.7). That is deliberate — checking is the frequent operation and
+// updating the rare one, so a floor advanced only by applied updates would lag
+// by however long a machine goes without one.
 func (u *Updater) CheckForUpdate(ctx context.Context) (*Release, error) {
 	u.emit(hook.PhaseCheck, "checking for updates", nil)
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
+	// The clock is an input to expiry, so it is checked before the metadata that
+	// depends on it. A clock below the floor is refused here rather than allowed
+	// to make expired metadata look fresh (§14.7, T22).
+	if err := u.floor.Check(u.now()); err != nil {
+		return nil, u.checkFailed(err)
+	}
 	if err := u.trust.Refresh(); err != nil {
+		return nil, u.checkFailed(err)
+	}
+	// The refresh succeeded, so this machine has been at this local time with a
+	// repository it trusts answering. That is the new floor.
+	if err := u.floor.Observe(u.now()); err != nil {
 		return nil, u.checkFailed(err)
 	}
 	d, err := u.trust.LatestRelease(u.channel, u.goos, u.goarch)

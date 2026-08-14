@@ -55,6 +55,7 @@ const (
 	MetaName     = ".updater"
 	JournalName  = "journal.json"
 	StateName    = "state.json"
+	ClockName    = "clock.json"
 	StagingName  = "staging"
 )
 
@@ -79,6 +80,12 @@ func Journal(root string) string { return fsx.Join(root, MetaName, JournalName) 
 
 // State is the install state the installer's downgrade preflight reads (§14.6).
 func State(root string) string { return fsx.Join(root, MetaName, StateName) }
+
+// Clock is the monotonic known-good time floor (§14.7). It lives with the
+// installation rather than with the disposable TUF cache: clearing that cache is
+// the first thing anyone tries when updates misbehave, and a defence a routine
+// cleanup silently disables is not one.
+func Clock(root string) string { return fsx.Join(root, MetaName, ClockName) }
 
 // Staging is where verified files are assembled before the swap.
 func Staging(root string) string { return fsx.Join(root, MetaName, StagingName) }

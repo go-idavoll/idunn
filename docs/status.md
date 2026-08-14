@@ -35,7 +35,7 @@ piece of the section is missing; **open** — contract only, or nothing.
 | §14.4 | Enterprise proxy / CA | **partial** — system trust store + `ExtraCAs` + env proxy, now under test; no PAC/WPAD resolution, no ranged resume, no mTLS |
 | §14.5 | Telemetry + staged rollout | **done** — `Reporter` with a closed error-class vocabulary; local rollout bucketing |
 | §14.6 | Installer downgrade preflight | **done** |
-| §14.7 | Clock skew | **partial** — expiry is classified as `clock_skew`; the monotonic known-good time floor does not exist |
+| §14.7 | Clock skew | **done** — expiry is classified as `clock_skew`, and `core/timefloor` persists the monotonic known-good time floor that refuses a rolled-back clock |
 | §14.8 | Shared TUF cache in elevated mode | **open** — belongs to the unbuilt helper service |
 
 ## Threat model coverage (§11.3)
@@ -46,7 +46,9 @@ Enforced in code, with a test: T1–T6, T7 (`internal/safepath`, fuzzed), T8 (st
 and verifies the repository before it writes anything, and refuses a root it cannot
 publish under), T14 (`SchemaVersion`, `MinClientVersion`), T15
 (`stage.GC`), T17 (quiesce), T19 (installer preflight), T20 (`Outcome` carries no paths
-or raw error strings), T21 (every staged byte re-checked against the signed hash).
+or raw error strings), T21 (every staged byte re-checked against the signed hash),
+T22 (`core/timefloor`: the known-good floor is checked before every refresh and
+before an apply, and raised by every successful refresh).
 
 Not yet enforced:
 
@@ -55,7 +57,6 @@ Not yet enforced:
   validated scalars cross the boundary, nothing else.
 - **T18** (enterprise DPI) — tolerated by design, but PAC and resumable downloads are
   missing, so the *availability* half is incomplete.
-- **T22** (clock rollback) — no known-good time floor is persisted.
 
 ## Test state
 
@@ -73,6 +74,7 @@ Not yet enforced:
 | `core/trust` | direct unit tests of the resolve layer (New 91.7%, LatestRelease 94.7%, `ReleaseVersion` 90.9%), plus the red-team corpus end to end |
 | `core/fetch` | `New` 95.2% — TLS trust store, user agent, timeout, and the refusals |
 | `core/hook` | no test files (interface definitions only) |
+| `core/timefloor` | 94.0% — the floor, its refusals, and a damaged or unwritable floor file |
 | `internal/packer` | 86.1% — publish end to end against `core/trust`, plus golden metadata |
 | `cmd/installer` | not in the coverage universe, but tested: a real install against a served repository |
 

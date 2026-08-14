@@ -24,9 +24,11 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"time"
 
 	"github.com/go-idavoll/idunn/core/fsx"
 	"github.com/go-idavoll/idunn/core/release"
+	"github.com/go-idavoll/idunn/core/timefloor"
 	"github.com/go-idavoll/idunn/core/updater"
 	"github.com/go-idavoll/idunn/internal/layout"
 )
@@ -75,6 +77,15 @@ func Install(ctx context.Context, o Options) error {
 		return fmt.Errorf("%w: requested version %q is not SemVer", updater.ErrConfig, o.Version)
 	}
 
+	// The clock is an input to metadata expiry, so a clock below the known-good
+	// floor is refused before anything that depends on it — including the
+	// network. A first install usually has no persisted floor yet, and then the
+	// build time is the whole of it (§14.7, T22).
+	floor := timefloor.Floor{FS: o.Updater.FS, Root: o.Updater.Root, BuildTime: o.Updater.BuildTime}
+	if err := floor.Check(now(o)); err != nil {
+		return err
+	}
+
 	// The preflight runs before anything else, including the network. An
 	// installer that discovers only after downloading that it must not proceed
 	// has already spent the user's bandwidth on a decision it could have made
@@ -95,7 +106,7 @@ func Install(ctx context.Context, o Options) error {
 	if r == nil {
 		// The channel offers exactly what is installed. For an installer that is
 		// success: the requested state is the state on disk.
-		return nil
+		return recordKnownGood(floor, now(o))
 	}
 	if err := preflightVersion(existing, r.Descriptor.Version, o.AllowDowngrade); err != nil {
 		return err
@@ -105,7 +116,28 @@ func Install(ctx context.Context, o Options) error {
 	if err != nil {
 		return err
 	}
-	return u.Apply(ctx, r)
+	if err := u.Apply(ctx, r); err != nil {
+		return err
+	}
+	return recordKnownGood(floor, now(o))
+}
+
+// recordKnownGood raises the time floor once an install has succeeded.
+//
+// It runs here rather than right after the refresh so that a failed install
+// leaves the root exactly as it found it — an installer that refuses or fails
+// must write nothing, and a floor file is still a write. The evidence is the
+// same either way: this machine has been at this local time with a repository it
+// trusts answering.
+//
+// A failure to record it is reported rather than swallowed, and says what
+// happened: the install is done, and re-running the installer is a safe way to
+// retry the record.
+func recordKnownGood(floor timefloor.Floor, at time.Time) error {
+	if err := floor.Observe(at); err != nil {
+		return fmt.Errorf("the install completed but the known-good time could not be recorded: %w", err)
+	}
+	return nil
 }
 
 // resolve picks the release to install: the channel head, or the explicitly
@@ -246,6 +278,15 @@ const (
 	runtimeGOOS   = runtime.GOOS
 	runtimeGOARCH = runtime.GOARCH
 )
+
+// now reads the injected clock, mirroring the updater's defaulting so the
+// installer and the updater it builds judge time the same way.
+func now(o Options) time.Time {
+	if o.Updater.Now != nil {
+		return o.Updater.Now()
+	}
+	return time.Now()
+}
 
 // goosOf and goarchOf mirror the updater's defaulting, so an installer and the
 // updater it builds resolve the same platform.

@@ -189,6 +189,7 @@ What exists today:
 | Adversarial corpus (`test/redteam`) | 21 cases, gates every PR |
 | Apply path: staging, journal, crash recovery, hooks, GC (`core/stage`, `core/txn`, `core/updater`, `core/installer`) | implemented, tested |
 | Elevation (`core/elevate`) | Windows `ElevationInteractive` implemented; privileged helper service and POSIX prompts fail closed |
+| Clock rollback defence (`core/timefloor`) | implemented: known-good time floor, checked before every refresh and apply |
 | Delta stage 1 (content-addressed reuse) | go-tuf cache reuse only; local relink from retained versions not implemented |
 | Packer (`cmd/packer`, `internal/packer`) | publishes a delegated, reproducible TUF repository; retention not implemented |
 | Installer binary (`cmd/installer`) | implemented: embedded anchor, elevation decision, privileged `apply` verb |

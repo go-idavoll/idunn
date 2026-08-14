@@ -28,6 +28,7 @@ Everything under `core/` sits on one side of that line. Keep new code on the cor
 | `core/updater` | Orchestration: `CheckForUpdate`, `Apply` | §6.3 |
 | `core/installer` | First-time install bootstrap (+ downgrade preflight) | §5, §14.6 |
 | `core/elevate` | Privileged apply for system-wide installs (per-OS) | §14.2, §14.8 |
+| `core/timefloor` | Monotonic known-good time floor: refuses a clock below where this install has already been | §14.7 |
 | `internal/packer` | Publishing engine: `pack.yaml` -> delegated, signed, reproducible TUF repository | §9, §4.1 |
 | `cmd/installer` | Thin installer binary | §5 |
 | `cmd/packer` | `go:generate` tool: build artifacts + maintain the TUF repo | §9 |
