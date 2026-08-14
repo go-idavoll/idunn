@@ -95,20 +95,67 @@ func TestNeedsElevationFailsClosed(t *testing.T) {
 	}
 }
 
-// The point of the whole package: a system-wide root that this process cannot
-// write must come back as "needs elevation" without an error, so the updater
-// routes the apply through the helper instead of failing.
-func TestNeedsElevationIsTrueForASystemRoot(t *testing.T) {
+// The point of the whole package: a root this process may not write must come
+// back as "needs elevation" *without* an error, so the updater routes the apply
+// through the helper instead of failing.
+//
+// The unwritable root is constructed rather than borrowed from the system. A
+// hardcoded system path answers a different question on every platform —
+// /usr is a read-only volume on macOS, not a permission denial — and that turns
+// the assertion into a statement about the runner's disk layout.
+func TestNeedsElevationIsTrueForAnUnwritableRoot(t *testing.T) {
 	t.Parallel()
 
-	root := systemRoot(t)
+	root := unwritableDir(t)
 	needs, err := elevate.NeedsElevation(root)
 	if err != nil {
 		t.Fatalf("NeedsElevation(%q) = %v, want a clean answer", root, err)
 	}
 	if !needs {
-		t.Skipf("%q is writable from this process; run the test unelevated to exercise the check", root)
+		t.Fatalf("NeedsElevation(%q) = false, want true", root)
 	}
+}
+
+// unwritableDir returns a directory this process cannot create a file in.
+//
+// On Windows a mode bit would not produce that (permissions are ACLs, and the
+// mode os.Chmod writes is only the read-only attribute), so the check uses the
+// real system directory — which is exactly the root an ElevationInteractive
+// install has to deal with.
+func unwritableDir(t *testing.T) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		root := systemRoot(t)
+		if _, err := os.Stat(filepath.Join(root, "kernel32.dll")); err != nil {
+			t.Skipf("%q does not look like the system directory: %v", root, err)
+		}
+		if writable(t, root) {
+			t.Skipf("%q is writable from this process; run the test unelevated", root)
+		}
+		return root
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: no directory is unwritable")
+	}
+	dir := filepath.Join(t.TempDir(), "locked")
+	if err := os.Mkdir(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	// t.TempDir's cleanup needs to get back in.
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	return dir
+}
+
+func writable(t *testing.T, dir string) bool {
+	t.Helper()
+	f, err := os.CreateTemp(dir, ".idunn-writable-*")
+	if err != nil {
+		return false
+	}
+	name := f.Name()
+	_ = f.Close()
+	_ = os.Remove(name)
+	return true
 }
 
 // A root on a drive that does not exist has no existing ancestor at all. The walk
@@ -142,9 +189,6 @@ func unusedDrive(t *testing.T) string {
 
 func systemRoot(t *testing.T) string {
 	t.Helper()
-	if runtime.GOOS != "windows" {
-		return "/usr"
-	}
 	dir := os.Getenv("SystemRoot")
 	if dir == "" {
 		t.Skip("SystemRoot is not set")
