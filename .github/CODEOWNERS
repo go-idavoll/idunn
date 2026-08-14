@@ -1,0 +1,27 @@
+# Every diff touching trust, verification, path handling, elevation, or the journal
+# requires human maintainer sign-off and never auto-merges (AGENTS.md §5, §8).
+#
+# Ownership here is only advisory until branch protection makes CODEOWNERS review
+# a required check on main.
+
+*                                   @go-idavoll/maintainers
+
+# --- security-critical: the trust and apply path ---
+/core/trust/                        @go-idavoll/security
+/core/fetch/                        @go-idavoll/security
+/core/stage/                        @go-idavoll/security
+/core/txn/                          @go-idavoll/security
+/core/elevate/                      @go-idavoll/security
+/core/release/                      @go-idavoll/security
+/cmd/packer/                        @go-idavoll/security
+# The single path validator behind stage.SanitizeDst and the descriptor ingest.
+/internal/safepath/                 @go-idavoll/security
+
+# --- the rules themselves, the red team, and CI config ---
+/AGENTS.md                          @go-idavoll/security
+/SECURITY.md                        @go-idavoll/security
+/CONTRIBUTING.md                    @go-idavoll/security
+/docs/design.md                     @go-idavoll/security
+/test/redteam/                      @go-idavoll/security
+/.github/                           @go-idavoll/security
+/Makefile                           @go-idavoll/security
