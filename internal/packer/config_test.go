@@ -214,7 +214,9 @@ func TestSrcPathResolution(t *testing.T) {
 	if want := filepath.Join("build", "release", "win-amd64", "app.exe"); got != want {
 		t.Errorf("srcPath = %q, want %q", got, want)
 	}
-	abs := filepath.Join(string(filepath.Separator), "tmp", "app")
+	// t.TempDir is absolute on every platform, which a rooted-but-relative
+	// "\tmp\app" is not on Windows — the distinction this branch is about.
+	abs := filepath.Join(t.TempDir(), "app")
 	if got := cfg.srcPath(&File{Src: abs}); got != abs {
 		t.Errorf("srcPath(%q) = %q", abs, got)
 	}

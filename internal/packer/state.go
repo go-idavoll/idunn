@@ -16,6 +16,7 @@ package packer
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -131,7 +132,11 @@ func loadState(dir string) (*state, error) {
 		return nil, fmt.Errorf("%w: targets.json is not signed by the keys root names: %w", ErrRepo, err)
 	}
 
-	for _, role := range s.snapshotRoles() {
+	roles, err := s.snapshotRoles()
+	if err != nil {
+		return nil, err
+	}
+	for _, role := range roles {
 		meta := s.snapshot.Signed.Meta[role+".json"]
 		raw, err := s.readRoleFile(role, meta.Version, meta)
 		if err != nil {
@@ -153,17 +158,24 @@ func loadState(dir string) (*state, error) {
 
 // snapshotRoles lists the delegated roles the snapshot knows about, sorted so a
 // load is deterministic.
-func (s *state) snapshotRoles() []string {
+//
+// A name that could not be a role name is a refusal rather than a skip: every
+// name here becomes a file this publisher reads and later writes, and a
+// repository that names a role we cannot account for is one we do not extend.
+func (s *state) snapshotRoles() ([]string, error) {
 	roles := make([]string, 0, len(s.snapshot.Signed.Meta))
 	for name := range s.snapshot.Signed.Meta {
 		role, ok := strings.CutSuffix(name, ".json")
 		if !ok || role == metadata.TARGETS {
 			continue
 		}
+		if !validRoleName(role) {
+			return nil, fmt.Errorf("%w: snapshot names role %q, which is not a usable role name", ErrRepo, role)
+		}
 		roles = append(roles, role)
 	}
 	sort.Strings(roles)
-	return roles
+	return roles, nil
 }
 
 // loadRoot reads the highest-numbered root file. root is an input to the packer
@@ -214,13 +226,52 @@ func (s *state) loadRoot() error {
 // length and hashes the delegating role signed for it. A file that does not match
 // what snapshot or timestamp says is a repository we refuse to build on.
 func (s *state) readRoleFile(role string, version int64, want *metadata.MetaFiles) ([]byte, error) {
+	if !validRoleName(role) {
+		return nil, fmt.Errorf("%w: %q is not a usable role name", ErrRepo, role)
+	}
 	name := fmt.Sprintf("%d.%s.json", version, role)
-	raw, err := os.ReadFile(filepath.Join(s.metaDir, name))
+	raw, err := readContained(s.metaDir, name)
 	if err != nil {
 		return nil, fmt.Errorf("%w: reading %s: %w", ErrRepo, name, err)
 	}
 	if err := want.VerifyLengthHashes(raw); err != nil {
 		return nil, fmt.Errorf("%w: %s does not match what the role above it signed for: %w", ErrRepo, name, err)
+	}
+	return raw, nil
+}
+
+// MaxMetadataLen bounds one metadata document read back from a repository. It is
+// above go-tuf's own per-role ceilings (root 512 KiB, targets 5 MB) and keeps a
+// corrupt or hostile tree from being read into memory whole.
+const MaxMetadataLen = 16 << 20 // 16 MiB
+
+// readContained reads name from dir, with the containment enforced by the
+// operating system rather than by string handling.
+//
+// os.Root refuses to open anything outside the directory it was opened on —
+// traversal, absolute paths, and symlinks that leave it — which is a stronger
+// statement than any check on the name, and the reason this does not simply join
+// and read. The name reaching here is already validated (validRoleName); this is
+// the belt to that pair of braces.
+func readContained(dir, name string) ([]byte, error) {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = root.Close() }()
+
+	f, err := root.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+
+	raw, err := io.ReadAll(io.LimitReader(f, MaxMetadataLen+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) > MaxMetadataLen {
+		return nil, fmt.Errorf("larger than %d bytes", MaxMetadataLen)
 	}
 	return raw, nil
 }

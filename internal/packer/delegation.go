@@ -63,6 +63,19 @@ import (
 // every payload target immutable, so a republish can never change what an already
 // published path resolves to.
 
+// roleNameRe bounds a delegated role name. It is applied to names read back out
+// of a repository, not only to the ones this packer generates: a role name
+// becomes a metadata file name, so a name carrying a separator or a traversal
+// element would make the publisher read and write outside its own repository.
+// The metadata it comes from is signed, but "signed by us" is not a reason to
+// skip a check that costs nothing (AGENTS.md §1.1).
+var roleNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+
+// validRoleName reports whether role may become a file name in the repository.
+func validRoleName(role string) bool {
+	return roleNameRe.MatchString(role) && !strings.Contains(role, "..")
+}
+
 // majorRoleRe matches a release-line role name. Channel names are refused if they
 // match it, so the two role namespaces cannot collide.
 var majorRoleRe = regexp.MustCompile(`^v[0-9]+$`)
