@@ -1,0 +1,84 @@
+# Copyright 2026 The idunn Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Red team
+
+# The adversarial corpus and the fuzzers are the project's real bug-finders
+# (AGENTS.md §7). Every tampered TUF repository must be REJECTED; a mutation that
+# is accepted is the highest-priority bug class in the project.
+#
+#
+# The corpus job gates every PR. The fuzz job runs nightly and on demand: fuzzing
+# is time-boxed, so a green 120s run is evidence, not proof, and gating merges on
+# it would mostly buy flaky latency.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 3 * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  corpus:
+    name: adversarial corpus
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          check-latest: true
+
+      # Builds TEST-ONLY keys and the known-good baseline repo that every
+      # mutation derives from. No production key ever enters this job.
+      - name: Baseline (test-only keys)
+        run: make baseline
+
+      - name: Corpus must reject every mutation
+        run: make redteam-corpus
+
+  fuzz:
+    name: fuzzers
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          check-latest: true
+
+      - name: Fuzz parsers and path sanitizer
+        run: make redteam-fuzz
+        env:
+          REDTEAM_FUZZTIME: 120s
+
+      # A crasher is evidence; keep it so the case can be promoted into the
+      # permanent corpus (AGENTS.md §7, "ratchet, don't forget").
+      - name: Upload crashers
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashers
+          path: |
+            **/testdata/fuzz/**
+            ~/.cache/go-build/fuzz/**
+          if-no-files-found: ignore

@@ -11,12 +11,16 @@ invariants, and residual risks live in the architecture concept document.
 
 ## Reporting a vulnerability
 
+<!-- TODO(maintainers, before the first tag): publish a PGP key for the fallback
+     address and a /.well-known/security.txt, then link both here. Until then the
+     private advisory above is the only channel that protects a report in transit,
+     and plain email is a downgrade a reporter should be told about explicitly. -->
+
 **Please do not open a public issue for security problems.** Use private disclosure:
 
 1. **Preferred:** open a private report via GitHub → *Security* →
    *Report a vulnerability* (private security advisory) on this repository.
-2. **Fallback:** email `security@<domain>` _(maintainers: set this address and,
-   ideally, publish a PGP key / `security.txt` before the first release)_.
+2. **Fallback:** email `leise.lehmig.9o@icloud.com`.
 
 Please include: affected version/commit, a description of the issue and its impact, and
 a minimal reproduction (a tampered TUF repository, package, or input, plus the observed

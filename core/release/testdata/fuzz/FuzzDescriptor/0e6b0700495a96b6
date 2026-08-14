@@ -1,0 +1,2 @@
+go test fuzz v1
+string("{\"sChemA_version\":1,\"lAYout_sChemA\":1,\"nAme\":\"0\",\"version\":\"0.0.0\",\"ChAnnel\":\"0\",\"os\":\"0\",\"ArCh\":\"0\",\"files\":[{\"tArget\":\"0\",\"dst\":\"..0\",\"kind\":\"data\"}]}")

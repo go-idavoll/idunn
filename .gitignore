@@ -22,6 +22,10 @@ go.work.sum
 # Keep committed seed corpora under testdata/fuzz/; ignore local fuzz cache.
 **/testdata/fuzz/**/crash-*
 **/testdata/fuzz/**/fuzz-*
+# Local GOTMPDIR. `go test -fuzz` execs a worker binary from the build temp dir,
+# which some Windows security products block; pointing GOTMPDIR here (inside the
+# excluded project tree) makes fuzzing work locally.
+/.gotmp/
 
 # --- SECURITY-CRITICAL: never commit key material or secrets ---
 # TUF role keys, test keys, HSM/KMS references, PGP keys, env files.
@@ -50,6 +54,7 @@ secrets/
 # --- Editors / OS noise ---
 .idea/
 .vscode/
+.claude/
 *.swp
 *~
 .DS_Store

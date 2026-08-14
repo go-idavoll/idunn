@@ -1,0 +1,70 @@
+# Copyright 2026 The idunn Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+version: "2"
+
+linters:
+  enable:
+    - errcheck      # a swallowed error in the apply path is a fail-open bug
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - bodyclose
+    - errorlint     # errors must stay classifiable (Reporter taxonomy)
+    - gosec
+    - misspell
+    - nilerr        # returning nil after a non-nil error = fail open
+    - noctx
+    - revive
+    - unconvert
+    - unparam
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+      # check-blank stays off: `_ = f.Close()` on a cleanup path is the explicit,
+      # greppable form of "this error is deliberately dropped". Forcing a
+      # //nolint on each one would hide the same decision behind a directive.
+      check-blank: false
+    gosec:
+      excludes:
+        - G304 # file paths are sanitized in core/stage; audited there, not here
+    revive:
+      rules:
+        - name: exported
+        # unused-parameter is off while the apply path is contract-only. Its
+        # functions carry their full signature as documentation and panic; the
+        # parameter names ARE the contract, and renaming them to _ would delete
+        # the only thing those stubs currently say. Turn this back on once the
+        # bodies exist.
+        - name: unused-parameter
+          disabled: true
+
+  exclusions:
+    rules:
+      # Test-only helpers may take shortcuts production code may not.
+      - path: _test\.go
+        linters: [gosec, errcheck, unparam]
+      # The red-team harness writes a TUF repository that is then SERVED over
+      # httptest. World-readable files and directories are what a repository
+      # looks like; 0600 would make the fixture unrepresentative of the thing
+      # under attack. These are throwaway fixtures, never an install root.
+      - path: ^test/redteam/
+        linters: [gosec]
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

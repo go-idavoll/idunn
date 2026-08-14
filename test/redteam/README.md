@@ -35,67 +35,88 @@ test/redteam/
     valid-repo/              # known-good baseline most mutations derive from
   harness/
     corpus_test.go           # table-driven runner (build tag: redteam)
+    keys.go                  # TEST-ONLY ed25519 role keys, plus an untrusted attacker key
+    repo.go                  # builds a signed repo in four mutable phases
+    mutate.go                # the mutator registry a case.yaml refers to by name
+    case.go                  # case.yaml loading + the error-class taxonomy
+    serve.go                 # httptest server over a (mutated) repo dir
+    client.go                # client under test: refresh -> resolve -> materialize
     genkeys/                 # test-only key generation
     genrepo/                 # build the baseline valid repo
-    serve.go                 # httptest server over a (mutated) repo dir
   agent/                     # OPT-IN sandboxed LLM attacker (generator only)
     prompt.md                # attacker task + hard sandbox constraints
     main.go                  # runs client vs. proposed repos, reports acceptances
 ```
 
+Classes that exist as directories but hold no case yet — `rollback`, `freeze`,
+`clock-rollback`, `downgrade`, `patch-poison`, `cache-poison` — need client-side prior
+state (a previously trusted metadata version, an installed version, a populated cache)
+or code that is not written yet (`stage.ApplyPatch`, `core/elevate`). They land as the
+harness grows; the corpus only ever grows.
+
+## How a case is built
+
+`harness.BuildRepo` builds a repository in four phases, and a mutator hooks exactly one:
+
+| Phase | What a mutator can do there |
+|---|---|
+| `Content` | change the descriptor/pointer bytes before they become targets |
+| `Metadata` | change role objects (expiry, versions, thresholds) before signing |
+| `Signing` | redirect which key signs which role |
+| `OnDisk` | change published bytes *after* signing — the only way to make content disagree with signed metadata |
+
+A mutator that attacks the trust anchor itself sets `SeedMutatedRoot: true`. Without it
+the client keeps the root it shipped with and simply ignores a served root of an
+already-trusted version — which is TUF working correctly, not an attack surviving.
+
 ## Case format
 
-Each corpus case is a directory containing a `case.yaml` and either a materialized
-`repo/` or a generator reference. Mutations should derive from `fixtures/valid-repo` so
-that *only* the attack differs from a known-good baseline.
+Each corpus case is a directory containing a `case.yaml` that names a registered
+mutator. The mutated repository is built at test time from the same baseline as
+`fixtures/valid-repo`, so *only* the attack differs from a known-good repository.
 
 ```yaml
-# corpus/freeze/stale-timestamp/case.yaml
-description: "server serves an older snapshot to pin the client (freeze)"
-class: freeze
-expect: reject               # the client MUST refuse
-error_class: verify         # expected classified error (Reporter taxonomy)
-# how the repo is produced: either a committed repo/ dir, or a named mutator:
-mutator: serve_stale_timestamp
-notes: "timestamp expiry evaluated via UnsafeSetRefTime"
+# corpus/expired/timestamp/case.yaml
+description: "timestamp metadata is expired at the reference time"
+class: expired
+expect: reject               # the client MUST refuse; the loader accepts nothing else
+error_class: verify          # which layer must do the refusing
+mutator: expired_timestamp   # a name from harness.Mutators
+notes: "expiry judged via UnsafeSetRefTime, never the wall clock"
 ```
 
-Adding a case = drop a directory with a `case.yaml` and, if needed, a `repo/` or a
-mutator registered in the harness. Keep it minimal and deterministic.
+`error_class` is checked, not just recorded — a case that is rejected for the wrong
+reason fails. The three classes:
 
-## Harness (sketch)
+- `verify` — the TUF trust layer refused: signature, threshold, expiry, freshness, or a
+  target that does not match its signed hash/length.
+- `descriptor` — the document is authentic but malformed or dangerous (bad schema, path
+  traversal, duplicate destination, setuid bit).
+- `resolve` — two authentic documents disagree: the channel pointer and the descriptor
+  name different versions, platforms, or paths. TUF cannot catch this; idunn must.
 
-```go
-//go:build redteam
+`TestBaselineIsAccepted` is the control: a suite that rejects a *valid* repository too
+would be green and worthless.
 
-package redteam
+Adding a case = register a mutator in `harness/mutate.go` and drop a directory with a
+`case.yaml` naming it. Keep it minimal and deterministic.
 
-// Each case under corpus/<class>/<name>/ has a case.yaml and a (possibly generated)
-// TUF repository. The runner serves that repo, points a fresh client-under-test at it,
-// and asserts the outcome. Cases derive from fixtures/valid-repo so only the attack
-// differs from a known-good baseline.
-func TestAdversarialCorpus(t *testing.T) {
-    for _, c := range loadCases(t, "corpus") {
-        c := c
-        t.Run(c.Class+"/"+c.Name, func(t *testing.T) {
-            repo := materialize(t, c)             // committed repo/ or run c.Mutator
-            srv := serveRepo(t, repo)             // httptest over the mutated repo
-            u := newClientUnderTest(t, srv.URL, testRoot(t), c.RefTime)
-            _, err := u.CheckForUpdate(context.Background())
-            switch c.Expect {
-            case "reject":
-                requireRejected(t, err, c.ErrorClass) // must fail, right class, no writes
-            default:
-                t.Fatalf("corpus cases must expect reject; got %q", c.Expect)
-            }
-            requireNoOnDiskChange(t, u.Root())        // fail-closed: nothing applied
-        })
-    }
-}
-```
+## Harness
+
+The runner lives in `harness/corpus_test.go` (build tag `redteam`). For each case it
+builds the mutated repository, serves it, points a fresh client at it, and asserts:
+
+1. the client **rejected** it — an acceptance is reported as `VULNERABILITY`;
+2. the rejection came from the **expected layer** (`error_class`);
+3. **nothing was written** to the install root (fail closed).
+
+The client under test (`harness/client.go`) runs the real resolve path — `trust.Refresh`,
+channel pointer to descriptor, then materialize every target — because a repository that
+is refused at download time but accepted at resolve time is still a break.
 
 Fuzz targets live next to the code they attack, not here:
-`FuzzDescriptor` (`core/release`), `FuzzDstSanitize` and `FuzzPatchApply` (`core/stage`).
+`FuzzDescriptor` (`core/release`) and `FuzzDstSanitize` (`core/stage`).
+`FuzzPatchApply` follows once `stage.ApplyPatch` has a patch format.
 
 ## Make targets
 
@@ -115,7 +136,6 @@ redteam-corpus: baseline
 redteam-fuzz:
 	go test -run=^$$ -fuzz=FuzzDescriptor   -fuzztime=$(REDTEAM_FUZZTIME) ./core/release
 	go test -run=^$$ -fuzz=FuzzDstSanitize  -fuzztime=$(REDTEAM_FUZZTIME) ./core/stage
-	go test -run=^$$ -fuzz=FuzzPatchApply   -fuzztime=$(REDTEAM_FUZZTIME) ./core/stage
 
 ## generate TEST-ONLY role keys (never production)
 test-keys:

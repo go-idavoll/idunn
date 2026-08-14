@@ -1,0 +1,10 @@
+# Normalise line endings so a file has one representation in the repository,
+# whatever the contributor's platform. This matters here beyond tidiness: red-team
+# fixtures and corpus cases are hashed and compared, and a CRLF round-trip would
+# change bytes that are supposed to be stable.
+* text=auto eol=lf
+
+# Binary assets must never be touched.
+*.png binary
+*.jpg binary
+*.ico binary
