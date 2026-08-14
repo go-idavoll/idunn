@@ -348,6 +348,14 @@ paths exist only once.
     staging/              # verified new files, pre-swap
 ```
 
+> **As built:** `cmd/launcher` is that shim, and everything it does beyond flag parsing
+> lives in `core/launch`, so a host that wants its own launcher does not have to
+> reimplement the lifecycle. It has no network, no keys and no TUF client: every byte it
+> moves was verified when it was staged. On POSIX it `execve`s the application so nothing
+> of the launcher survives into the running process; Windows has no exec, so it stays as
+> a parent and passes the application's exit code through — which is also why replacing
+> the launcher itself needs its own mechanism there (backlog IDN-17).
+
 Advantages: the **atomic swap** is a single `rename()` of the `current` pointer.
 **Rollback** is resetting the pointer to the previous version directory — plus
 `Migrator.Rollback` for state changes. Locked files (Windows DLLs) are irrelevant because
@@ -1023,6 +1031,19 @@ writing concurrently.
 At start the launcher checks for a staged pending update and applies it with a free lock
 before it execs `current/app` (the classic "update on next start"). The paths of the
 shared state are host knowledge and are configured.
+
+> **As built:** the "pending update marker" is a resting journal state, `DEFERRED`, not a
+> separate file — the journal already is the record of what a transaction has and has not
+> done, and a second marker beside it would be a second truth to keep in agreement.
+> Recovery treats it as resting: it neither undoes it nor finishes it, and it leaves the
+> staged version directory and the hook scratch space alone, which is the one thing that
+> would otherwise turn a deferred update into a lost one. `core/launch` finishes it —
+> migrate, swap, commit, GC — and `cmd/launcher` is the binary that calls it before
+> handing over. A newer update may supersede one that is still waiting (`BEGIN` is legal
+> after `DEFERRED`), so a machine that never restarts cannot wedge the updater.
+>
+> `BusyDeferToRestart` is **not** the zero value and is not promoted to one: Go's zero
+> value has to be the failing one, and here that is `BusyAbort` (backlog IDN-21).
 
 ### 14.4 Enterprise networks: proxy, PAC & custom CA
 

@@ -37,6 +37,11 @@ type Result struct {
 	// it was undone. Meaningful only if Recovered.
 	Completed bool
 
+	// Deferred is true when the journal holds a transaction that was staged and
+	// deliberately left for the next start. Recovery did nothing to it, and the
+	// launcher is what finishes it (ResumeDeferred).
+	Deferred bool
+
 	// FromVersion and ToVersion identify the transaction that was recovered.
 	FromVersion string
 	ToVersion   string
@@ -73,6 +78,14 @@ func RecoverResult(ctx context.Context, f fsx.FS, root string, m hook.Migrator) 
 	case StateCommitted, StateRolledBack:
 		// A terminal state. Nothing to decide; only litter to remove.
 		return Result{}, cleanOrphans(f, root)
+
+	case StateDeferred:
+		// Nothing was interrupted here: this transaction is staged and waiting
+		// on purpose. Recovery leaves everything where it is — the version
+		// directory, the hook scratch space, the journal — because the next
+		// start is supposed to find exactly this. Sweeping it up as litter is
+		// the one thing that would turn a deferred update into a lost one.
+		return Result{Deferred: true, FromVersion: last.FromVersion, ToVersion: last.ToVersion}, nil
 
 	case StateSwapped:
 		// The pointer moved and the transaction died before it could say so.
@@ -146,6 +159,83 @@ func Rollback(ctx context.Context, f fsx.FS, root string, m hook.Migrator) error
 	default:
 		return rollback(ctx, f, root, j, last, m)
 	}
+}
+
+// ResumeDeferred finishes a transaction that BusyDeferToRestart left staged: the
+// migration and the swap that could not run while the application was writing.
+//
+// It is the launcher's half of §14.3, and it is separate from Recover on purpose.
+// Recover runs on every start and must be safe when an instance is already up;
+// this runs the migration and moves `current`, which is only safe when nothing is
+// running. Confusing the two would migrate host state under a live application.
+//
+// swap performs the pointer move for the named version. It is injected rather
+// than done here because placing files is core/stage's job, and the journal's is
+// to know which step comes next.
+//
+// Nothing here is a trust decision: the version directory was verified when it
+// was staged, and this only finishes moving what is already on disk.
+func ResumeDeferred(ctx context.Context, f fsx.FS, root string, m hook.Migrator, swap func(version string) error) (Result, error) {
+	if swap == nil {
+		return Result{}, fmt.Errorf("%w: no swap", ErrJournal)
+	}
+	j, err := Open(f, root)
+	if err != nil {
+		return Result{}, err
+	}
+	last, ok := j.Last()
+	if !ok || last.State != StateDeferred {
+		// Nothing was deferred. Saying so is not an error: a launcher calls
+		// this on every start.
+		return Result{}, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
+
+	res := Result{Recovered: true, Deferred: true, FromVersion: last.FromVersion, ToVersion: last.ToVersion}
+	record := func(state State, phase hook.Phase) error {
+		return j.Append(Record{
+			State:       state,
+			Name:        last.Name,
+			FromVersion: last.FromVersion,
+			ToVersion:   last.ToVersion,
+			Phase:       phase,
+		})
+	}
+
+	if m != nil {
+		if err := m.Migrate(hook.Context{
+			Ctx:         ctx,
+			FromVersion: last.FromVersion,
+			ToVersion:   last.ToVersion,
+			Root:        root,
+			StageDir:    fsx.Join(layout.Staging(root), last.ToVersion),
+		}); err != nil {
+			// The transaction stays deferred rather than being torn down: the
+			// staged tree is still good, and the next start may well succeed.
+			// Undoing a migration that failed halfway is Rollback's job, and
+			// the caller decides to ask for it.
+			return res, fmt.Errorf("%w: migrate: %w", ErrJournal, err)
+		}
+	}
+	if err := record(StateMigrated, hook.PhaseMigrate); err != nil {
+		return res, err
+	}
+
+	if err := swap(last.ToVersion); err != nil {
+		return res, err
+	}
+	if err := record(StateSwapped, hook.PhaseApply); err != nil {
+		return res, err
+	}
+
+	swapped, _ := j.Last()
+	if err := complete(f, root, j, swapped); err != nil {
+		return res, err
+	}
+	res.Completed = true
+	return res, nil
 }
 
 // complete finishes a transaction whose swap already happened.

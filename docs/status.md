@@ -17,7 +17,7 @@ piece of the section is missing; **open** — contract only, or nothing.
 | §4 | TUF roles & key management (client side) | **done** — embedded root, `Refresh`, resolve |
 | §4.1 | Delegations, dedup, retention | **partial** — the packer delegates per channel and per release line from the first publish, and content-addressed payload targets deduplicate; retention is open (IDN-03) |
 | §5 | Installer flow | **done** — `core/installer` plus the `cmd/installer` binary: embedded anchor, flags, elevation decision, exit codes |
-| §6.1 | Blue/green layout + pointer | **done** — `internal/layout`, symlink (POSIX) / pointer file (Windows) |
+| §6.1 | Blue/green layout + pointer | **done** — `internal/layout`, symlink (POSIX) / pointer file (Windows), plus the launcher shim (`core/launch`, `cmd/launcher`) |
 | §6.2 | Transaction flow, journal, recovery | **done** — `core/txn`, crash-injection tests |
 | §6.3 | Updater API (`CheckForUpdate`, `Apply`) | **done** |
 | §6.4 | Delta stage 1 (content-addressed reuse) | **partial** — go-tuf cache reuse works; local relink from `current`/retained versions is not implemented |
@@ -28,10 +28,10 @@ piece of the section is missing; **open** — contract only, or nothing.
 | §10 | TUF repository layout | **done** — the packer produces it, the client resolves it, a golden test pins the emitted bytes |
 | §11 | Security concept | **done** as a document; per-threat coverage below |
 | §12 | Test concept | **partial** — see coverage below; no mutation testing, one fuzz target missing |
-| §13 | Cross-platform specifics | **partial** — layout and elevation are per-OS; no launcher, no `MoveFileEx` self-update |
+| §13 | Cross-platform specifics | **partial** — layout, elevation and the launcher hand-over are per-OS; no `MoveFileEx` self-update of the launcher itself (IDN-17) |
 | §14.1 | GC / retention | **done** — `stage.GC`, soft-fails on locked dirs |
 | §14.2 | Elevation | **partial** — Windows `ElevationInteractive` done, and `cmd/installer apply` is the privileged helper it launches; `ElevationService` fails closed everywhere; POSIX interactive (`pkexec`, Authorization Services) not built |
-| §14.3 | Quiesce, app lock, `OnBusy` | **partial** — lock + coordinator + `BusyAbort`/`BusyForce` work; `BusyDeferToRestart` aborts instead of deferring (needs a launcher) |
+| §14.3 | Quiesce, app lock, `OnBusy` | **done** — lock + coordinator + all three policies; `BusyDeferToRestart` keeps the staged tree in a resting `DEFERRED` journal state and the launcher finishes it at the next start. The design calls it the recommended default and the code leaves `BusyAbort` as the zero value (IDN-21) |
 | §14.4 | Enterprise proxy / CA | **partial** — system trust store + `ExtraCAs` + env proxy, now under test; no PAC/WPAD resolution, no ranged resume, no mTLS |
 | §14.5 | Telemetry + staged rollout | **done** — `Reporter` with a closed error-class vocabulary; local rollout bucketing |
 | §14.6 | Installer downgrade preflight | **done** |
@@ -74,6 +74,7 @@ Not yet enforced:
 | `core/trust` | direct unit tests of the resolve layer (New 91.7%, LatestRelease 94.7%, `ReleaseVersion` 90.9%), plus the red-team corpus end to end |
 | `core/fetch` | `New` 95.2% — TLS trust store, user agent, timeout, and the refusals |
 | `core/hook` | no test files (interface definitions only) |
+| `core/launch` | 87.5% — deferred updates applied, skipped, failed, and nothing to do |
 | `core/timefloor` | 94.0% — the floor, its refusals, and a damaged or unwritable floor file |
 | `internal/packer` | 86.1% — publish end to end against `core/trust`, plus golden metadata |
 | `cmd/installer` | not in the coverage universe, but tested: a real install against a served repository |

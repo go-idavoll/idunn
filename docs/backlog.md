@@ -43,20 +43,25 @@ a declined prompt (4) and "needs privileges it cannot get" (5) from a real failu
 anchor is its own elevation helper — the three-scalar request grammar of §14.2 with
 nothing else crossing the boundary.
 
-### IDN-05 — Launcher shim (§6.1, §13, §14.3)
-The layout the design draws starts with a small stable launcher that execs
-`current/app` and, before it does, applies a pending staged update while no lock is
-held. It does not exist. Two features depend on it: `BusyDeferToRestart` (IDN-06) and
-Windows self-replacement of the launcher itself.
+### IDN-05 — Launcher shim (§6.1, §13, §14.3) — **done**
+`cmd/launcher` is the shim; everything it does beyond flag parsing lives in
+`core/launch`, so a host may write its own. It settles an interrupted transaction,
+applies a deferred update while no lock is held, and hands over: `execve` on POSIX so
+nothing of it survives into the running process, a parent that passes the exit code
+through on Windows. No network, no keys, no TUF client — every byte it moves was
+verified when it was staged.
 
 ---
 
 ## P1 — blocks a trustworthy release
 
-### IDN-06 — `BusyDeferToRestart` actually defers (§14.3)
-Today it rolls back cleanly and returns `ErrDeferred`, which is correct but throws
-away the staged tree. Needs a resting journal state for a deferred transaction that
-recovery will not undo, plus the launcher (IDN-05) to finish it at next start.
+### IDN-06 — `BusyDeferToRestart` actually defers (§14.3) — **done**
+The staged tree stays and the journal moves to `DEFERRED`, a resting state recovery
+neither undoes nor finishes — and one it does not sweep the staged version or the hook
+scratch space up behind, which is what would otherwise turn a deferred update into a
+lost one. The launcher completes it at the next start. Applying the same version again
+while it waits is a no-op rather than a re-download; a *different* version supersedes
+it, so a machine that never restarts cannot wedge the updater.
 
 ### IDN-07 — Privileged helper service and its IPC (§14.2, §14.8, T16, T23)
 `elevate.NewService` fails closed. This is the largest remaining piece and the one
@@ -136,7 +141,10 @@ nothing currently measures whether the tests would fail if the code were wrong.
 
 ### IDN-17 — Windows launcher self-replacement (§13)
 Updating the launcher binary itself: rename-self plus
-`MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)`, or a restart. Depends on IDN-05.
+`MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)`, or a restart. IDN-05 is done, so this is
+unblocked: the launcher exists and, on Windows, is the parent process for the lifetime
+of the application — which is exactly what makes replacing it there need a mechanism of
+its own.
 
 ### IDN-18 — Reproducible builds and provenance in CI (§9, §15)
 Bit-identical artifacts and SLSA provenance as supply-chain proof beside TUF. Partly

@@ -479,8 +479,19 @@ func TestQuiesce(t *testing.T) {
 				if got := f.pointer(); got != tc.wantPtr {
 					t.Fatalf("current = %q, want %q", got, tc.wantPtr)
 				}
-				if err != nil && !f.exists("/opt/app/versions/1.3.0") {
-					return // rolled back, as it should be
+				// What happens to the staged tree is the difference between the
+				// two refusals, and it is the whole point of having both:
+				// aborting undoes the work, deferring keeps it for the launcher.
+				staged := f.exists("/opt/app/versions/1.3.0")
+				switch tc.policy {
+				case updater.BusyAbort:
+					if staged {
+						t.Error("an aborted update left its staged version behind")
+					}
+				case updater.BusyDeferToRestart:
+					if !staged {
+						t.Error("a deferred update threw away the tree it staged")
+					}
 				}
 			})
 		}

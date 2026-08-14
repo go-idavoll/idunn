@@ -29,8 +29,10 @@ Everything under `core/` sits on one side of that line. Keep new code on the cor
 | `core/installer` | First-time install bootstrap (+ downgrade preflight) | §5, §14.6 |
 | `core/elevate` | Privileged apply for system-wide installs (per-OS) | §14.2, §14.8 |
 | `core/timefloor` | Monotonic known-good time floor: refuses a clock below where this install has already been | §14.7 |
+| `core/launch` | Start of day: settle the journal, apply an update deferred by a busy application | §6.1, §14.3 |
 | `internal/packer` | Publishing engine: `pack.yaml` -> delegated, signed, reproducible TUF repository | §9, §4.1 |
 | `cmd/installer` | Thin installer binary | §5 |
+| `cmd/launcher` | The stable shim the install layout starts with; execs the application | §6.1, §13 |
 | `cmd/packer` | `go:generate` tool: build artifacts + maintain the TUF repo | §9 |
 
 UI is out-of-tree: `idunn-fyne`, `idunn-bubbletea`, `idunn-web` implement `hook.Observer`
@@ -50,7 +52,8 @@ Apply ─► materialize targets (verified, cached/relinked) ─► stage
 
 ## Install layout
 
-A tiny stable **launcher** execs `current/`, a symlink/junction to a versioned dir.
+A tiny stable **launcher** (`cmd/launcher`) execs `current/`, a symlink/junction to a
+versioned dir, and before it does, applies any update a busy application deferred.
 Update = write a new `versions/<v>/`, then a single atomic `rename()` of `current`.
 Rollback = repoint `current`. Old versions are kept per `RetainVersions` and GC'd. (§6.1)
 
