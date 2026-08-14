@@ -29,8 +29,9 @@ import (
 )
 
 // State is a journal record. The sequence is BEGIN -> (STAGED -> MIGRATED ->
-// SWAPPED)* -> COMMITTED, or ROLLED_BACK. Values are persisted, so they are
-// append-only: never renumber or reuse them.
+// SWAPPED)* -> COMMITTED, or ROLLED_BACK, or — when the application would not
+// quiesce — STAGED -> DEFERRED and then the rest of it at the next start. Values
+// are persisted, so they are append-only: never renumber or reuse them.
 type State string
 
 // The journal states, in the order a successful transaction passes through them.
@@ -41,6 +42,18 @@ const (
 	StateSwapped    State = "SWAPPED"
 	StateCommitted  State = "COMMITTED"
 	StateRolledBack State = "ROLLED_BACK"
+
+	// StateDeferred is a transaction that is staged and deliberately not
+	// finished: the application would not stop writing, so the swap and the
+	// migration wait for the next start (§14.3, BusyDeferToRestart).
+	//
+	// It is a resting state, and that is what makes it different from every
+	// other unfinished one. Recovery undoes what it finds interrupted; here
+	// nothing was interrupted, so recovery must leave it exactly alone —
+	// including the staged version directory and the hook scratch space it
+	// would otherwise sweep up as litter. The launcher finishes it while no
+	// instance is running (ResumeDeferred).
+	StateDeferred State = "DEFERRED"
 )
 
 // Record is one durably written journal entry.
@@ -87,11 +100,16 @@ type document struct {
 // this table is a bug in the caller, and the journal refuses it rather than
 // recording a history that recovery would then have to interpret.
 var allowed = map[State][]State{
-	StateBegin:      {StateStaged, StateRolledBack},
-	StateStaged:     {StateMigrated, StateRolledBack},
-	StateMigrated:   {StateSwapped, StateRolledBack},
-	StateSwapped:    {StateCommitted, StateRolledBack},
-	StateCommitted:  {StateBegin},
+	StateBegin:     {StateStaged, StateRolledBack},
+	StateStaged:    {StateMigrated, StateRolledBack, StateDeferred},
+	StateMigrated:  {StateSwapped, StateRolledBack},
+	StateSwapped:   {StateCommitted, StateRolledBack},
+	StateCommitted: {StateBegin},
+
+	// A deferred transaction is resumed (MIGRATED), abandoned (ROLLED_BACK), or
+	// superseded by a newer update that begins while it is still waiting.
+	StateDeferred: {StateMigrated, StateRolledBack, StateBegin},
+
 	StateRolledBack: {StateBegin},
 }
 

@@ -90,9 +90,12 @@ github.com/go-idavoll/idunn          # core library (this repo)
   core/installer  # first-time install orchestration
   core/elevate    # privileged apply (per-OS)
   core/fsx        # filesystem abstraction (interface + OS + in-memory)
+  core/launch     # start-of-day: settle the journal, apply a deferred update
+  core/timefloor  # monotonic known-good time floor (clock rollback defence)
   internal/safepath # the single validator for untrusted install-relative paths
   internal/packer   # the publishing engine: pack.yaml -> signed TUF repository
   cmd/installer   # thin installer binary
+  cmd/launcher    # the stable shim the install layout starts with
   cmd/packer      # go:generate TUF repo maintenance + build tool
   test/redteam    # standing adversarial corpus + harness (build tag: redteam)
 ```
@@ -193,7 +196,8 @@ What exists today:
 | Delta stage 1 (content-addressed reuse) | go-tuf cache reuse only; local relink from retained versions not implemented |
 | Packer (`cmd/packer`, `internal/packer`) | publishes a delegated, reproducible TUF repository; retention not implemented |
 | Installer binary (`cmd/installer`) | implemented: embedded anchor, elevation decision, privileged `apply` verb |
-| Launcher, `BusyDeferToRestart`, delta stage 2 | not implemented |
+| Launcher (`cmd/launcher`, `core/launch`) and `BusyDeferToRestart` | implemented: a busy application defers, the launcher applies at the next start |
+| Delta stage 2 (binary patches) | not implemented |
 
 The full section-by-section reconciliation against the design lives in
 [`docs/status.md`](docs/status.md); the open work is tracked in

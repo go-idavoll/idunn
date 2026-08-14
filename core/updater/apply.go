@@ -51,6 +51,14 @@ func (u *Updater) Apply(ctx context.Context, r *Release) error {
 		return nil
 	}
 
+	// A deferred update is not a failed one. The tree is staged, the journal
+	// says so, and rolling back here would throw away exactly the work the
+	// policy asked to keep.
+	if errors.Is(err, ErrDeferred) {
+		u.reportOutcome(ctx, r, "deferred", classify(err), phase)
+		return err
+	}
+
 	// Everything past this point is failure handling, and none of it may hide
 	// the failure it is handling. The rollback's own error is joined to the
 	// original rather than replacing it: an operator needs to know both that
@@ -84,8 +92,19 @@ func (u *Updater) apply(ctx context.Context, r *Release) (hook.Phase, func(), er
 	// journal keeps one history, and BEGIN replaces it. Running recovery here
 	// rather than trusting the caller to have done it means a crashed update is
 	// never silently built on top of.
-	if _, err := txn.RecoverResult(ctx, u.fs, u.root, u.migrate); err != nil {
+	rec, err := txn.RecoverResult(ctx, u.fs, u.root, u.migrate)
+	if err != nil {
 		return hook.PhaseCheck, unlock, err
+	}
+	// A transaction that is already staged and waiting for a restart is not one
+	// to run again: the tree is on disk, verified, and the only thing missing is
+	// a moment when the application is not running. Re-staging it would download
+	// and write everything a second time to arrive at the state it is already
+	// in. A *different* version may supersede it — that is a new decision, and
+	// the journal allows BEGIN after DEFERRED for exactly that.
+	if rec.Deferred && rec.ToVersion == d.Version {
+		return hook.PhaseQuiesce, unlock, fmt.Errorf(
+			"%w: %s is staged and waiting for the next start", ErrDeferred, d.Version)
 	}
 
 	// The Release may be minutes old, and the tree may have moved under it —
@@ -161,6 +180,16 @@ func (u *Updater) apply(ctx context.Context, r *Release) (hook.Phase, func(), er
 
 	unlock, err = u.quiesce(ctx, hc)
 	if err != nil {
+		if errors.Is(err, ErrDeferred) {
+			// Deferring is not a failure to undo: the verified tree is already
+			// on disk and stays there. The journal moves to its resting state
+			// so the next recovery leaves it alone and the launcher can finish
+			// it while no instance holds the lock.
+			if rerr := record(txn.StateDeferred, hook.PhaseQuiesce); rerr != nil {
+				return hook.PhaseQuiesce, unlock, errors.Join(err, rerr)
+			}
+			u.emit(hook.PhaseQuiesce, "staged "+d.Version+"; it will be applied at the next start", nil)
+		}
 		return hook.PhaseQuiesce, unlock, err
 	}
 
@@ -321,12 +350,9 @@ func (u *Updater) quiesce(ctx context.Context, hc hook.Context) (func(), error) 
 		return noop, fmt.Errorf("%w: still running after %s", ErrBusy, u.policy.QuiesceTimeout)
 
 	case BusyDeferToRestart:
-		// TODO(updater): §14.3 wants the staged tree kept and the swap finished
-		// by the launcher at the next start. That needs a launcher and a resting
-		// journal state for a deferred transaction, so that recovery does not
-		// undo what was deliberately left staged. Until both exist, deferring
-		// means undoing cleanly and telling the caller to try again later —
-		// which is correct, only more expensive than it needs to be.
+		// The staged tree stays where it is and the swap waits for the next
+		// start, when nothing is running (§14.3). apply turns this into a
+		// DEFERRED journal record; the caller must not roll it back.
 		return noop, fmt.Errorf("%w: still running after %s", ErrDeferred, u.policy.QuiesceTimeout)
 
 	case BusyForce:
