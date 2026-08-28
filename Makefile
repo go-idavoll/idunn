@@ -1,5 +1,6 @@
 .PHONY: all build test cover vet fmt lint license license-fix vuln tidy \
-	e2e mutate redteam redteam-corpus redteam-fuzz redteam-agent test-keys baseline clean
+	e2e mutate mutate-survivors repro redteam redteam-corpus redteam-fuzz redteam-agent \
+	test-keys baseline clean
 
 GO              ?= go
 REDTEAM_FUZZTIME ?= 60s
@@ -12,6 +13,16 @@ MUTATE_PKGS     ?= ./core/txn ./core/stage ./core/updater ./core/launch
 MUTATE_TIMEOUT  ?= 20
 MUTATE_EFFICACY ?= 75
 MUTATE_MCOVER   ?= 75
+
+## Reproducible builds (see the `repro` target).
+##
+## -trimpath removes the build directory from the binary, which is the one input
+## that differs between two machines building the same commit. CGO_ENABLED=0
+## removes the host toolchain as an input as well: a cgo build embeds paths and
+## versions of a C compiler nobody recorded.
+REPRO_DIR       ?= dist/repro
+REPRO_CMDS      ?= installer launcher packer
+REPRO_FLAGS     ?= -trimpath
 LICENSE_YEAR    ?= 2026
 LICENSE_HOLDER  ?= The idunn Authors
 
@@ -84,6 +95,33 @@ mutate:
 ## the surviving mutants only, which is the list worth reading
 mutate-survivors:
 	@for pkg in $(MUTATE_PKGS); do 		echo ">> $$pkg"; 		gremlins unleash --timeout-coefficient $(MUTATE_TIMEOUT) -S l $$pkg; 	done
+
+## reproducible builds: the same commit must produce the same bytes, twice
+##
+## It is the client half of the supply-chain story. TUF says the bytes you got
+## are the bytes the publisher signed; this says the bytes the publisher signed
+## are the ones this source produces -- so an independent rebuild can check the
+## release rather than take it on faith (docs/design.md §9, §15).
+##
+## Two passes in one job catch what actually breaks reproducibility in practice:
+## a wall-clock stamp, an embedded absolute path, a map iterated into output.
+## They do not catch a difference between two *machines*; that is what publishing
+## the hashes is for, and why an independent rebuild is the real test.
+repro:
+	@rm -rf $(REPRO_DIR)
+	@for pass in a b; do \
+		for cmd in $(REPRO_CMDS); do \
+			CGO_ENABLED=0 $(GO) build $(REPRO_FLAGS) \
+				-o $(REPRO_DIR)/$$pass/$$cmd ./cmd/$$cmd || exit 1; \
+		done; \
+	done
+	@cd $(REPRO_DIR)/a && sha256sum * > ../a.sha256
+	@cd $(REPRO_DIR)/b && sha256sum * > ../b.sha256
+	@if diff -u $(REPRO_DIR)/a.sha256 $(REPRO_DIR)/b.sha256; then \
+		echo "reproducible:"; cat $(REPRO_DIR)/a.sha256; \
+	else \
+		echo "NOT reproducible: two builds of the same tree differ"; exit 1; \
+	fi
 
 ## run the full adversarial suite (corpus + fuzzers)
 redteam: redteam-corpus redteam-fuzz

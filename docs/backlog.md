@@ -336,9 +336,27 @@ A failed refresh never fails a start. `cmd/launcher` also grew `--version`, whic
 the question that has no answer once the shim can replace itself: the launcher in the
 install root is no longer necessarily the one that was installed.
 
-### IDN-18 — Reproducible builds and provenance in CI (§9, §15)
-Bit-identical artifacts and SLSA provenance as supply-chain proof beside TUF. Partly
-enforced for packer output by IDN-01; this is the CI half.
+### IDN-18 — Reproducible builds and provenance in CI (§9, §15) — **done**
+`make repro` builds every command twice from the same tree and fails if the bytes
+differ; CI runs it on every pull request and publishes the digests in the job summary.
+`-trimpath` removes the build directory, which is the one input that otherwise differs
+between two machines building the same commit, and `CGO_ENABLED=0` removes the host C
+toolchain as an input as well.
+
+Two passes in one job catch what actually breaks reproducibility in practice — a
+wall-clock stamp, an embedded absolute path, a map iterated into output. They do not
+catch a difference between two *machines*, which is why the digests are published: the
+real test is an independent rebuild, and this makes one possible rather than performing
+one.
+
+Provenance (`actions/attest-build-provenance`) runs on tags only. It needs
+`id-token: write`, which a pull request from a fork does not get and should not, and
+attesting every commit nobody releases would be noise. It attests the output of the
+same build the repro job proved deterministic, so what is signed is what an independent
+rebuild can reproduce.
+
+This is the CI half. The packer's half — byte-identical repository output from the same
+inputs and reference time — was closed by IDN-01 and is pinned by a golden test.
 
 ### IDN-19 — UI sidecars (§8)
 `idunn-fyne`, `idunn-bubbletea`, `idunn-web` are named in the README and do not

@@ -56,7 +56,8 @@ _This is the designed scope, not a claim about today's code — see
 - **Privilege model**: per-user in-process, or a privileged system helper over
   authenticated IPC (privilege boundary == trust boundary).
 - **Garbage collection** of old versions with a configurable retention window.
-- **Reproducible, signed releases** maintained via `go:generate` and a TUF repo.
+- **Reproducible, signed releases** maintained via `go:generate` and a TUF repo —
+  two builds of a commit must produce the same bytes, and CI proves it every run.
 - **Auditable by design**: a written security concept (threat model + mitigations),
   a 100% coverage goal for the lifecycle code, and mutation testing to check that
   the coverage means something.

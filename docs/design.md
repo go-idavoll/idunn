@@ -782,8 +782,9 @@ if targetsKey == "" || snapshotKey == "" || timestampKey == "" {
 
 Root signatures (key rotation) deliberately run **outside** the normal publish — via a
 separate, strictly controlled ceremony (offline, m-of-n), ideally with `tuf-on-ci`.
-Reproducible builds of the artifacts remain a goal: bit-identical binaries allow
-independent rebuilds and supply-chain verification.
+Reproducible builds of the artifacts are enforced rather than aspired to: `make repro`
+builds every command twice and fails if the bytes differ, and CI publishes the digests
+so an independent rebuild has something to compare against (IDN-18).
 
 ---
 
@@ -1310,7 +1311,11 @@ because an unprivileged user can tamper with the cache while the helper reads it
   target counts. **TAP-4 multi-repository consensus** for real package DAGs / multiple
   roots.
 - **Provenance/SLSA + reproducible builds** in CI as an additional supply-chain proof
-  (complements TUF, does not replace it).
+  (complements TUF, does not replace it). **Built (IDN-18):** `make repro` gates every
+  pull request on two builds of the same tree producing the same bytes and publishes the
+  digests, and `actions/attest-build-provenance` attests that same build on tags. TUF
+  says the bytes you received are the ones the publisher signed; this says the bytes the
+  publisher signed are the ones this source produces.
 - **Time hardening** (Sec. 14.7): `clock_skew` classification + user guidance as a minimum;
   authenticated time (Roughtime/NTS) as opt-in for controlled fleets.
 - **Delta updates:** file-level delta (content-addressed) falls out of the TUF targets

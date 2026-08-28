@@ -115,6 +115,15 @@ driven through the real install path where a version floor is involved. Fuzzers:
   AGENTS.md §1.2 rules out. `trust.Options.MaxTargetBytes` bounds the damage in the
   meantime: a target above the ceiling is refused before it is requested.
 
+## Supply chain
+
+| Property | State |
+|---|---|
+| Reproducible packer output | pinned by `internal/packer`'s golden test (IDN-01) |
+| Reproducible binaries | `make repro`, gated in CI, digests published per run (IDN-18) |
+| Build provenance | `actions/attest-build-provenance` on tags (IDN-18) |
+| Trust anchor | embedded `root.json`, never fetched |
+
 ## Mutation score
 
 `make mutate` (gremlins) over the lifecycle packages. *Efficacy* is the share of covered

@@ -93,6 +93,46 @@ jobs:
       - name: End-to-end
         run: go test -tags=e2e -count=1 -timeout 20m ./test/e2e/...
 
+  # Reproducible builds are the client half of the supply-chain story. TUF says
+  # the bytes you received are the bytes the publisher signed; this says the
+  # bytes the publisher signed are the ones this source produces, so an
+  # independent rebuild can check a release instead of trusting it
+  # (docs/design.md §9, §15).
+  #
+  # Two passes in one job catch what actually breaks reproducibility: a
+  # wall-clock stamp, an embedded absolute path, a map iterated into output.
+  # They do not catch a difference between two machines -- that is what
+  # publishing the digests is for.
+  repro:
+    name: reproducible builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+
+      - name: Build twice and compare
+        run: make repro
+
+      - name: Publish the digests
+        run: |
+          {
+            echo '### Reproducible build digests'
+            echo
+            echo '```'
+            cat dist/repro/a.sha256
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: binaries
+          path: dist/repro/a
+          retention-days: 7
+
   # Mutation testing asks the question coverage cannot: not "did this line run?"
   # but "would the suite notice if it were wrong?". It gates on thresholds set
   # below the measured scores, so it catches a regression rather than the
@@ -212,6 +252,40 @@ jobs:
           git add README.md
           git commit -m "ci: update coverage badge to ${pct}% [skip ci]"
           git push
+
+  # Build provenance: a signed statement of which workflow, at which commit,
+  # produced these exact bytes. It complements TUF rather than replacing it --
+  # TUF says the publisher vouches for a release, provenance says where the
+  # release came from, and an auditor wants both (docs/design.md §15).
+  #
+  # Tags only. Attestation needs id-token: write, which a pull request from a
+  # fork does not get and should not; running it on every push would produce a
+  # stream of attestations for commits nobody releases.
+  provenance:
+    name: build provenance
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    needs: [test, e2e, repro]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+
+      # The same build the repro job proved deterministic, so what is attested
+      # is what an independent rebuild can reproduce.
+      - name: Build
+        run: make repro
+
+      - uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: dist/repro/a/*
 
   static:
     name: gofmt + tidy + lint
