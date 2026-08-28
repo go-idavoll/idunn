@@ -32,7 +32,7 @@ piece of the section is missing; **open** — contract only, or nothing.
 | §14.1 | GC / retention | **done** — `stage.GC`, soft-fails on locked dirs |
 | §14.2 | Elevation | **partial** — Windows `ElevationInteractive` done, and `cmd/installer apply` is the privileged helper it launches. `ElevationService` is built on all three: the protocol and authorization (IDN-07a), peer credentials on Linux and macOS, and a named pipe whose security descriptor is the access decision on Windows (IDN-07b). The macOS audit-token refinement (IDN-07c) is open. Interactive elevation is built on Linux (`pkexec`, IDN-08); macOS needs an Objective-C framework and fails closed with the reason |
 | §14.3 | Quiesce, app lock, `OnBusy` | **done** — lock + coordinator + all three policies; `BusyDeferToRestart` keeps the staged tree in a resting `DEFERRED` journal state and the launcher finishes it at the next start. `BusyAbort` is the zero value and is not promoted; deferral is a recommendation to the host, which the design now says in those words (IDN-21) |
-| §14.4 | Enterprise proxy / CA | **partial** — system trust store + `ExtraCAs` + env proxy, now under test; no PAC/WPAD resolution, no ranged resume, no mTLS |
+| §14.4 | Enterprise proxy / CA | **partial** — system trust store, `ExtraCAs`, env proxy, resumable ranged downloads, proxy authentication, mTLS client certificates, and a `ProxyResolver` seam; the OS-native resolvers (PAC/WPAD, WinHTTP, `SCDynamicStore`, GSettings) are the remainder of IDN-13 |
 | §14.5 | Telemetry + staged rollout | **done** — `Reporter` with a closed error-class vocabulary; local rollout bucketing |
 | §14.6 | Installer downgrade preflight | **done** |
 | §14.7 | Clock skew | **done** — expiry is classified as `clock_skew`, and `core/timefloor` persists the monotonic known-good time floor that refuses a rolled-back clock |
@@ -63,8 +63,10 @@ Not yet enforced:
 - **T23** (cache TOCTOU) — still open. The helper does its own refresh into its own
   cache, but nothing enforces that the cache directory is out of an unprivileged user's
   reach, and there is no read-only fd hand-off (§14.8).
-- **T18** (enterprise DPI) — tolerated by design, but PAC and resumable downloads are
-  missing, so the *availability* half is incomplete.
+- **T18** (enterprise DPI) — tolerated by design, and the availability half now has
+  resumable downloads, proxy authentication and mTLS. OS-native proxy resolution
+  including PAC is still missing, so a machine whose proxy is configured only in the
+  OS (and not in the environment) needs the host to supply a `ProxyResolver`.
 
 ## Test state
 
@@ -80,7 +82,7 @@ Not yet enforced:
 | `core/installer` | 86.8% |
 | `core/txn` | 86.6% |
 | `core/trust` | direct unit tests of the resolve layer (New 91.7%, LatestRelease 94.7%, `ReleaseVersion` 90.9%), plus the red-team corpus end to end |
-| `core/fetch` | `New` 95.2% — TLS trust store, user agent, timeout, and the refusals |
+| `core/fetch` | TLS trust store, user agent, timeout, the refusals, and the enterprise path: a resumed download against a link that drops, a poisoned resume, a resume at the wrong offset, mutual TLS against a real handshake, and proxy credentials on a real CONNECT |
 | `core/hook` | no test files (interface definitions only) |
 | `core/launch` | 87.5% — deferred updates applied, skipped, failed, and nothing to do, plus the shim replacing itself |
 | `core/timefloor` | 94.0% — the floor, its refusals, and a damaged or unwritable floor file |

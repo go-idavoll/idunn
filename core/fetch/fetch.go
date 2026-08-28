@@ -22,8 +22,10 @@ package fetch
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"fmt"
 	"net/http"
+	"net/url"
 	"time"
 
 	tuffetcher "github.com/theupdateframework/go-tuf/v2/metadata/fetcher"
@@ -45,19 +47,64 @@ type Options struct {
 	// store, for enterprises that TLS-intercept. Never a replacement for it.
 	ExtraCAs [][]byte
 
-	// Resume enables ranged/resumable downloads for large payload targets.
-	//
-	// TODO(fetch): go-tuf's default fetcher reads whole responses; honouring this
-	// needs an own Fetcher implementation that issues Range requests and resumes
-	// from a partial file. Until then the field is accepted and ignored.
+	// Resume enables ranged/resumable downloads for large payload targets: an
+	// interrupted body is continued with a Range request instead of started
+	// over. See resume.go for why that changes nothing about trust.
 	Resume bool
+
+	// ResumeAttempts bounds how many times one download is resumed. Zero
+	// selects DefaultResumeAttempts. It has no effect unless Resume is set.
+	ResumeAttempts int
+
+	// ProxyResolver decides which proxy to use, if any. Nil reads the
+	// environment, which is what Go does by default and what a service
+	// environment usually configures.
+	//
+	// It is an injection point rather than an implementation because the
+	// OS-native answers — WinHTTP/WinINET including PAC, macOS SCDynamicStore,
+	// Linux GSettings — each need platform code this package would rather not
+	// grow (docs/design.md §14.4, and the remainder of IDN-13). A host that
+	// needs one plugs it in here.
+	ProxyResolver ProxyResolver
+
+	// ProxyUser and ProxyPassword authenticate to an HTTP proxy that demands
+	// it. They are sent as Basic credentials on the CONNECT request, which is
+	// the one that matters here: every URL idunn fetches is https, so the proxy
+	// sees a tunnel and never a request it could authenticate individually.
+	//
+	// A proxy URL carrying its own userinfo works too, and is the more usual
+	// deployment; these exist so credentials do not have to be written into a
+	// URL that ends up in logs.
+	ProxyUser     string
+	ProxyPassword string
+
+	// ClientCertPEM and ClientKeyPEM are a PEM-encoded certificate and private
+	// key for mutual TLS, where an enterprise requires the client to identify
+	// itself to the proxy or the origin.
+	//
+	// Like everything else about TLS here, this is transport hardening. It does
+	// not make any byte trusted — TUF signatures do — and a deployment that
+	// cannot present a certificate is refused by the far side rather than
+	// falling back to something weaker (AGENTS.md §1.5).
+	ClientCertPEM []byte
+	ClientKeyPEM  []byte
+}
+
+// ProxyResolver decides which proxy a request goes through.
+//
+// The signature is http.Transport.Proxy's, deliberately: a nil URL means "go
+// direct", an error fails the request, and an implementation can be handed
+// straight to a transport without an adapter that could get the convention
+// wrong.
+type ProxyResolver interface {
+	Proxy(req *http.Request) (*url.URL, error)
 }
 
 // DefaultTimeout bounds a single request when Options.Timeout is zero.
 const DefaultTimeout = 60 * time.Second
 
-// New builds a Fetcher that honours the OS proxy configuration and the system
-// trust store.
+// New builds a Fetcher that honours the proxy configuration and the system trust
+// store, and optionally resumes an interrupted download.
 //
 // ExtraCAs are appended to the system pool, never substituted for it: an
 // enterprise that adds an interception CA still trusts the public roots, and a
@@ -87,18 +134,59 @@ func New(o Options) (Fetcher, error) {
 		// the proxy and trust-store configuration below.
 		return nil, fmt.Errorf("fetch: http.DefaultTransport is %T, not *http.Transport", http.DefaultTransport)
 	}
-	tr := base.Clone()
-	tr.Proxy = http.ProxyFromEnvironment // honours WPAD/PAC via the OS on Windows
-	tr.TLSClientConfig = &tls.Config{
+	tlsCfg := &tls.Config{
 		RootCAs:    pool,
 		MinVersion: tls.VersionTLS12,
 	}
+	if len(o.ClientCertPEM) != 0 || len(o.ClientKeyPEM) != 0 {
+		cert, err := tls.X509KeyPair(o.ClientCertPEM, o.ClientKeyPEM)
+		if err != nil {
+			// Half a client certificate is not a reason to connect anonymously
+			// and find out later: an enterprise that configured mTLS meant it.
+			return nil, fmt.Errorf("fetch: client certificate: %w", err)
+		}
+		tlsCfg.Certificates = []tls.Certificate{cert}
+	}
+
+	tr := base.Clone()
+	tr.Proxy = http.ProxyFromEnvironment
+	if o.ProxyResolver != nil {
+		tr.Proxy = o.ProxyResolver.Proxy
+	}
+	if o.ProxyUser != "" || o.ProxyPassword != "" {
+		// Every URL idunn fetches is https, so the proxy sees a CONNECT and
+		// never an individual request: this header is where proxy credentials
+		// have to go.
+		tr.ProxyConnectHeader = http.Header{
+			"Proxy-Authorization": []string{"Basic " + basicAuth(o.ProxyUser, o.ProxyPassword)},
+		}
+	}
+	tr.TLSClientConfig = tlsCfg
 	tr.ForceAttemptHTTP2 = true
 
+	client := &http.Client{Transport: tr, Timeout: timeout}
+	if o.Resume {
+		attempts := o.ResumeAttempts
+		if attempts <= 0 {
+			attempts = DefaultResumeAttempts
+		}
+		return &resumingFetcher{
+			client:   client,
+			ua:       o.UserAgent,
+			attempts: attempts,
+			sleep:    time.Sleep,
+		}, nil
+	}
+
 	f := tuffetcher.NewDefaultFetcher()
-	f.SetHTTPClient(&http.Client{Transport: tr, Timeout: timeout})
+	f.SetHTTPClient(client)
 	if o.UserAgent != "" {
 		f.SetHTTPUserAgent(o.UserAgent)
 	}
 	return f, nil
+}
+
+// basicAuth renders proxy credentials the way RFC 7617 asks for them.
+func basicAuth(user, password string) string {
+	return base64.StdEncoding.EncodeToString([]byte(user + ":" + password))
 }

@@ -223,11 +223,28 @@ Done when: go-tuf exposes a streaming target download, and `core/fetch` implemen
 
 ## P2 — hardening and reach
 
-### IDN-13 — Enterprise transport: PAC, resume, mTLS (§14.4, T18)
-`fetch.New` uses `http.ProxyFromEnvironment` and honours the system trust store.
-Missing: OS-native proxy resolution incl. PAC (WinHTTP/WinINET, `SCDynamicStore`,
-GSettings) behind a `ProxyResolver`; ranged/resumable downloads (`Options.Resume` is
-accepted and ignored today); proxy auth; mTLS client certificates.
+### IDN-13 — Enterprise transport: PAC, resume, mTLS (§14.4, T18) — **mostly done**
+
+Done: **resumable downloads** (`Options.Resume`), **proxy authentication** and **mTLS
+client certificates**, plus the **`ProxyResolver` seam** the OS-native answers plug
+into. `Options.Resume` is no longer accepted and ignored.
+
+Resume is the half of T18 that was missing, and it is missing for a reason worth
+stating: a link that drops at forty megabytes turns a hundred-megabyte release into an
+update that never completes, however often it is retried *from the start*. It changes
+nothing about trust — the bytes are a concatenation of two responses, a server or a
+TLS-terminating proxy can serve a different second half, and that produces the wrong
+hash which go-tuf refuses, exactly as it refuses a wrong first half. What the fetcher
+does have to get right is the offset: a 206 that begins somewhere other than where the
+request asked would produce a file that is neither of the two it was made from, which
+would be corruption this layer introduced, so it is refused rather than concatenated.
+
+Open: the **OS-native proxy resolvers**, PAC included — WinHTTP/WinINET,
+`SCDynamicStore`, GSettings. Each needs either cgo or a substantial per-platform
+implementation, and none of them can be exercised on a CI runner that has no proxy
+configuration to read. The interface they slot into exists, so a host that needs one
+today can supply it without waiting for this. `http.ProxyFromEnvironment` remains the
+default.
 
 ### IDN-14 — Delta stage 2: intra-file binary patches (§6.4)
 `stage.ApplyPatch` fails closed. Needs a chosen patch format (`zstd --patch-from`,
