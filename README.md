@@ -179,6 +179,11 @@ renewal — the same apples that keep your software fresh. The imagery is delibe
 Guardian's shield plus the bridge between worlds — protection and delivery, in one
 mark.
 
+The mythology stops at the mark. Packages, types, error classes and target paths carry
+functional names — `trust`, `fetch`, `stage`, `txn` — and always will
+([`design.md`](docs/design.md) §2.1). A codename is charming in a README and a question
+an auditor has to stop and ask in a stack trace.
+
 ## Status
 
 **Early implementation.** The architecture and security concept are complete; the

@@ -68,10 +68,24 @@ idunn-bubbletea/     (separate module, depends on idunn/core)
 interface (`Refresh`, `LatestRelease`, `MaterializeTarget`) and stays independent of TUF
 details — replaceable and testable.
 
-### 2.1 Naming scheme (optional): mythology vs. function
+### 2.1 Naming scheme: mythology vs. function — **decided**
+
+> **Decision (IDN-20): functional names are canonical in code, and mythological names
+> are branding only — for the umbrella `idunn` and nothing below it.**
+>
+> The recommended middle path below is what the code has done since the first commit,
+> so the decision costs nothing to make and stops the question being asked again. What
+> it adds is the second half: no package, type, error class, target path, journal state
+> or metric name is a mythological one either, and none will be added later "for the
+> two most prominent public sub-names". A codename that exists only in the README is
+> harmless; one that appears in a stack trace an auditor is reading is not, and the
+> boundary is easier to hold at zero than at two.
+>
+> The table below stays as the record of what was considered. `AGENTS.md` §2 already
+> states the rule for contributors.
 
 The umbrella name is **idunn**. For the internal packages there is a coherent Norse
-naming scheme — charming, but deliberately left as an **open decision**:
+naming scheme — charming, and considered:
 
 | Function (package) | Mytho codename | Why it fits |
 |---|---|---|
@@ -92,12 +106,11 @@ what the transport lets through — mythologically correct and exactly the data 
 - *Against:* not self-documenting — `bragi` tells a new developer or auditor nothing;
   hampers onboarding/grep; can read as playful in enterprise/audit contexts; insider
   knowledge = bus factor.
-- *Recommended middle path:* **functional names stay canonical in code**
-  (self-documenting, audit-friendly) — the rest of this document uses them throughout.
-  The mythological names serve **optionally** as product/module branding or internal
-  codenames (at minimum the umbrella `idunn`, possibly the two most prominent public
-  sub-names `heimdall`/`bifrost`). That gets you the charm without losing readability.
-  How far to go is a deliberately open decision.
+- *Chosen:* **functional names are canonical in code** (self-documenting,
+  audit-friendly) — the rest of this document uses them throughout — and the
+  mythological names are branding for the umbrella `idunn` alone. Not `heimdall`, not
+  `bifrost`, not as an internal codename: the charm is worth having in a README and it
+  is not worth having in a grep.
 
 ---
 
@@ -1305,6 +1318,8 @@ because an unprivileged user can tamper with the cache while the helper reads it
   open, for large binaries that change slightly.
 - **Uptane** as a reference should the system ever move toward embedded/automotive (a TUF
   extension for exactly that case).
+- **Naming (2.1) is decided, not open** (IDN-20): functional names in code, mythology as
+  branding for the umbrella name only.
 - **When *without* TUF after all?** Only for single-vendor + single-HSM-key + tolerable
   compromise consequences + a hard minimalism constraint; then a tiny, externally audited
   own core. Conscious price: no online rotation, full break on key loss. For "Fort Knox",

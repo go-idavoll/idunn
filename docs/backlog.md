@@ -326,10 +326,15 @@ enforced for packer output by IDN-01; this is the CI half.
 exist. Out of tree by design — one reference implementation would prove the
 `Observer`/`Prompter` surface is sufficient.
 
-### IDN-20 — Decide the mythology naming question (§2.1)
-Left explicitly open in the design. Functional names are canonical in code today,
-which is the recommended middle path; the decision is whether mythological names are
-adopted as branding. Closing it costs nothing and removes a recurring question.
+### IDN-20 — Decide the mythology naming question (§2.1) — **done**
+Functional names are canonical in code; mythological names are branding for the
+umbrella `idunn` and nothing below it.
+
+The first half is what the code has always done, so deciding it costs nothing. The
+second half is the part that needed deciding: not `heimdall`, not `bifrost`, not as an
+internal codename. A codename that lives in a README is charming; one that turns up in
+a stack trace an auditor is reading is a question they have to stop and ask, and the
+boundary is easier to hold at zero than at two.
 
 ### IDN-21 — Reconcile the `OnBusy` default with the design (§6.3, §14.3) — **done**
 Decided the second way: the design text drops the claim, `New` promotes nothing, and
