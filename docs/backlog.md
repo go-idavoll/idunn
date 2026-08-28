@@ -244,12 +244,29 @@ governs nothing beyond TUF's own metadata expiry (`TODO(release)` in
 `go-mutesting` (or equivalent) as the quality bar for assertions. Coverage is high;
 nothing currently measures whether the tests would fail if the code were wrong.
 
-### IDN-17 — Windows launcher self-replacement (§13)
-Updating the launcher binary itself: rename-self plus
-`MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)`, or a restart. IDN-05 is done, so this is
-unblocked: the launcher exists and, on Windows, is the parent process for the lifetime
-of the application — which is exactly what makes replacing it there need a mechanism of
-its own.
+### IDN-17 — Launcher self-replacement (§13) — **done**
+The layout is why this needed a step of its own on every platform, not only Windows: a
+release's files land *inside* a version directory and the shim lives above it, beside
+`current` and `versions/`, so the blue/green swap never touches it. `core/launch` now
+carries the new launcher the last few centimetres, at the start after the update that
+brought it — the one moment a program may replace the file it is executing from.
+
+Which file in a release *is* the launcher stays host knowledge (`Options.SelfSource`,
+a linker variable in `cmd/launcher`, exactly like `appBinary`). No new `kind` was added
+to the descriptor schema for it, and a release cannot nominate the thing everyone
+clicks next.
+
+POSIX needs no ceremony — a running program holds its image by inode, so a rename over
+the name is enough. Windows keeps an image section on the file and refuses to replace
+it, but does allow the running executable to be *renamed*, which is the mechanism:
+move it aside, write the new one at the name that is clicked, then clean the leftover
+up — the next start sweeps it, and `MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)` is the
+backstop behind that. If the rename fails, nothing is written: a half-replaced launcher
+is the one outcome that leaves a machine unable to start its application at all.
+
+A failed refresh never fails a start. `cmd/launcher` also grew `--version`, which is
+the question that has no answer once the shim can replace itself: the launcher in the
+install root is no longer necessarily the one that was installed.
 
 ### IDN-18 — Reproducible builds and provenance in CI (§9, §15)
 Bit-identical artifacts and SLSA provenance as supply-chain proof beside TUF. Partly

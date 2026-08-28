@@ -68,11 +68,12 @@ var bin struct {
 
 	dir string
 
-	// apps caches one built host application per version. Building the fixture
-	// is the slowest thing this suite does and the result depends only on the
-	// version stamped into it.
-	mu   sync.Mutex
-	apps map[string]string
+	// apps caches one built host application per version, launchers one per
+	// stamp. Building them is the slowest thing this suite does and the result
+	// depends only on what is stamped in.
+	mu        sync.Mutex
+	apps      map[string]string
+	launchers map[string]string
 }
 
 // repoRoot is the module root, resolved from this file's location so the suite
@@ -108,6 +109,7 @@ func build() (int, error) {
 	}
 	bin.dir = dir
 	bin.apps = map[string]string{}
+	bin.launchers = map[string]string{}
 
 	for name, pkg := range map[string]*string{
 		"./cmd/packer":    &bin.packer,
@@ -165,6 +167,33 @@ func appBinary(t *testing.T, version string) string {
 	bin.apps[version] = out
 	return out
 }
+
+// launcherBinary builds a launcher stamped with its own version, so two releases
+// can ship launchers whose bytes differ — and so a test can ask the shim which
+// one it is, which is the whole point of `launcher --version` once the shim can
+// replace itself.
+func launcherBinary(t *testing.T, stamp string) string {
+	t.Helper()
+	bin.mu.Lock()
+	defer bin.mu.Unlock()
+	if p, ok := bin.launchers[stamp]; ok {
+		return p
+	}
+	out := filepath.Join(bin.dir, exeName("launcher-"+stamp))
+	if err := goBuild(out, "./cmd/launcher", []string{
+		"-X", "main.appBinary=" + appDst(),
+		"-X", "main.launcherSource=" + launcherDst(),
+		"-X", "main.launcherVersion=" + stamp,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	bin.launchers[stamp] = out
+	return out
+}
+
+// launcherDst is the install-relative destination of the launcher inside a
+// version directory.
+func launcherDst() string { return "bin/" + exeName("launcher") }
 
 // exeName adds the extension the platform needs to execute a file.
 func exeName(name string) string {
@@ -300,6 +329,11 @@ type release struct {
 	// data maps an install-relative destination to its content. The application
 	// binary is added automatically at appDst().
 	data map[string]string
+
+	// launcher, when set, ships a launcher binary at launcherDst() stamped with
+	// this string. A release that ships one is how the shim at the top of the
+	// install root ever gets refreshed (IDN-17).
+	launcher string
 }
 
 // publish builds the host application at version, writes a pack.yaml around it,
@@ -319,6 +353,16 @@ func (r *repo) publish(version string, rel release) {
 
 	var files strings.Builder
 	fmt.Fprintf(&files, "      - { src: app, dst: %s, kind: exe }\n", appDst())
+	if rel.launcher != "" {
+		raw, err := os.ReadFile(launcherBinary(r.t, rel.launcher))
+		if err != nil {
+			r.t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(stage, "launcher"), raw, 0o755); err != nil { //nolint:gosec // it is a binary.
+			r.t.Fatal(err)
+		}
+		fmt.Fprintf(&files, "      - { src: launcher, dst: %s, kind: exe }\n", launcherDst())
+	}
 	for i, dst := range sortedKeys(rel.data) {
 		name := fmt.Sprintf("data%d", i)
 		if err := os.WriteFile(filepath.Join(stage, name), []byte(rel.data[dst]), 0o644); err != nil {

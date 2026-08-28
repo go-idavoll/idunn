@@ -52,6 +52,7 @@ import (
 // platform makes that necessary, so these are only about failing before it ever
 // starts.
 const (
+	exitOK    = 0 // the launcher answered a question and did not start anything.
 	exitError = 1 // there is nothing to launch, or it could not be started.
 	exitUsage = 2 // the command line was wrong.
 )
@@ -64,6 +65,33 @@ const (
 // A host bakes it in rather than passing it at runtime, because the launcher is
 // what a user clicks: it should need no arguments to do its job.
 var appBinary = "app"
+
+// launcherSource is the install-relative path, inside a version directory, at
+// which a release ships this launcher — set at build time alongside appBinary:
+//
+//	go build -ldflags "-X main.appBinary=bin/acme -X main.launcherSource=bin/acme-launcher" ./cmd/launcher
+//
+// Empty (the default) means releases do not carry the launcher, and the shim in
+// the install root is never touched. A host that does ship it gets the shim
+// refreshed at the start after the update that brought it, which is the only
+// moment a program may replace the file it is executing from (docs/design.md
+// §13, IDN-17).
+//
+// It is a linker variable rather than a flag for the same reason appBinary is:
+// the launcher is what a user clicks, and it should need no arguments to do its
+// job — and because a flag here would let whoever writes the command line choose
+// which file becomes the thing everyone clicks next.
+var launcherSource = ""
+
+// launcherVersion is this shim's own version, set at build time:
+//
+//	go build -ldflags "-X main.launcherVersion=1.3.0" ./cmd/launcher
+//
+// It answers a question that otherwise has no answer once self-replacement
+// exists (IDN-17): the shim in the install root is no longer necessarily the one
+// that was installed originally, and `--version` is how an operator finds out
+// which one is actually sitting there. A build that leaves it unset says so.
+var launcherVersion = ""
 
 // execFn hands control to the application. It is a variable so the tests can
 // exercise everything up to the hand-over on every platform — the real
@@ -83,9 +111,18 @@ func run(args []string, stdout, stderr io.Writer, exec execFn) int {
 		app    = fs.String("app", appBinary, "install-relative path of the application to start")
 		retain = fs.Int("retain", 0, "version directories to keep after applying a deferred update")
 		quiet  = fs.Bool("quiet", false, "suppress progress output")
+		show   = fs.Bool("version", false, "print this launcher's own version and exit")
 	)
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
+	}
+	if *show {
+		v := launcherVersion
+		if v == "" {
+			v = "unknown (this build stamped no version)"
+		}
+		_, _ = fmt.Fprintf(stdout, "idunn launcher %s\n", v)
+		return exitOK
 	}
 
 	installRoot, err := resolveRoot(*root)
@@ -103,6 +140,18 @@ func run(args []string, stdout, stderr io.Writer, exec execFn) int {
 		FS:             fsx.OS(),
 		Root:           installRoot,
 		RetainVersions: *retain,
+		SelfSource:     launcherSource,
+	}
+	if launcherSource != "" {
+		// The file to replace is the one this process was started from, not a
+		// name derived from the root: a host may install the shim under any
+		// name, and the only authority on which it chose is the running image.
+		self, err := os.Executable()
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "idunn launcher: cannot locate this executable, so it will not be refreshed: %v\n", err)
+		} else {
+			o.SelfPath = fsx.Slash(self)
+		}
 	}
 	if !*quiet {
 		o.Observe = &progress{w: stdout}

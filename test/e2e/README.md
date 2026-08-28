@@ -26,6 +26,7 @@ socket — `go test ./...` stays fast and hermetic.
 | `TestTamperedPayloadIsRefused` | the backstop: a flipped byte is refused, with nothing installed (AGENTS.md §7) |
 | `TestUnchangedPayloadsAreNotRefetched` | delta stage 1: unchanged bytes cross the wire once (§6.4) |
 | `TestGarbageCollectionKeepsTheRollbackTarget` | retention drops the old and keeps the rollback target (§14.1) |
+| `TestTheLauncherReplacesItself` | the shim above `versions/` is carried forward by the start after the update (§13, IDN-17) |
 
 ## How it is built
 

@@ -28,7 +28,7 @@ piece of the section is missing; **open** — contract only, or nothing.
 | §10 | TUF repository layout | **done** — the packer produces it, the client resolves it, a golden test pins the emitted bytes |
 | §11 | Security concept | **done** as a document; per-threat coverage below |
 | §12 | Test concept | **partial** — unit, adversarial corpus and an end-to-end suite over the real binaries (`test/e2e`, IDN-22); no mutation testing, one fuzz target missing |
-| §13 | Cross-platform specifics | **partial** — layout, elevation and the launcher hand-over are per-OS; no `MoveFileEx` self-update of the launcher itself (IDN-17) |
+| §13 | Cross-platform specifics | **done** — layout, elevation and the launcher hand-over are per-OS, and the launcher replaces itself: a rename over the name on POSIX, rename-aside plus `MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)` on Windows (IDN-17) |
 | §14.1 | GC / retention | **done** — `stage.GC`, soft-fails on locked dirs |
 | §14.2 | Elevation | **partial** — Windows `ElevationInteractive` done, and `cmd/installer apply` is the privileged helper it launches. `ElevationService` is built on all three: the protocol and authorization (IDN-07a), peer credentials on Linux and macOS, and a named pipe whose security descriptor is the access decision on Windows (IDN-07b). The macOS audit-token refinement (IDN-07c) is open. Interactive elevation is built on Linux (`pkexec`, IDN-08); macOS needs an Objective-C framework and fails closed with the reason |
 | §14.3 | Quiesce, app lock, `OnBusy` | **done** — lock + coordinator + all three policies; `BusyDeferToRestart` keeps the staged tree in a resting `DEFERRED` journal state and the launcher finishes it at the next start. `BusyAbort` is the zero value and is not promoted; deferral is a recommendation to the host, which the design now says in those words (IDN-21) |
@@ -82,7 +82,7 @@ Not yet enforced:
 | `core/trust` | direct unit tests of the resolve layer (New 91.7%, LatestRelease 94.7%, `ReleaseVersion` 90.9%), plus the red-team corpus end to end |
 | `core/fetch` | `New` 95.2% — TLS trust store, user agent, timeout, and the refusals |
 | `core/hook` | no test files (interface definitions only) |
-| `core/launch` | 87.5% — deferred updates applied, skipped, failed, and nothing to do |
+| `core/launch` | 87.5% — deferred updates applied, skipped, failed, and nothing to do, plus the shim replacing itself |
 | `core/timefloor` | 94.0% — the floor, its refusals, and a damaged or unwritable floor file |
 | `internal/packer` | 86.1% — publish end to end against `core/trust`, plus golden metadata and retention (window, reference counting, the pointer protection) |
 | `cmd/installer` | not in the coverage universe, but tested: a real install against a served repository |
@@ -93,7 +93,7 @@ The end-to-end suite (`make e2e`, build tag `e2e`) holds nine scenarios that dri
 processes against a served repository: install and launch, self-update with the
 predecessor retained, a deferral finished by the launcher, a crash inside the
 transaction, a failing migration, the downgrade preflight, a tampered payload, delta
-stage 1, and retention. It runs on all three platforms in CI. See
+stage 1, retention, and the launcher replacing itself. It runs on all three platforms in CI. See
 [`test/e2e/README.md`](../test/e2e/README.md).
 
 The adversarial corpus (`make redteam-corpus`, build tag `redteam`) holds 25 cases

@@ -570,3 +570,80 @@ func TestGarbageCollectionKeepsTheRollbackTarget(t *testing.T) {
 		t.Error("1.0.0 is beyond the retention window and should have been collected")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// 10. The launcher replaces itself (§13, IDN-17).
+// ---------------------------------------------------------------------------
+
+// The shim lives at the top of the install root and a release's files land
+// inside a version directory, so the blue/green swap never touches it. This is
+// the step that carries a new launcher the last few centimetres — and the reason
+// it needs a mechanism of its own on Windows, where the running executable
+// cannot be replaced but can be renamed.
+func TestTheLauncherReplacesItself(t *testing.T) {
+	t.Parallel()
+	r := newRepo(t)
+	r.publish("1.0.0", release{data: map[string]string{"share/readme.txt": "one"},
+		launcher: "1.0.0"})
+	in := newInstall(t, r)
+	if code, out := in.runInstaller(); code != exitOK {
+		t.Fatalf("installer = %d: %s", code, out)
+	}
+
+	// The shim is what a user clicks, so it sits in the install root — put it
+	// there the way an installer would, from the version that was just
+	// installed.
+	shim := filepath.Join(in.root, exeName("launcher"))
+	installShim(t, in, shim)
+	if got := launcherVersionOf(t, shim); got != "1.0.0" {
+		t.Fatalf("the shim reports %q before any update", got)
+	}
+
+	// A release that ships a different launcher.
+	r.publish("2.0.0", release{data: map[string]string{"share/readme.txt": "two"},
+		launcher: "2.0.0"})
+	if code, out := in.selfUpdate(); code != exitOK {
+		t.Fatalf("self-update = %d: %s", code, out)
+	}
+	// The update moved versions/ forward; the shim is still the old one,
+	// because nothing has started it since.
+	if got := launcherVersionOf(t, shim); got != "1.0.0" {
+		t.Errorf("the shim changed without a start: %q", got)
+	}
+
+	// This start is the moment it may replace itself.
+	if code, out := runProc(t, shim, "-root", in.root, "-quiet"); code != exitOK {
+		t.Fatalf("launcher = %d: %s", code, out)
+	}
+	if got := launcherVersionOf(t, shim); got != "2.0.0" {
+		t.Errorf("the shim reports %q after the start that should have refreshed it", got)
+	}
+	// And it still launches the application it is there to launch.
+	if _, out := runProc(t, shim, "-root", in.root, "-quiet"); !strings.Contains(out, "app 2.0.0") {
+		t.Errorf("the replaced launcher started %q", out)
+	}
+}
+
+// installShim copies the launcher out of the installed version into the install
+// root, which is what an installer does with it.
+func installShim(t *testing.T, in *install, dst string) {
+	t.Helper()
+	src := filepath.Join(in.root, "versions", in.version(), filepath.FromSlash(launcherDst()))
+	raw, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatalf("the release did not ship a launcher: %v", err)
+	}
+	if err := os.WriteFile(dst, raw, 0o755); err != nil { //nolint:gosec // it is a launcher.
+		t.Fatal(err)
+	}
+}
+
+// launcherVersionOf asks a shim which launcher it is.
+func launcherVersionOf(t *testing.T, shim string) string {
+	t.Helper()
+	code, out := runProc(t, shim, "-version")
+	if code != exitOK {
+		t.Fatalf("%s -version = %d: %s", shim, code, out)
+	}
+	return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(out), "idunn launcher"))
+}
