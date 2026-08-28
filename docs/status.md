@@ -3,7 +3,7 @@
 What of [`design.md`](design.md) exists in code today, section by section. This file is
 the map; [`backlog.md`](backlog.md) is the list of work that follows from the gaps.
 
-Reconciled against the tree at branch `claude/idn-packer-delegations-1g5v9s`.
+Reconciled against the tree at branch `claude/remaining-tasks-e2e-tests-sxqd21`.
 Legend: **done** — implemented and tested; **partial** — the path exists but a named
 piece of the section is missing; **open** — contract only, or nothing.
 

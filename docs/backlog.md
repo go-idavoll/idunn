@@ -7,6 +7,13 @@ IDs are stable — reference them in commits and PRs (`feat(packer): IDN-01 …`
 Priority is about unblocking: P0 items block a first usable release, P1 items block
 a *trustworthy* one, P2 items are hardening and reach.
 
+**Where this stands.** P0 is closed. What remains open is named and argued rather than
+outstanding: IDN-12 is blocked on a go-tuf API that does not exist yet; the macOS halves
+of IDN-07 and IDN-08 need an Objective-C framework, which is a decision about the whole
+module rather than a piece of work; the OS-native proxy resolvers of IDN-13 need
+per-platform code no CI runner can exercise; §14.8's cache hand-off is the remainder of
+IDN-07; and IDN-19 is a different repository. Each says so in its own entry.
+
 ---
 
 ## P0 — blocks a first end-to-end release
@@ -358,10 +365,16 @@ rebuild can reproduce.
 This is the CI half. The packer's half — byte-identical repository output from the same
 inputs and reference time — was closed by IDN-01 and is pinned by a golden test.
 
-### IDN-19 — UI sidecars (§8)
-`idunn-fyne`, `idunn-bubbletea`, `idunn-web` are named in the README and do not
-exist. Out of tree by design — one reference implementation would prove the
-`Observer`/`Prompter` surface is sufficient.
+### IDN-19 — UI sidecars (§8) — **out of tree, open**
+`idunn-fyne`, `idunn-bubbletea`, `idunn-web` are named in the README and do not exist.
+Out of tree by design: they are separate modules, and building one here would put a UI
+dependency in a repository whose first architectural rule is not having one
+(AGENTS.md §2). One reference implementation would prove the `Observer`/`Prompter`
+surface is sufficient — and that is the actual open question, since nothing has yet
+tried to render an update with it.
+
+It is the only item in this file that is neither done nor argued as blocked, and it is
+the only one that does not belong in this repository.
 
 ### IDN-20 — Decide the mythology naming question (§2.1) — **done**
 Functional names are canonical in code; mythological names are branding for the
