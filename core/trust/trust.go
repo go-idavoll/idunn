@@ -241,6 +241,43 @@ func (c *Client) ReleaseVersion(goos, goarch, version string) (*release.Descript
 	return d, nil
 }
 
+// SignedLength returns the length the repository signed for a target.
+//
+// It is a filter, never a check: a local candidate of the wrong size cannot be
+// the target, so there is no reason to read it — but one of the right size has
+// proved nothing and still has to pass Accepts. Exposing it separately keeps the
+// cheap answer cheap without giving anyone a way to mistake it for a verdict.
+func (c *Client) SignedLength(targetPath string) (int64, error) {
+	info, err := c.up.GetTargetInfo(targetPath)
+	if err != nil {
+		return 0, fmt.Errorf("%w: target %q: %w", ErrTrust, targetPath, err)
+	}
+	return info.Length, nil
+}
+
+// Accepts reports whether data is exactly the bytes the repository signed for
+// targetPath.
+//
+// The verdict is go-tuf's own VerifyLengthHashes, reached through the signed
+// target metadata this client already trusts. There is deliberately no second
+// comparison beside it (AGENTS.md §1.2): what this method adds is only the
+// *question* — "may these bytes, obtained some other way, be used as this
+// target?" — which is what lets core/stage reuse a file that is already
+// installed instead of fetching it again (docs/design.md §6.4 stage 1).
+//
+// A caller that gets nil here has the same guarantee as one that downloaded the
+// target: no weaker, and reached by the same code.
+func (c *Client) Accepts(targetPath string, data []byte) error {
+	info, err := c.up.GetTargetInfo(targetPath)
+	if err != nil {
+		return fmt.Errorf("%w: target %q: %w", ErrTrust, targetPath, err)
+	}
+	if err := info.VerifyLengthHashes(data); err != nil {
+		return fmt.Errorf("%w: target %q: %w", ErrTrust, targetPath, err)
+	}
+	return nil
+}
+
 // MaterializeTarget places the verified bytes of a TUF target at dst, reusing the
 // local cache only when the cached bytes match the signed hash and length. A
 // cached file is never trusted on name alone (AGENTS.md §1.5).

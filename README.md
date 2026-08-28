@@ -195,7 +195,7 @@ What exists today:
 | Apply path: staging, journal, crash recovery, hooks, GC (`core/stage`, `core/txn`, `core/updater`, `core/installer`) | implemented, tested |
 | Elevation (`core/elevate`) | Windows `ElevationInteractive` implemented; privileged helper service and POSIX prompts fail closed |
 | Clock rollback defence (`core/timefloor`) | implemented: known-good time floor, checked before every refresh and apply |
-| Delta stage 1 (content-addressed reuse) | go-tuf cache reuse only; local relink from retained versions not implemented |
+| Delta stage 1 (content-addressed reuse) | go-tuf cache plus verified reuse of files already installed; relink (reflink/hardlink) open |
 | Packer (`cmd/packer`, `internal/packer`) | publishes a delegated, reproducible TUF repository; `--retain N` retires old releases and the payloads only they named |
 | Installer binary (`cmd/installer`) | implemented: embedded anchor, elevation decision, privileged `apply` verb |
 | Launcher (`cmd/launcher`, `core/launch`) and `BusyDeferToRestart` | implemented: a busy application defers, the launcher applies at the next start |

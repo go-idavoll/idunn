@@ -113,18 +113,29 @@ only `expires`, which lies in the future by construction and would refuse every 
 clock as a lower bound; what is recorded is the local clock at the moment metadata
 verified, which is the evidence that actually exists.
 
-### IDN-10 — Local reuse of already-installed files (§6.4 stage 1, second half)
-`stage.stageFile` always takes bytes from the trust layer. Unchanged files present in
-`current/` or a retained version should be reused by verified content hash
-(reflink/CoW, else hardlink, else copy) — re-hashed, never adopted on name alone.
-Needs the signed hash surfaced from `core/trust`, which the `Materializer` interface
-does not expose yet.
+### IDN-10 — Local reuse of already-installed files (§6.4 stage 1, second half) — **done**
+`stage.stageFile` now offers each file's destination in `current/` and every retained
+version as a candidate, and takes it only if the trust layer says the bytes *are* the
+signed target. The name and the length select what to read; go-tuf decides whether it
+may be used (`trust.SignedLength`, `trust.Accepts`) — there is no second opinion about
+acceptability anywhere in `core/stage` (AGENTS.md §1.2, §1.5).
 
-The end-to-end suite (IDN-22) put a number on what is missing: a payload target's
-path carries its release line (`payloads/v<major>/<sha256>`), and the go-tuf cache
-is keyed by path, so identical bytes republished under a new major are fetched
-again. Reuse keyed on the *content* of what is already installed is what closes
-that, and it is the same mechanism this item asks for.
+The end-to-end suite (IDN-22) is what put a number on the gap: a payload target's path
+carries its release line (`payloads/v<major>/<sha256>`) and the go-tuf cache is keyed by
+path, so identical bytes republished under a new major were fetched again. That scenario
+now asserts two of three payloads across a major bump, and fails at three.
+
+It also turned up a second half of the same problem: `VerifyAfterApply` re-downloaded
+every target to compare against, which would have sent the reused bytes over the wire
+after all. It now checks the installed file against the *signed* target instead of
+against a second copy — cheaper, and the stronger statement.
+
+**Not done, and deliberately:** reuse is a verified copy, not a reflink or a hardlink.
+The network saving §6.4 stage 1 is about is fully delivered; the disk saving is not.
+A hardlink would make one version directory's content changeable by a write to
+another, which is a property blue/green should not quietly give up, and a reflink
+needs per-OS syscalls (`FICLONE`, `clonefile`, ReFS) that belong in `core/fsx` with
+their own tests. Tracked as the remainder of this item.
 
 ### IDN-11 — Test coverage for `core/trust` and `core/fetch` — **done**
 Both had no unit test at all. `core/trust` now has direct tests of the layer the

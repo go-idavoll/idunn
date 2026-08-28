@@ -15,6 +15,7 @@
 package stage_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io/fs"
@@ -52,6 +53,29 @@ func (t *targets) Target(path string) ([]byte, error) {
 		return nil, errors.New("no such target: " + path)
 	}
 	return data, nil
+}
+
+// SignedLength and Accepts stand in for what the trust layer knows about a
+// target: how long it is, and whether given bytes are it. The fake answers both
+// from the same map Target serves, so a reused file is accepted exactly when it
+// is byte-identical to what a download would have produced.
+func (t *targets) SignedLength(path string) (int64, error) {
+	data, ok := t.files[path]
+	if !ok {
+		return 0, errors.New("no such target: " + path)
+	}
+	return int64(len(data)), nil
+}
+
+func (t *targets) Accepts(path string, data []byte) error {
+	want, ok := t.files[path]
+	if !ok {
+		return errors.New("no such target: " + path)
+	}
+	if !bytes.Equal(want, data) {
+		return errors.New("bytes are not target " + path)
+	}
+	return nil
 }
 
 func newRoot(t *testing.T) *fsx.Mem {

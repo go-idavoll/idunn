@@ -55,6 +55,14 @@ type Resolver interface {
 
 	// Target returns the verified bytes of one target.
 	Target(targetPath string) ([]byte, error)
+
+	// SignedLength is the length the repository signed for a target, and
+	// Accepts is go-tuf's verdict on whether given bytes are that target. The
+	// two exist so staging can reuse a file that is already installed without
+	// this package — or that one — growing a second opinion about what is
+	// acceptable (docs/design.md §6.4 stage 1).
+	SignedLength(targetPath string) (int64, error)
+	Accepts(targetPath string, data []byte) error
 }
 
 // AppLock is the exclusive lock a running host application holds, and the ground

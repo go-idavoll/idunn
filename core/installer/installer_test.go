@@ -15,6 +15,7 @@
 package installer_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -69,6 +70,25 @@ func (f *fakeTrust) Target(path string) ([]byte, error) {
 		return nil, errors.New("no such target: " + path)
 	}
 	return data, nil
+}
+
+func (f *fakeTrust) SignedLength(path string) (int64, error) {
+	data, ok := f.targets[path]
+	if !ok {
+		return 0, errors.New("no such target: " + path)
+	}
+	return int64(len(data)), nil
+}
+
+func (f *fakeTrust) Accepts(path string, data []byte) error {
+	want, ok := f.targets[path]
+	if !ok {
+		return errors.New("no such target: " + path)
+	}
+	if !bytes.Equal(want, data) {
+		return errors.New("bytes are not target " + path)
+	}
+	return nil
 }
 
 func descriptor(version string) *release.Descriptor {

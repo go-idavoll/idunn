@@ -503,16 +503,15 @@ func TestUnchangedPayloadsAreNotRefetched(t *testing.T) {
 		t.Fatalf("installer = %d: %s", code, out)
 	}
 
-	// 1.1.0 changes one of the two data files. The application binary carries a
+	// 2.0.0 changes one of the two data files. The application binary carries a
 	// different version stamp, so it changes too: two of three payloads are new.
 	//
-	// The bump stays inside the 1.x line on purpose. A payload target's path
-	// carries the release line (payloads/v<major>/<sha256>), so identical bytes
-	// published under a new major are a *different* target path and the go-tuf
-	// cache — which is keyed by path — cannot recognise them. Closing that gap
-	// is IDN-10: reuse driven by the content hash of what is already installed
-	// rather than by the cache's filename.
-	r.publish("1.1.0", release{data: map[string]string{
+	// The major bump is the point. A payload target's path carries its release
+	// line (payloads/v<major>/<sha256>), and the go-tuf cache is keyed by path,
+	// so the cache alone cannot recognise identical bytes republished under a
+	// new major — it fetched all three before IDN-10. What closes it is reuse
+	// driven by the content already installed, and this is where that shows.
+	r.publish("2.0.0", release{data: map[string]string{
 		"share/stable.txt":   stable,
 		"share/changing.txt": "second",
 	}})
@@ -522,12 +521,13 @@ func TestUnchangedPayloadsAreNotRefetched(t *testing.T) {
 		t.Fatalf("self-update = %d: %s", code, out)
 	}
 	if got := r.srv.payloadRequests(); got != 2 {
-		t.Errorf("the update fetched %d payload targets, want 2 (the binary and the changed file)", got)
+		t.Errorf("the update fetched %d payload targets, want 2 (the binary and the changed file); "+
+			"3 means the unchanged file was not recognised in the installed version", got)
 	}
 	// And the file that was not fetched is nonetheless present and correct in
 	// the new version — a complete, self-contained tree is what blue/green
 	// needs (§6.1).
-	got, err := os.ReadFile(filepath.Join(in.root, "versions", "1.1.0", "share", "stable.txt"))
+	got, err := os.ReadFile(filepath.Join(in.root, "versions", "2.0.0", "share", "stable.txt"))
 	if err != nil {
 		t.Fatalf("the reused file is missing from the new version: %v", err)
 	}

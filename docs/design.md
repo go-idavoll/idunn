@@ -515,6 +515,23 @@ recorded at install time and re-hash fully only on `VerifyAfterApply`/periodic s
 **Synergy with GC:** retained previous versions (14.1) double as a relink and patch
 source — so `RetainVersions` also affects delta efficiency.
 
+> **As built:** local reuse takes the destination path in `current/` and in every
+> retained version as a *candidate* and the trust layer as the *verdict*: the name and
+> the signed length decide what is worth reading, `trust.Accepts` — go-tuf's own check
+> against the signed target metadata — decides whether it may be used. Nothing is
+> adopted on a name. This also covers the case the go-tuf cache structurally cannot:
+> a payload target's path carries its release line, and the cache is keyed by path, so
+> identical bytes republished under a new major are a cache miss and a content hit.
+>
+> The reuse is a verified copy. Reflink/CoW and hardlink are a *disk* saving rather
+> than the network one this section is about, and a hardlink would make one version
+> directory's content changeable by a write to another — which blue/green should not
+> give up quietly. Tracked as the remainder of IDN-10.
+>
+> `VerifyAfterApply` compares the installed file against the signed target rather than
+> against a second download. Re-fetching would have undone the reuse, and comparing two
+> copies is a weaker statement than comparing one against what was signed.
+
 **Packer/repo:** stage 1 requires **no** extra metadata (target hashes already exist).
 For stage 2 the packer optionally adds patch targets against the last N versions; the
 descriptor references them in its `custom` field. Discovery by convention, no signature

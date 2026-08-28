@@ -20,7 +20,7 @@ piece of the section is missing; **open** — contract only, or nothing.
 | §6.1 | Blue/green layout + pointer | **done** — `internal/layout`, symlink (POSIX) / pointer file (Windows), plus the launcher shim (`core/launch`, `cmd/launcher`) |
 | §6.2 | Transaction flow, journal, recovery | **done** — `core/txn`, crash-injection tests |
 | §6.3 | Updater API (`CheckForUpdate`, `Apply`) | **done** |
-| §6.4 | Delta stage 1 (content-addressed reuse) | **partial** — go-tuf cache reuse works; local relink from `current`/retained versions is not implemented |
+| §6.4 | Delta stage 1 (content-addressed reuse) | **done for the wire** — go-tuf cache reuse plus verified reuse of files already installed in `current/` or a retained version, which also covers a major bump the path-keyed cache cannot. The reuse is a copy: reflink/hardlink (a disk saving, not a network one) is the remainder of IDN-10 |
 | §6.4 | Delta stage 2 (binary patches) | **open** — `stage.ApplyPatch` fails closed |
 | §7 | Hook system | **done** — all six hooks defined and wired |
 | §8 | Headless default, UI sidecars | **done** in `core` (no UI dependency); sidecar repos are out of tree |

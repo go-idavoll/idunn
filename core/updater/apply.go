@@ -15,7 +15,6 @@
 package updater
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -277,7 +276,14 @@ func (u *Updater) verifyInstalled(ctx context.Context, d *release.Descriptor, ve
 			return err
 		}
 		f := &d.Files[i]
-		want, err := u.trust.Target(f.Target)
+		// The installed file is checked against the *signed* target, not
+		// against a second download of it. Fetching the bytes again to compare
+		// would undo delta stage 1 — a file reused from an already-installed
+		// version would cross the wire here after all — and it would compare
+		// one copy against another rather than either against what was signed.
+		// Accepts is go-tuf's own check on the trusted target metadata, which
+		// is both the cheaper answer and the stronger one (§11.3 T9).
+		length, err := u.trust.SignedLength(f.Target)
 		if err != nil {
 			return err
 		}
@@ -285,11 +291,11 @@ func (u *Updater) verifyInstalled(ctx context.Context, d *release.Descriptor, ve
 		if err != nil {
 			return err
 		}
-		got, err := fsx.ReadFile(u.fs, fsx.Join(versionDir, dst), int64(len(want)))
+		got, err := fsx.ReadFile(u.fs, fsx.Join(versionDir, dst), length)
 		if err != nil {
 			return fmt.Errorf("%w: %w", ErrVerify, err)
 		}
-		if !bytes.Equal(got, want) {
+		if err := u.trust.Accepts(f.Target, got); err != nil {
 			// No paths, no contents: this string can reach a Reporter.
 			return fmt.Errorf("%w: an installed file does not match its verified target", ErrVerify)
 		}

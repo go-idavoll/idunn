@@ -15,6 +15,7 @@
 package updater_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -46,6 +47,10 @@ type fakeTrust struct {
 
 	targets   map[string][]byte
 	targetErr map[string]error
+
+	// fetched records every target whose bytes were actually handed over. It is
+	// how a test tells "verified" from "downloaded again".
+	fetched []string
 }
 
 func (f *fakeTrust) Refresh() error {
@@ -69,7 +74,30 @@ func (f *fakeTrust) Target(path string) ([]byte, error) {
 	if !ok {
 		return nil, errors.New("no such target: " + path)
 	}
+	f.fetched = append(f.fetched, path)
 	return data, nil
+}
+
+// SignedLength and Accepts are the trust layer's half of delta stage 1: how long
+// a target is, and whether bytes obtained some other way are it. Both answer
+// from the same map Target serves.
+func (f *fakeTrust) SignedLength(path string) (int64, error) {
+	data, ok := f.targets[path]
+	if !ok {
+		return 0, errors.New("no such target: " + path)
+	}
+	return int64(len(data)), nil
+}
+
+func (f *fakeTrust) Accepts(path string, data []byte) error {
+	want, ok := f.targets[path]
+	if !ok {
+		return errors.New("no such target: " + path)
+	}
+	if !bytes.Equal(want, data) {
+		return errors.New("bytes are not target " + path)
+	}
+	return nil
 }
 
 // hooks records every call the host would see, so a test can assert what ran and
@@ -95,6 +123,11 @@ type hooks struct {
 	reportErr    error
 	lastHookCtx  hook.Context
 	migrateMarks []string
+
+	// beforeMigrate runs at the top of Migrate, which is the moment the staged
+	// tree is complete and the swap has not happened. It is how a test reaches
+	// in between the two.
+	beforeMigrate func()
 }
 
 func (h *hooks) Check(c hook.Context) error {
@@ -104,6 +137,9 @@ func (h *hooks) Check(c hook.Context) error {
 }
 
 func (h *hooks) Migrate(c hook.Context) error {
+	if h.beforeMigrate != nil {
+		h.beforeMigrate()
+	}
 	h.migrated++
 	h.lastHookCtx = c
 	if h.migrateEr != nil {
