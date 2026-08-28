@@ -38,7 +38,8 @@ import (
 // machine then talks to whoever got there first. That is not a privilege
 // escalation, but it is a silent denial of every future update, and it is
 // cheaply excluded here.
-func listenLocal(endpoint string) (net.Listener, error) {
+func listenLocal(o HelperOptions) (net.Listener, error) {
+	endpoint := o.Endpoint
 	dir := filepath.Dir(endpoint)
 	if err := checkSocketDir(dir); err != nil {
 		return nil, err

@@ -30,7 +30,7 @@ piece of the section is missing; **open** — contract only, or nothing.
 | §12 | Test concept | **partial** — unit, adversarial corpus and an end-to-end suite over the real binaries (`test/e2e`, IDN-22); no mutation testing, one fuzz target missing |
 | §13 | Cross-platform specifics | **partial** — layout, elevation and the launcher hand-over are per-OS; no `MoveFileEx` self-update of the launcher itself (IDN-17) |
 | §14.1 | GC / retention | **done** — `stage.GC`, soft-fails on locked dirs |
-| §14.2 | Elevation | **partial** — Windows `ElevationInteractive` done, and `cmd/installer apply` is the privileged helper it launches. `ElevationService` has its protocol, authorization and POSIX transport (IDN-07a: `elevate.NewHelper`/`NewService`, peer credentials on Linux and macOS); the Windows named pipe (IDN-07b) and the macOS audit token (IDN-07c) fail closed. Interactive elevation is built on Linux (`pkexec`, IDN-08); macOS needs an Objective-C framework and fails closed with the reason |
+| §14.2 | Elevation | **partial** — Windows `ElevationInteractive` done, and `cmd/installer apply` is the privileged helper it launches. `ElevationService` is built on all three: the protocol and authorization (IDN-07a), peer credentials on Linux and macOS, and a named pipe whose security descriptor is the access decision on Windows (IDN-07b). The macOS audit-token refinement (IDN-07c) is open. Interactive elevation is built on Linux (`pkexec`, IDN-08); macOS needs an Objective-C framework and fails closed with the reason |
 | §14.3 | Quiesce, app lock, `OnBusy` | **done** — lock + coordinator + all three policies; `BusyDeferToRestart` keeps the staged tree in a resting `DEFERRED` journal state and the launcher finishes it at the next start. `BusyAbort` is the zero value and is not promoted; deferral is a recommendation to the host, which the design now says in those words (IDN-21) |
 | §14.4 | Enterprise proxy / CA | **partial** — system trust store + `ExtraCAs` + env proxy, now under test; no PAC/WPAD resolution, no ranged resume, no mTLS |
 | §14.5 | Telemetry + staged rollout | **done** — `Reporter` with a closed error-class vocabulary; local rollout bucketing |
@@ -57,7 +57,9 @@ Not yet enforced:
   only permitted uids, writes only install roots it was configured for, rate-limits, and
   parses a grammar that cannot express anything else. The negative cases live in
   `core/elevate/service_test.go` rather than in the repository corpus, because the
-  attacker there is the caller and not the server. Windows is not covered yet (IDN-07b).
+  attacker there is the caller and not the server. On Windows the same question is
+  answered one layer lower, by the pipe's security descriptor, so a caller who may not
+  ask never reaches the code those cases exercise.
 - **T23** (cache TOCTOU) — still open. The helper does its own refresh into its own
   cache, but nothing enforces that the cache directory is out of an unprivileged user's
   reach, and there is no read-only fd hand-off (§14.8).

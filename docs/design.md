@@ -997,11 +997,21 @@ re-verify+swap runs elevated.
 > would have to know a repository URL, and then the privileged side's trust anchor would
 > be a parameter rather than a build-time fact.
 >
-> Transport and peer credentials are per-OS. Linux (`SO_PEERCRED`) and macOS
-> (`LOCAL_PEERCRED`) are built; the Windows named pipe with its client token is IDN-07b
-> and fails closed, as does the macOS audit token refinement (IDN-07c). A helper that
-> cannot establish who is asking does not answer — half a privilege boundary is worse
-> than none.
+> Transport and authorization are per-OS, and each platform uses the mechanism it
+> actually has rather than an emulation of the other's. POSIX reads `SO_PEERCRED` /
+> `LOCAL_PEERCRED` and decides against `AllowedUIDs`, because a socket's mode cannot
+> express "these users may connect, and I want to know which one". Windows puts the
+> decision in the named pipe's security descriptor, which the kernel evaluates when a
+> client opens the pipe — so a caller who may not ask never reaches idunn's code, not
+> even the parser. There is deliberately no second check behind it: a second
+> access-control implementation next to the operating system's would leave a reader
+> unable to tell which one decides. `SecurityDescriptor` is mandatory on Windows and
+> refused elsewhere; `AllowedUIDs` the other way round.
+>
+> The macOS audit token (IDN-07c), which identifies the signed application rather than
+> only the user, is open and refines `LOCAL_PEERCRED` rather than replacing it. A helper
+> that cannot establish who is asking does not answer — half a privilege boundary is
+> worse than none.
 
 ```go
 // Package elevate abstracts how the privileged apply runs. core stays OS-agnostic.

@@ -104,8 +104,23 @@ privileged applier was never reached, and the two that matter most — a root ou
 allowed set, a uid outside the allowed set — were checked against the mutation that
 removes the guard.
 
-**IDN-07b — Windows named pipe.** `listenLocal`/`dialLocal` and the client token
-(`GetNamedPipeClientProcessId` / `ImpersonateNamedPipeClient`). Fails closed today.
+**IDN-07b — Windows named pipe — done.** `listenLocal`/`dialLocal` over
+`github.com/Microsoft/go-winio`, with the access decision in the pipe's security
+descriptor rather than in a check of our own. That is not a concession to the library's
+API — it is the stronger arrangement: the kernel evaluates the descriptor when a client
+opens the pipe, so a caller who may not ask never reaches any of our code, not even the
+parser. `SecurityDescriptor` (SDDL) is therefore mandatory on Windows, because a pipe
+created without one inherits a default DACL, and "whatever the default turns out to be"
+is not an access decision anyone made. `AllowedUIDs` is refused there, and
+`SecurityDescriptor` refused everywhere else: a setting meant for the other platform is
+a refusal rather than a value quietly ignored.
+
+The dependency is justified under AGENTS.md §3. The alternative was several hundred
+lines of hand-written overlapped I/O implementing `net.Listener` and `net.Conn` over
+`CreateNamedPipe`, at a privilege boundary, on a platform this change could be built
+for but not exercised on. A reviewed, widely deployed implementation of exactly this —
+containerd and Docker use it for the same purpose — is the smaller risk, and it is
+confined to one file.
 
 **IDN-07c — macOS audit token.** `LOCAL_PEERTOKEN` identifies the signed application
 rather than only the user; it refines the `LOCAL_PEERCRED` check that is in place.

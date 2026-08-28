@@ -76,11 +76,21 @@ type HelperOptions struct {
 	// privilege escalation with the publisher's signature on it (T16).
 	AllowedRoots []string
 
-	// AllowedUIDs are the local users permitted to ask. Empty means only the
-	// superuser, which is the fail-closed reading of "not configured": a helper
-	// that answered everyone by default would be a helper nobody meant to
-	// deploy that way.
+	// AllowedUIDs are the local users permitted to ask, on POSIX. Empty means
+	// only the superuser, which is the fail-closed reading of "not configured":
+	// a helper that answered everyone by default would be a helper nobody meant
+	// to deploy that way.
+	//
+	// It has no meaning on Windows and is refused there — the equivalent
+	// question is answered by SecurityDescriptor, before this code runs at all.
 	AllowedUIDs []uint32
+
+	// SecurityDescriptor is the SDDL on the helper's named pipe, and it is how
+	// "who may ask" is expressed on Windows: the kernel evaluates it when a
+	// client opens the pipe, so a caller who may not ask never reaches this
+	// code. It is required there and refused everywhere else, where the
+	// equivalent does not exist and AllowedUIDs decides instead.
+	SecurityDescriptor string
 
 	// MinInterval is the shortest gap between two accepted requests. Zero
 	// selects DefaultMinInterval.
@@ -133,6 +143,12 @@ func NewHelper(o HelperOptions) (*Helper, error) {
 		}
 		roots = append(roots, root)
 	}
+	// Who may ask is expressed differently on each platform, and a setting meant
+	// for the other one is a refusal rather than a value quietly ignored: an
+	// operator who wrote it believed it was doing something.
+	if err := checkPlatformOptions(o); err != nil {
+		return nil, err
+	}
 
 	h := &Helper{
 		applier:  o.Applier,
@@ -149,7 +165,7 @@ func NewHelper(o HelperOptions) (*Helper, error) {
 		h.now = time.Now
 	}
 
-	ln, err := listenLocal(o.Endpoint)
+	ln, err := listenLocal(o)
 	if err != nil {
 		return nil, err
 	}
@@ -211,13 +227,9 @@ func (h *Helper) handle(ctx context.Context, conn net.Conn) {
 // may not ask at all never reaches the parser; the rate limit before the request
 // means a permitted peer cannot use the parser as a workload.
 func (h *Helper) serve(ctx context.Context, conn net.Conn) string {
-	p, err := peerOf(conn)
+	caller, err := authorizeConn(h, conn)
 	if err != nil {
-		h.emit("peer credentials unavailable")
-		return classDenied
-	}
-	if !h.permits(p) {
-		h.emit(fmt.Sprintf("uid %d is not permitted", p.uid))
+		h.emit("denied: " + err.Error())
 		return classDenied
 	}
 	if !h.takeToken() {
@@ -244,16 +256,8 @@ func (h *Helper) serve(ctx context.Context, conn net.Conn) string {
 		h.emit("apply failed: " + err.Error())
 		return classApply
 	}
-	h.emit("applied " + req.Version)
+	h.emit("applied " + req.Version + " for " + caller)
 	return ""
-}
-
-// permits reports whether this peer may ask at all.
-func (h *Helper) permits(p peer) bool {
-	if len(h.uids) == 0 {
-		return p.uid == 0
-	}
-	return slices.Contains(h.uids, p.uid)
 }
 
 // takeToken enforces the minimum gap between two accepted requests.

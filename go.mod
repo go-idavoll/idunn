@@ -3,6 +3,7 @@ module github.com/go-idavoll/idunn
 go 1.25.0
 
 require (
+	github.com/Microsoft/go-winio v0.6.2
 	github.com/sigstore/sigstore v1.10.9
 	github.com/theupdateframework/go-tuf/v2 v2.4.2
 	golang.org/x/sys v0.47.0

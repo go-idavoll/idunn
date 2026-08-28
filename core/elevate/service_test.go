@@ -406,3 +406,21 @@ func speak(t *testing.T, endpoint, payload string) string {
 	answer, _ := io.ReadAll(io.LimitReader(conn, 256))
 	return strings.TrimSpace(string(answer))
 }
+
+// A setting meant for the other platform is refused, not ignored. An operator
+// who wrote SecurityDescriptor into a POSIX deployment believed they were
+// deciding who may ask; silently dropping it would leave them believing it.
+func TestAWindowsOnlySettingIsRefusedOnPosix(t *testing.T) {
+	_, err := elevate.NewHelper(elevate.HelperOptions{
+		Endpoint:           filepath.Join(t.TempDir(), "helper.sock"),
+		Applier:            &recorder{},
+		AllowedRoots:       []string{"/opt/acme"},
+		SecurityDescriptor: "D:P(A;;GA;;;BA)",
+	})
+	if err == nil {
+		t.Fatal("a Windows-only access setting was accepted on POSIX")
+	}
+	if !strings.Contains(err.Error(), "AllowedUIDs") {
+		t.Errorf("the refusal does not say what to use instead: %v", err)
+	}
+}
