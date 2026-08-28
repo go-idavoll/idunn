@@ -81,6 +81,19 @@ type Options struct {
 	// update is finished. Zero selects the minimum that still leaves a rollback
 	// target.
 	RetainVersions int
+
+	// SelfSource is the install-relative path, inside a version directory, of
+	// the launcher binary a release ships. SelfPath is where the launcher lives
+	// in the install root — normally the running executable.
+	//
+	// Both empty disables self-replacement, which is the default: a host that
+	// does not ship its launcher as part of a release has nothing to replace.
+	// Which file in a release *is* the launcher is host knowledge, exactly as
+	// the application's own path is, so it is configured rather than marked in
+	// the descriptor — the release format stays generic and no new file kind has
+	// to be added to the schema for it (docs/design.md §13, IDN-17).
+	SelfSource string
+	SelfPath   string
 }
 
 // Deferred describes an update that is staged and waiting for a start.
@@ -98,6 +111,11 @@ type Result struct {
 
 	// Applied is true when a deferred update was completed by this start.
 	Applied bool
+
+	// SelfReplaced is true when the launcher in the install root was refreshed
+	// from the live version. The new one takes effect at the next start: this
+	// process keeps running the image it was started with.
+	SelfReplaced bool
 
 	// Skipped is true when a deferred update was found but left waiting,
 	// because the application lock said an instance is still running.
@@ -156,12 +174,17 @@ func Start(ctx context.Context, o Options) (Result, error) {
 			ErrLaunch, o.RetainVersions, stage.MinRetain)
 	}
 
+	// A launcher a previous start moved aside is removable now: whatever was
+	// executing from it has exited, or this start would not be running.
+	sweepSelfLeftovers(o.FS, o.Root)
+
 	rec, err := txn.RecoverResult(ctx, o.FS, o.Root, o.Migrate)
 	if err != nil {
 		return Result{}, err
 	}
 	res := Result{Recovered: rec.Recovered, FromVersion: rec.FromVersion, ToVersion: rec.ToVersion}
 	if !rec.Deferred {
+		res.SelfReplaced = o.selfUpdate()
 		return res, nil
 	}
 
@@ -214,7 +237,30 @@ func Start(ctx context.Context, o Options) (Result, error) {
 		}
 		o.emit(hook.PhaseGC, "some old versions could not be removed yet", err)
 	}
+
+	// The shim is refreshed last, once the version it should come from is the
+	// one `current` points at.
+	res.SelfReplaced = o.selfUpdate()
 	return res, nil
+}
+
+// selfUpdate refreshes the launcher shim and reports whether it changed it.
+//
+// A failure is emitted and swallowed on purpose. The installation that is live is
+// complete and runnable whether or not the shim is current, and refusing to start
+// an application because its launcher could not be refreshed would be the worse
+// outcome by a wide margin — the same judgement Start already makes about a
+// deferred update it could not finish.
+func (o Options) selfUpdate() bool {
+	replaced, err := o.updateSelf()
+	if err != nil {
+		o.emit(hook.PhaseApply, "the launcher itself could not be replaced", err)
+		return false
+	}
+	if replaced {
+		o.emit(hook.PhaseCommit, "the launcher was replaced; it takes effect at the next start", nil)
+	}
+	return replaced
 }
 
 // emit notifies the Observer if the host registered one.

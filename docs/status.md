@@ -3,7 +3,7 @@
 What of [`design.md`](design.md) exists in code today, section by section. This file is
 the map; [`backlog.md`](backlog.md) is the list of work that follows from the gaps.
 
-Reconciled against the tree at branch `claude/idn-packer-delegations-1g5v9s`.
+Reconciled against the tree at branch `claude/remaining-tasks-e2e-tests-sxqd21`.
 Legend: **done** — implemented and tested; **partial** — the path exists but a named
 piece of the section is missing; **open** — contract only, or nothing.
 
@@ -15,28 +15,28 @@ piece of the section is missing; **open** — contract only, or nothing.
 | §3.1 | Payload files as TUF targets | **done** |
 | §3.2 | Release descriptor & channel pointer | **done** — `core/release`, strict parse, fuzzed |
 | §4 | TUF roles & key management (client side) | **done** — embedded root, `Refresh`, resolve |
-| §4.1 | Delegations, dedup, retention | **partial** — the packer delegates per channel and per release line from the first publish, and content-addressed payload targets deduplicate; retention is open (IDN-03) |
+| §4.1 | Delegations, dedup, retention | **done** — the packer delegates per channel and per release line from the first publish, content-addressed payload targets deduplicate, and `--retain N` retires releases beyond the window together with every payload no retained release names |
 | §5 | Installer flow | **done** — `core/installer` plus the `cmd/installer` binary: embedded anchor, flags, elevation decision, exit codes |
 | §6.1 | Blue/green layout + pointer | **done** — `internal/layout`, symlink (POSIX) / pointer file (Windows), plus the launcher shim (`core/launch`, `cmd/launcher`) |
 | §6.2 | Transaction flow, journal, recovery | **done** — `core/txn`, crash-injection tests |
 | §6.3 | Updater API (`CheckForUpdate`, `Apply`) | **done** |
-| §6.4 | Delta stage 1 (content-addressed reuse) | **partial** — go-tuf cache reuse works; local relink from `current`/retained versions is not implemented |
-| §6.4 | Delta stage 2 (binary patches) | **open** — `stage.ApplyPatch` fails closed |
+| §6.4 | Delta stage 1 (content-addressed reuse) | **done for the wire** — go-tuf cache reuse plus verified reuse of files already installed in `current/` or a retained version, which also covers a major bump the path-keyed cache cannot. The reuse is a copy: reflink/hardlink (a disk saving, not a network one) is the remainder of IDN-10 |
+| §6.4 | Delta stage 2 (binary patches) | **done** — `internal/delta` (two opcodes, fuzzed), patches emitted by `cmd/packer --patch-against N`, found by the client through the hash-derived path, discarded in favour of the full target when they reconstruct anything else |
 | §7 | Hook system | **done** — all six hooks defined and wired |
 | §8 | Headless default, UI sidecars | **done** in `core` (no UI dependency); sidecar repos are out of tree |
-| §9 | Packer | **partial** — `cmd/packer publish` builds and signs a release end to end (`internal/packer`); retention (step 4) is open |
+| §9 | Packer | **done** — `cmd/packer publish` builds, signs and retires end to end (`internal/packer`) |
 | §10 | TUF repository layout | **done** — the packer produces it, the client resolves it, a golden test pins the emitted bytes |
 | §11 | Security concept | **done** as a document; per-threat coverage below |
-| §12 | Test concept | **partial** — see coverage below; no mutation testing, one fuzz target missing |
-| §13 | Cross-platform specifics | **partial** — layout, elevation and the launcher hand-over are per-OS; no `MoveFileEx` self-update of the launcher itself (IDN-17) |
+| §12 | Test concept | **done** — unit, adversarial corpus, an end-to-end suite over the real binaries (`test/e2e`), three fuzz targets, and mutation testing gated in CI |
+| §13 | Cross-platform specifics | **done** — layout, elevation and the launcher hand-over are per-OS, and the launcher replaces itself: a rename over the name on POSIX, rename-aside plus `MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)` on Windows (IDN-17) |
 | §14.1 | GC / retention | **done** — `stage.GC`, soft-fails on locked dirs |
-| §14.2 | Elevation | **partial** — Windows `ElevationInteractive` done, and `cmd/installer apply` is the privileged helper it launches; `ElevationService` fails closed everywhere; POSIX interactive (`pkexec`, Authorization Services) not built |
-| §14.3 | Quiesce, app lock, `OnBusy` | **done** — lock + coordinator + all three policies; `BusyDeferToRestart` keeps the staged tree in a resting `DEFERRED` journal state and the launcher finishes it at the next start. The design calls it the recommended default and the code leaves `BusyAbort` as the zero value (IDN-21) |
-| §14.4 | Enterprise proxy / CA | **partial** — system trust store + `ExtraCAs` + env proxy, now under test; no PAC/WPAD resolution, no ranged resume, no mTLS |
+| §14.2 | Elevation | **partial** — Windows `ElevationInteractive` done, and `cmd/installer apply` is the privileged helper it launches. `ElevationService` is built on all three: the protocol and authorization (IDN-07a), peer credentials on Linux and macOS, and a named pipe whose security descriptor is the access decision on Windows (IDN-07b). The macOS audit-token refinement (IDN-07c) is open. Interactive elevation is built on Linux (`pkexec`, IDN-08); macOS needs an Objective-C framework and fails closed with the reason |
+| §14.3 | Quiesce, app lock, `OnBusy` | **done** — lock + coordinator + all three policies; `BusyDeferToRestart` keeps the staged tree in a resting `DEFERRED` journal state and the launcher finishes it at the next start. `BusyAbort` is the zero value and is not promoted; deferral is a recommendation to the host, which the design now says in those words (IDN-21) |
+| §14.4 | Enterprise proxy / CA | **partial** — system trust store, `ExtraCAs`, env proxy, resumable ranged downloads, proxy authentication, mTLS client certificates, and a `ProxyResolver` seam; the OS-native resolvers (PAC/WPAD, WinHTTP, `SCDynamicStore`, GSettings) are the remainder of IDN-13 |
 | §14.5 | Telemetry + staged rollout | **done** — `Reporter` with a closed error-class vocabulary; local rollout bucketing |
 | §14.6 | Installer downgrade preflight | **done** |
 | §14.7 | Clock skew | **done** — expiry is classified as `clock_skew`, and `core/timefloor` persists the monotonic known-good time floor that refuses a rolled-back clock |
-| §14.8 | Shared TUF cache in elevated mode | **open** — belongs to the unbuilt helper service |
+| §14.8 | Shared TUF cache in elevated mode | **open** — the helper exists now (IDN-07a) and refreshes into its own cache; the cache-ownership check and the read-only fd hand-off are not built |
 
 ## Threat model coverage (§11.3)
 
@@ -45,18 +45,28 @@ Enforced in code, with a test: T1–T6, T7 (`internal/safepath`, fuzzed), T8 (st
 (`Migrator.Rollback`), T12 (go-tuf), T13 (`internal/packer` resolves every role key
 and verifies the repository before it writes anything, and refuses a root it cannot
 publish under), T14 (`SchemaVersion`, `MinClientVersion`), T15
-(`stage.GC`), T17 (quiesce), T19 (installer preflight), T20 (`Outcome` carries no paths
-or raw error strings), T21 (every staged byte re-checked against the signed hash),
+(`stage.GC`), T17 (quiesce), T19 (installer preflight, now also as a two-phase corpus
+case where the channel head moves backwards under fresh metadata), T20 (`Outcome`
+carries no paths or raw error strings), T21 (every staged byte re-checked against the signed hash),
 T22 (`core/timefloor`: the known-good floor is checked before every refresh and
 before an apply, and raised by every successful refresh).
 
 Not yet enforced:
 
-- **T16, T23** (LPE via the helper, cache TOCTOU) — the helper service does not exist;
-  `NewService` fails closed. The Windows interactive path enforces its half: three
-  validated scalars cross the boundary, nothing else.
-- **T18** (enterprise DPI) — tolerated by design, but PAC and resumable downloads are
-  missing, so the *availability* half is incomplete.
+- **T16** (LPE via the helper) — enforced on POSIX and under test: the helper answers
+  only permitted uids, writes only install roots it was configured for, rate-limits, and
+  parses a grammar that cannot express anything else. The negative cases live in
+  `core/elevate/service_test.go` rather than in the repository corpus, because the
+  attacker there is the caller and not the server. On Windows the same question is
+  answered one layer lower, by the pipe's security descriptor, so a caller who may not
+  ask never reaches the code those cases exercise.
+- **T23** (cache TOCTOU) — still open. The helper does its own refresh into its own
+  cache, but nothing enforces that the cache directory is out of an unprivileged user's
+  reach, and there is no read-only fd hand-off (§14.8).
+- **T18** (enterprise DPI) — tolerated by design, and the availability half now has
+  resumable downloads, proxy authentication and mTLS. OS-native proxy resolution
+  including PAC is still missing, so a machine whose proxy is configured only in the
+  OS (and not in the environment) needs the host to supply a `ProxyResolver`.
 
 ## Test state
 
@@ -64,7 +74,7 @@ Not yet enforced:
 
 | Package | Coverage |
 |---|---|
-| `core/elevate` | 94.6% |
+| `core/elevate` | 94.6%, plus the helper service: the control, and a hostile caller against every guard it has |
 | `core/release` | 94.4% |
 | `core/fsx` | 93.3% |
 | `core/stage` | 90.8% |
@@ -72,20 +82,70 @@ Not yet enforced:
 | `core/installer` | 86.8% |
 | `core/txn` | 86.6% |
 | `core/trust` | direct unit tests of the resolve layer (New 91.7%, LatestRelease 94.7%, `ReleaseVersion` 90.9%), plus the red-team corpus end to end |
-| `core/fetch` | `New` 95.2% — TLS trust store, user agent, timeout, and the refusals |
+| `core/fetch` | TLS trust store, user agent, timeout, the refusals, and the enterprise path: a resumed download against a link that drops, a poisoned resume, a resume at the wrong offset, mutual TLS against a real handshake, and proxy credentials on a real CONNECT |
 | `core/hook` | no test files (interface definitions only) |
-| `core/launch` | 87.5% — deferred updates applied, skipped, failed, and nothing to do |
+| `core/launch` | 87.5% — deferred updates applied, skipped, failed, and nothing to do, plus the shim replacing itself |
 | `core/timefloor` | 94.0% — the floor, its refusals, and a damaged or unwritable floor file |
-| `internal/packer` | 86.1% — publish end to end against `core/trust`, plus golden metadata |
+| `internal/packer` | 86.1% — publish end to end against `core/trust`, plus golden metadata and retention (window, reference counting, the pointer protection) |
 | `cmd/installer` | not in the coverage universe, but tested: a real install against a served repository |
+| `test/e2e` | not in the coverage universe by design — the work happens in child processes, which carry no instrumentation |
 
-The adversarial corpus (`make redteam-corpus`, build tag `redteam`) holds 22 cases
-across clock rollback, expiry, malformed descriptors, mix-and-match, path traversal,
-resolve (pointer/descriptor disagreement), unknown key, wrong hash, wrong key, and
-wrong length. All but one attack the repository; the clock case attacks the machine
-and is driven through the real install path, because the time floor only exists where
-there is an installation. Fuzzers: `FuzzDescriptor`, `FuzzDstSanitize`.
+The end-to-end suite (`make e2e`, build tag `e2e`) holds nine scenarios that drive
+`cmd/packer`, `cmd/installer`, `cmd/launcher` and a host application as separate
+processes against a served repository: install and launch, self-update with the
+predecessor retained, a deferral finished by the launcher, a crash inside the
+transaction, a failing migration, the downgrade preflight, a tampered payload, delta
+stage 1, retention, and the launcher replacing itself. It runs on all three platforms in CI. See
+[`test/e2e/README.md`](../test/e2e/README.md).
+
+The adversarial corpus (`make redteam-corpus`, build tag `redteam`) holds 25 cases
+across clock rollback, downgrade, expiry, freeze, malformed descriptors, mix-and-match,
+path traversal, resolve (pointer/descriptor disagreement), rollback, unknown key, wrong
+hash, wrong key, and wrong length. Most attack the repository; the clock case attacks
+the machine, and the rollback, freeze and downgrade cases attack the client's *memory* —
+what it already trusts and what is already installed — so they run in two phases and are
+driven through the real install path where a version floor is involved. Fuzzers: `FuzzDescriptor`, `FuzzDstSanitize`, `FuzzPatchApply`.
 `FuzzPatchApply` waits on a patch format (§6.4 stage 2).
+
+## Blocked on upstream
+
+- **Streaming target downloads (IDN-12).** go-tuf v2.4.2's `Fetcher` returns `[]byte`
+  and verifies over the whole slice, so a payload is held in memory whole. Fixing it
+  below that line would mean a second download-and-verify path beside go-tuf, which
+  AGENTS.md §1.2 rules out. `trust.Options.MaxTargetBytes` bounds the damage in the
+  meantime: a target above the ceiling is refused before it is requested.
+
+## Supply chain
+
+| Property | State |
+|---|---|
+| Reproducible packer output | pinned by `internal/packer`'s golden test (IDN-01) |
+| Reproducible binaries | `make repro`, gated in CI, digests published per run (IDN-18) |
+| Build provenance | `actions/attest-build-provenance` on tags (IDN-18) |
+| Trust anchor | embedded `root.json`, never fetched |
+
+## Mutation score
+
+`make mutate` (gremlins) over the lifecycle packages. *Efficacy* is the share of covered
+mutants the suite kills; *mutant coverage* is the share of mutants any test reaches at
+all. Measured on the tree that closed IDN-16:
+
+| Package | Efficacy | Mutant coverage |
+|---|---|---|
+| `core/txn` | 98.7% | 97.4% |
+| `core/updater` | 89.3% | 97.2% |
+| `core/stage` | 88.3% | 95.9% |
+| `core/launch` | 85.4% | 82.0% |
+
+CI gates at 75% on both, which catches a regression without failing on the weather. The
+numbers above are what to raise it towards.
+
+A surviving mutant is a test-gap issue, never a reason to weaken an assertion — a change
+that raises this score by deleting a check is the reward-hacking AGENTS.md §6 asks
+reviewers to look for. The one survivor in `core/txn` is argued rather than fixed: the
+record ceiling in `Append` cannot be reached, because a `BEGIN` resets the history and
+the transition table bounds a transaction at six records. It stays as defence against a
+future table that loops.
 
 ## Deliberate non-goals for now
 

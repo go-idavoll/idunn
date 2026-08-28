@@ -574,3 +574,60 @@ func TestApplySurfacesAFailedRollback(t *testing.T) {
 		t.Fatalf("journal ends at %s, want it left for the next attempt", s)
 	}
 }
+
+// VerifyAfterApply checks the installed files against the signed target, not
+// against a second download of it (§11.3 T9, IDN-10).
+//
+// Fetching the bytes again would undo delta stage 1: a file reused from an
+// already-installed version would cross the wire here after all, which is
+// exactly the traffic the reuse exists to avoid. It would also be the weaker
+// check — one copy compared against another copy, rather than either against
+// what the repository signed.
+func TestVerifyAfterApplyDoesNotDownloadAgain(t *testing.T) {
+	f := newFixture(t, "1.2.0", "1.3.0")
+	f.opts.Policy.VerifyAfterApply = true
+
+	if err := f.run(); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	// Each target is fetched once, for staging. A second appearance is the
+	// verification having gone to the network.
+	seen := map[string]int{}
+	for _, target := range f.trust.fetched {
+		seen[target]++
+	}
+	for target, n := range seen {
+		if n > 1 {
+			t.Errorf("%s was fetched %d times; VerifyAfterApply downloaded it again", target, n)
+		}
+	}
+	if len(seen) == 0 {
+		t.Fatal("nothing was fetched at all, so this test proves nothing")
+	}
+}
+
+// And it still catches what it exists to catch: a file that changed between the
+// staging and the check.
+func TestVerifyAfterApplyCatchesAChangedFile(t *testing.T) {
+	f := newFixture(t, "1.2.0", "1.3.0")
+	f.opts.Policy.VerifyAfterApply = true
+	f.hooks.beforeMigrate = func() {
+		// The staged tree is in place and the swap has not happened yet.
+		dir, err := layout.VersionDir(root, "1.3.0")
+		if err != nil {
+			t.Fatalf("VersionDir: %v", err)
+		}
+		if err := fsx.WriteFileAtomic(f.fs, fsx.Join(dir, "app"), []byte("binary 1.3.1"), 0o755); err != nil {
+			t.Fatalf("tampering with the staged tree: %v", err)
+		}
+	}
+
+	err := f.run()
+	if !errors.Is(err, updater.ErrVerify) {
+		t.Fatalf("err = %v, want ErrVerify", err)
+	}
+	if got := f.pointer(); got != "1.2.0" {
+		t.Errorf("current = %q; a failed verification must roll back", got)
+	}
+}

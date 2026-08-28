@@ -60,6 +60,24 @@ type Options struct {
 	SnapshotExpiry  time.Duration
 	TimestampExpiry time.Duration
 
+	// PatchAgainst is how many previous releases per platform this publish emits
+	// delta patches against (docs/design.md §6.4 stage 2). Zero publishes none,
+	// which is the default: a patch is an optimisation, and one nobody asked for
+	// is repository size spent on nothing.
+	//
+	// A patch is only published when it is meaningfully smaller than the payload
+	// it reconstructs, and a client that finds none simply fetches the file — so
+	// this setting cannot make an update fail, only cheaper.
+	PatchAgainst int
+
+	// Retain is how many releases per platform stay in the release line this
+	// publish touches. Zero disables retention entirely and keeps everything,
+	// which is the safe default: removing a published target is the one thing a
+	// publish does that cannot be undone, so it happens because an operator
+	// asked, never because they forgot to say otherwise. See retire and
+	// MinRetain for what it will and will not remove.
+	Retain int
+
 	// LookupEnv resolves role key references. Nil selects the process
 	// environment.
 	LookupEnv func(string) (string, bool)
@@ -81,6 +99,14 @@ type Result struct {
 	// Delegations maps each delegated role to the number of targets it holds
 	// after the publish.
 	Delegations map[string]int
+
+	// PatchTargets lists the delta patches this publish emitted, sorted.
+	PatchTargets []string
+
+	// RetiredTargets lists the target paths retention removed, sorted. It is
+	// empty when retention is off, and an operator is entitled to see it: these
+	// are the only files a publish ever deletes.
+	RetiredTargets []string
 }
 
 // blob is one target this publish emits: the bytes, where they live in the
@@ -97,6 +123,12 @@ type blob struct {
 	// republishing a different payload or descriptor under a path that is
 	// already published is refused.
 	mutable bool
+
+	// dst and platform are set on payload blobs only. They are what lets delta
+	// stage 2 find the file a payload replaces: "the same destination, in the
+	// previous release, for the same platform".
+	dst      string
+	platform string
 }
 
 // Publish builds the release described by pack.yaml and writes it into the TUF
@@ -158,7 +190,7 @@ func Publish(o Options) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	return writeRelease(o, cfg, st, keys, blobs, []string{pointerRole, contentRole})
+	return writeRelease(o, cfg, st, keys, blobs, []string{pointerRole, contentRole}, major)
 }
 
 // checkRoot refuses a repository this packer cannot publish into correctly.
@@ -244,7 +276,10 @@ func buildRelease(cfg *Config, major, pointerRole, contentRole string) ([]blob, 
 			if err != nil {
 				return nil, fmt.Errorf("%w: %s-%s %s: %w", ErrConfig, p.OS, p.Arch, f.Dst, err)
 			}
-			blobs = append(blobs, blob{target: target, data: data, sum: sum, info: info, role: contentRole})
+			blobs = append(blobs, blob{
+				target: target, data: data, sum: sum, info: info, role: contentRole,
+				dst: f.Dst, platform: p.OS + "-" + p.Arch,
+			})
 			refs = append(refs, release.FileRef{
 				Target: target,
 				Dst:    f.Dst,
@@ -342,7 +377,8 @@ func encodeJSON(v any) ([]byte, error) {
 // an excuse to re-sign the whole repository: it would churn metadata every
 // client has to re-fetch, and it would need keys the operator did not intend to
 // use for this release.
-func writeRelease(o Options, cfg *Config, st *state, keys *keyring, blobs []blob, touched []string) (*Result, error) {
+func writeRelease(o Options, cfg *Config, st *state, keys *keyring, blobs []blob,
+	touched []string, major string) (*Result, error) {
 	res := &Result{
 		Name:        cfg.Name,
 		Version:     cfg.Version,
@@ -350,6 +386,19 @@ func writeRelease(o Options, cfg *Config, st *state, keys *keyring, blobs []blob
 		Roles:       map[string]int64{},
 		Delegations: map[string]int{},
 	}
+
+	// Patches are built before the merge, because they are targets of this
+	// publish like any other and have to go through the same immutability check
+	// and the same signing.
+	patches, err := buildPatches(o, st, blobs, contentRoleOf(touched), major)
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range patches {
+		res.PatchTargets = append(res.PatchTargets, p.target)
+	}
+	sort.Strings(res.PatchTargets)
+	blobs = append(blobs, patches...)
 
 	// Merge into the delegated roles, refusing any change to a target that is
 	// already published and immutable.
@@ -375,6 +424,17 @@ func writeRelease(o Options, cfg *Config, st *state, keys *keyring, blobs []blob
 		roleTargets[b.role][b.target] = b.info
 	}
 	sort.Strings(res.AddedTargets)
+
+	// Retention runs on the merged view, so the release being published is
+	// already part of what the window is counted over, and it runs before
+	// anything is signed: a role is signed once, over its final content.
+	retired, err := retire(o, cfg, st, blobs, roleTargets, contentRoleOf(touched))
+	if err != nil {
+		return nil, err
+	}
+	if retired != nil {
+		res.RetiredTargets = retired.Targets
+	}
 
 	roleNames := make([]string, 0, len(roleTargets))
 	for role := range roleTargets {
@@ -475,7 +535,31 @@ func writeRelease(o Options, cfg *Config, st *state, keys *keyring, blobs []blob
 			return nil, fmt.Errorf("%w: writing timestamp.json: %w", ErrRepo, err)
 		}
 	}
+
+	// Deletion comes last, after the metadata that no longer names these files
+	// is the metadata being served. The reverse order would open a window in
+	// which the repository points at files that are already gone -- the one
+	// failure a retention pass can cause that a client cannot tell from an
+	// attack.
+	if retired != nil {
+		for _, rel := range retired.Files {
+			if err := os.Remove(filepath.Join(st.targetsDir, filepath.FromSlash(rel))); err != nil && !os.IsNotExist(err) {
+				return nil, fmt.Errorf("%w: retiring %s: %w", ErrRepo, rel, err)
+			}
+		}
+	}
 	return res, nil
+}
+
+// contentRoleOf picks the release-line role out of the roles this publish
+// touches. Retention is scoped to that one role; see retire.
+func contentRoleOf(touched []string) string {
+	for _, role := range touched {
+		if _, ok := majorNum(role); ok {
+			return role
+		}
+	}
+	return ""
 }
 
 // metadataFile is one metadata document waiting to be written.

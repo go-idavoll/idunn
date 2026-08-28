@@ -65,6 +65,99 @@ jobs:
       - name: Test (race)
         run: go test -race ./...
 
+  # End-to-end: the real packer, installer, launcher and host application, as
+  # separate processes against a served TUF repository. It runs on the same
+  # three platforms as `test` because most of what it covers -- the install
+  # pointer, the launcher hand-over, GC on a locked directory -- is exactly
+  # where the three differ.
+  e2e:
+    name: end-to-end (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+
+      # The suite builds the binaries it drives, so the module cache has to be
+      # warm before the first test starts its own `go build`.
+      - name: Warm the build cache
+        run: go build ./...
+
+      - name: End-to-end
+        run: go test -tags=e2e -count=1 -timeout 20m ./test/e2e/...
+
+  # Reproducible builds are the client half of the supply-chain story. TUF says
+  # the bytes you received are the bytes the publisher signed; this says the
+  # bytes the publisher signed are the ones this source produces, so an
+  # independent rebuild can check a release instead of trusting it
+  # (docs/design.md §9, §15).
+  #
+  # Two passes in one job catch what actually breaks reproducibility: a
+  # wall-clock stamp, an embedded absolute path, a map iterated into output.
+  # They do not catch a difference between two machines -- that is what
+  # publishing the digests is for.
+  repro:
+    name: reproducible builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+
+      - name: Build twice and compare
+        run: make repro
+
+      - name: Publish the digests
+        run: |
+          {
+            echo '### Reproducible build digests'
+            echo
+            echo '```'
+            cat dist/repro/a.sha256
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: binaries
+          path: dist/repro/a
+          retention-days: 7
+
+  # Mutation testing asks the question coverage cannot: not "did this line run?"
+  # but "would the suite notice if it were wrong?". It gates on thresholds set
+  # below the measured scores, so it catches a regression rather than the
+  # weather; the numbers to beat are in docs/status.md and are meant to rise.
+  #
+  # A surviving mutant is a test-gap issue. It is never a reason to weaken an
+  # assertion, and a change that raises the score by deleting a check is the
+  # reward-hacking AGENTS.md §6 asks reviewers to look for.
+  mutate:
+    name: mutation testing (lifecycle code)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+
+      - name: Install gremlins
+        run: go install github.com/go-gremlins/gremlins/cmd/gremlins@latest
+
+      - name: Mutate
+        run: make mutate
+
   # Coverage is measured once, on Linux, and deliberately not by the plain
   # `go test ./...` above, which understates it badly:
   #
@@ -76,6 +169,11 @@ jobs:
   #     stage and safepath would be attributed to nothing.
   #   * ./... as the coverage universe counts cmd/ and the harness tooling,
   #     which are build plumbing and will never carry tests.
+  #
+  # The end-to-end suite is deliberately NOT added here. It drives the real
+  # binaries as child processes, and a coverage profile only records the process
+  # that carries the instrumentation -- so tagging it in would double this job's
+  # runtime and credit nothing. Its job is the `e2e` one above.
   #
   # Scoping to ./core/... and ./internal/... measures the lifecycle code the
   # README sets a 100% goal for -- 72% at the time of writing, against the 17%
@@ -116,7 +214,7 @@ jobs:
   # main so a pull request can never mutate the branch.
   badge:
     name: coverage badge
-    needs: [test, coverage]
+    needs: [test, e2e, coverage]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
@@ -154,6 +252,40 @@ jobs:
           git add README.md
           git commit -m "ci: update coverage badge to ${pct}% [skip ci]"
           git push
+
+  # Build provenance: a signed statement of which workflow, at which commit,
+  # produced these exact bytes. It complements TUF rather than replacing it --
+  # TUF says the publisher vouches for a release, provenance says where the
+  # release came from, and an auditor wants both (docs/design.md §15).
+  #
+  # Tags only. Attestation needs id-token: write, which a pull request from a
+  # fork does not get and should not; running it on every push would produce a
+  # stream of attestations for commits nobody releases.
+  provenance:
+    name: build provenance
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    needs: [test, e2e, repro]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+
+      # The same build the repro job proved deterministic, so what is attested
+      # is what an independent rebuild can reproduce.
+      - name: Build
+        run: make repro
+
+      - uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: dist/repro/a/*
 
   static:
     name: gofmt + tidy + lint

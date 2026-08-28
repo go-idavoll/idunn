@@ -68,10 +68,24 @@ idunn-bubbletea/     (separate module, depends on idunn/core)
 interface (`Refresh`, `LatestRelease`, `MaterializeTarget`) and stays independent of TUF
 details — replaceable and testable.
 
-### 2.1 Naming scheme (optional): mythology vs. function
+### 2.1 Naming scheme: mythology vs. function — **decided**
+
+> **Decision (IDN-20): functional names are canonical in code, and mythological names
+> are branding only — for the umbrella `idunn` and nothing below it.**
+>
+> The recommended middle path below is what the code has done since the first commit,
+> so the decision costs nothing to make and stops the question being asked again. What
+> it adds is the second half: no package, type, error class, target path, journal state
+> or metric name is a mythological one either, and none will be added later "for the
+> two most prominent public sub-names". A codename that exists only in the README is
+> harmless; one that appears in a stack trace an auditor is reading is not, and the
+> boundary is easier to hold at zero than at two.
+>
+> The table below stays as the record of what was considered. `AGENTS.md` §2 already
+> states the rule for contributors.
 
 The umbrella name is **idunn**. For the internal packages there is a coherent Norse
-naming scheme — charming, but deliberately left as an **open decision**:
+naming scheme — charming, and considered:
 
 | Function (package) | Mytho codename | Why it fits |
 |---|---|---|
@@ -92,12 +106,11 @@ what the transport lets through — mythologically correct and exactly the data 
 - *Against:* not self-documenting — `bragi` tells a new developer or auditor nothing;
   hampers onboarding/grep; can read as playful in enterprise/audit contexts; insider
   knowledge = bus factor.
-- *Recommended middle path:* **functional names stay canonical in code**
-  (self-documenting, audit-friendly) — the rest of this document uses them throughout.
-  The mythological names serve **optionally** as product/module branding or internal
-  codenames (at minimum the umbrella `idunn`, possibly the two most prominent public
-  sub-names `heimdall`/`bifrost`). That gets you the charm without losing readability.
-  How far to go is a deliberately open decision.
+- *Chosen:* **functional names are canonical in code** (self-documenting,
+  audit-friendly) — the rest of this document uses them throughout — and the
+  mythological names are branding for the umbrella `idunn` alone. Not `heimdall`, not
+  `bifrost`, not as an internal codename: the charm is worth having in a README and it
+  is not worth having in a grep.
 
 ---
 
@@ -429,7 +442,6 @@ type Options struct {
 
 type Policy struct {
     AllowDowngrade   bool // default false (blocks rollback attacks).
-    EnforceExpiry    bool // default true; enforce descriptor validity on top of TUF metadata expiry.
     VerifyAfterApply bool // re-hash installed files post-swap (belt & braces).
 
     // RetainVersions is how many version dirs to keep after a successful commit,
@@ -446,7 +458,7 @@ type Policy struct {
     QuiesceTimeout time.Duration // default 30s.
 
     // OnBusy decides what happens if the target app cannot be quiesced in time.
-    OnBusy BusyPolicy // default BusyDeferToRestart.
+    OnBusy BusyPolicy // zero value BusyAbort; see 14.3 for what to set it to.
 }
 
 type ElevationMode int
@@ -479,6 +491,14 @@ func (u *Updater) CheckForUpdate(ctx context.Context) (*Release, error)
 // rolls back files and calls Migrator.Rollback. Safe to call again after a crash.
 func (u *Updater) Apply(ctx context.Context, r *Release) error
 ```
+
+> **As built:** there is no `EnforceExpiry`. Schema 1 descriptors carry no validity
+> window of their own, so the flag governed nothing beyond TUF's metadata expiry —
+> which go-tuf checks during `Refresh` and which nothing above it may relax. A second,
+> app-level expiry was considered and dropped: it is the kind of parallel check §1.2 of
+> `AGENTS.md` warns about, and it buys nothing `timestamp.expires` does not already
+> give. The field was removed rather than left forced-true, because a knob that cannot
+> be turned is one somebody will eventually believe in (IDN-15).
 
 ### 6.4 Delta / differential updates (content-addressed)
 
@@ -515,10 +535,40 @@ recorded at install time and re-hash fully only on `VerifyAfterApply`/periodic s
 **Synergy with GC:** retained previous versions (14.1) double as a relink and patch
 source — so `RetainVersions` also affects delta efficiency.
 
+> **As built:** local reuse takes the destination path in `current/` and in every
+> retained version as a *candidate* and the trust layer as the *verdict*: the name and
+> the signed length decide what is worth reading, `trust.Accepts` — go-tuf's own check
+> against the signed target metadata — decides whether it may be used. Nothing is
+> adopted on a name. This also covers the case the go-tuf cache structurally cannot:
+> a payload target's path carries its release line, and the cache is keyed by path, so
+> identical bytes republished under a new major are a cache miss and a content hit.
+>
+> The reuse is a verified copy. Reflink/CoW and hardlink are a *disk* saving rather
+> than the network one this section is about, and a hardlink would make one version
+> directory's content changeable by a write to another — which blue/green should not
+> give up quietly. Tracked as the remainder of IDN-10.
+>
+> `VerifyAfterApply` compares the installed file against the signed target rather than
+> against a second download. Re-fetching would have undone the reuse, and comparing two
+> copies is a weaker statement than comparing one against what was signed.
+
 **Packer/repo:** stage 1 requires **no** extra metadata (target hashes already exist).
-For stage 2 the packer optionally adds patch targets against the last N versions; the
-descriptor references them in its `custom` field. Discovery by convention, no signature
-needed.
+For stage 2 the packer optionally adds patch targets against the last N versions.
+Discovery by convention, no signature needed.
+
+> **As built (stage 2, IDN-14):** the descriptor references nothing. The client derives
+> the patch target's path from the hash it has and the hash the repository signed for
+> what it wants (`release.PatchPath`), asks for it, and is told there is no such target
+> when none was published — so "discovery by convention" is literal, and a publisher can
+> start or stop emitting patches without a descriptor changing or a client caring.
+>
+> The format is `internal/delta`: copy-from-base and insert-literal, and nothing else.
+> Neither zstd `--patch-from` nor bsdiff was taken, because both would be a dependency
+> in the *apply* path — the one place where a bug is a bug in what lands on a user's
+> disk — and both bring a decoder far larger than the problem. The cost is compression
+> ratio against a suffix sort, and it is a cheap cost: a worse patch is bandwidth, since
+> the result is checked against the signed hash either way, and a patch that reconstructs
+> anything else is discarded in favour of the full download.
 
 ```go
 // plan computes the minimal fetch set for a release Descriptor given what is
@@ -719,8 +769,12 @@ if targetsKey == "" || snapshotKey == "" || timestampKey == "" {
 }
 ```
 
-> **As built:** steps 1–3 and 5 exist in `internal/packer`; step 4 (retention) does
-> not yet (IDN-03). Two details differ from the sketch above and are argued in
+> **As built:** steps 1–5 exist in `internal/packer`. Retention is `--retain N` and
+> is off by default, because deleting a published target is the one thing a publish
+> cannot undo; content addressing turns it into reference counting, and it refuses to
+> retire a release a channel pointer still names or to touch another release line
+> ([`packer.md`](packer.md) §4.1). Two details differ from the sketch above and are
+> argued in
 > [`packer.md`](packer.md): payload targets are named by content hash, and `custom`
 > is not used — `dst`, `mode` and `kind` describe a release's *use* of a target, not
 > the target, and the descriptor already carries them where the client validates
@@ -728,8 +782,9 @@ if targetsKey == "" || snapshotKey == "" || timestampKey == "" {
 
 Root signatures (key rotation) deliberately run **outside** the normal publish — via a
 separate, strictly controlled ceremony (offline, m-of-n), ideally with `tuf-on-ci`.
-Reproducible builds of the artifacts remain a goal: bit-identical binaries allow
-independent rebuilds and supply-chain verification.
+Reproducible builds of the artifacts are enforced rather than aspired to: `make repro`
+builds every command twice and fails if the bytes differ, and CI publishes the digests
+so an independent rebuild has something to compare against (IDN-18).
 
 ---
 
@@ -948,6 +1003,50 @@ request shape, rate-limit, no shell.
 **Least privilege:** download+verify run unprivileged into staging; only the minimal
 re-verify+swap runs elevated.
 
+> **As built (`ElevationService`, IDN-07a):** `core/elevate` has both halves.
+> `NewService` is the unprivileged caller's `Elevator`; `NewHelper` is the privileged
+> listener. What crosses is the same three validated scalars the command-line contract
+> carries, in a line format rather than a serialization — the request grammar already
+> forbids every byte that would need escaping, so "one field per line" is injective
+> without a quoting rule anyone could get wrong, and the parser on the privileged side
+> is the smallest thing that can do the job: fixed keys, fixed order, hard bounds, no
+> vocabulary beyond it.
+>
+> The helper decides in this order: **who** is asking (peer credentials from the kernel,
+> never a claim by the caller), **how often** (a minimum interval, because a caller that
+> can ask in a loop can keep a machine reinstalling), **what** is being asked (the
+> grammar), and only then does any work. `HelperOptions.AllowedRoots` must name at least
+> one root and a request for anything else is denied — that list is the difference
+> between a helper and a local root exploit, because the *bytes* are signed but a caller
+> who could choose *where* they land would be writing publisher-signed content to a path
+> of their choosing, as root (T16). `AllowedUIDs` empty reads as "the superuser and
+> nobody else", never as "everyone".
+>
+> The answer back is a class from a closed vocabulary and nothing else: it crosses to a
+> less privileged process, which must not be told about a filesystem it may not be able
+> to read (T20).
+>
+> `Applier` is the seam the host implements around `core/installer` with the anchor its
+> build embeds. `core/elevate` deliberately cannot construct one: a package that could
+> would have to know a repository URL, and then the privileged side's trust anchor would
+> be a parameter rather than a build-time fact.
+>
+> Transport and authorization are per-OS, and each platform uses the mechanism it
+> actually has rather than an emulation of the other's. POSIX reads `SO_PEERCRED` /
+> `LOCAL_PEERCRED` and decides against `AllowedUIDs`, because a socket's mode cannot
+> express "these users may connect, and I want to know which one". Windows puts the
+> decision in the named pipe's security descriptor, which the kernel evaluates when a
+> client opens the pipe — so a caller who may not ask never reaches idunn's code, not
+> even the parser. There is deliberately no second check behind it: a second
+> access-control implementation next to the operating system's would leave a reader
+> unable to tell which one decides. `SecurityDescriptor` is mandatory on Windows and
+> refused elsewhere; `AllowedUIDs` the other way round.
+>
+> The macOS audit token (IDN-07c), which identifies the signed application rather than
+> only the user, is open and refines `LOCAL_PEERCRED` rather than replacing it. A helper
+> that cannot establish who is asking does not answer — half a privilege boundary is
+> worse than none.
+
 ```go
 // Package elevate abstracts how the privileged apply runs. core stays OS-agnostic.
 package elevate
@@ -964,6 +1063,21 @@ type Elevator interface {
     ApplyElevated(ctx context.Context, r *Release) error
 }
 ```
+
+> **As built (`ElevationInteractive` on Linux, IDN-08):** `pkexec`, found at an
+> absolute path rather than through `PATH` — the program found through `PATH` is the
+> one that would show an authentication dialog with the system's face on it, and a
+> user who types their password into a planted binary has been robbed by us. The
+> request crosses as an argument vector, so unlike the Windows path nothing is
+> rendered into a string that has to be re-split. The environment handed across is
+> empty: what pkexec sanitizes is *our* environment, and the smallest thing to
+> sanitize is nothing. Cancelling the context abandons the wait and not the apply, for
+> the same reason it does on Windows. An example polkit policy is in
+> [`examples/org.idunn.apply.policy`](examples/org.idunn.apply.policy).
+>
+> macOS is open (IDN-08): Authorization Services and `SMAppService` are Objective-C
+> frameworks with no pure-Go binding, so it is a cgo decision rather than a coding
+> one, and `newInteractive` fails closed there with that written down.
 
 #### 14.2.1 Windows `ElevationInteractive` (implemented)
 
@@ -1022,7 +1136,9 @@ writing concurrently.
   quit, update pending") and waits up to `QuiesceTimeout`.
 - On timeout `Policy.OnBusy` decides:
     - `BusyAbort` — abort cleanly, retry later.
-    - `BusyDeferToRestart` (**recommended default** when the running app updates itself):
+    - `BusyDeferToRestart` (**the recommended setting** when the running app updates
+      itself — a recommendation to the host, not a language default; see the note
+      below):
       the package stays staged, a "pending update" marker is set; the **launcher** performs
       swap+migrate at the next start — *before* the app opens the DB, when no lock is held.
       Sidesteps the concurrency problem entirely.
@@ -1042,8 +1158,11 @@ shared state are host knowledge and are configured.
 > handing over. A newer update may supersede one that is still waiting (`BEGIN` is legal
 > after `DEFERRED`), so a machine that never restarts cannot wedge the updater.
 >
-> `BusyDeferToRestart` is **not** the zero value and is not promoted to one: Go's zero
-> value has to be the failing one, and here that is `BusyAbort` (backlog IDN-21).
+> `BusyDeferToRestart` is **not** the zero value and is not promoted to one. Go's zero
+> value has to be the failing one, and here that is `BusyAbort`; and Go cannot tell
+> "left unset" from "deliberately chosen", so promoting an unset field would turn a
+> forgotten line of host configuration into an update that quietly stays staged and
+> lands at the next start. A host that wants deferral asks for it. (IDN-21, closed.)
 
 ### 14.4 Enterprise networks: proxy, PAC & custom CA
 
@@ -1059,6 +1178,21 @@ this Fetcher, so the hardening sits in *one* place:
   client certificates.
 - **Resumable ranged downloads** (HTTP Range) + exponential backoff for flaky corporate
   links; proxy-auth support.
+
+> **As built (IDN-13):** `fetch.Options` carries `Resume`, `ProxyUser`/`ProxyPassword`,
+> `ClientCertPEM`/`ClientKeyPEM` and a `ProxyResolver`. Resume is the availability half
+> of T18: a link that drops at forty megabytes makes a hundred-megabyte release an
+> update that never completes, however often it is retried from the start. It widens
+> *how* bytes are obtained and not *what* is acceptable — a different second half
+> produces the wrong hash and go-tuf refuses it — but the offset is this layer's
+> responsibility, so a 206 that begins anywhere other than where the request asked is
+> refused rather than concatenated. Proxy credentials go on the CONNECT, because every
+> URL idunn fetches is https and a proxy therefore sees a tunnel rather than a request
+> it could authenticate individually.
+>
+> The OS-native resolvers named above — WinHTTP/WinINET with PAC, `SCDynamicStore`,
+> GSettings — are not built. `ProxyResolver` is the seam they slot into, and a host that
+> needs one supplies it; `http.ProxyFromEnvironment` is the default.
 
 **Signature independence as a feature:** because authenticity rests on the TUF roles,
 **TLS-terminating DPI proxies are tolerable by design** — even if the corporate proxy
@@ -1177,7 +1311,11 @@ because an unprivileged user can tamper with the cache while the helper reads it
   target counts. **TAP-4 multi-repository consensus** for real package DAGs / multiple
   roots.
 - **Provenance/SLSA + reproducible builds** in CI as an additional supply-chain proof
-  (complements TUF, does not replace it).
+  (complements TUF, does not replace it). **Built (IDN-18):** `make repro` gates every
+  pull request on two builds of the same tree producing the same bytes and publishes the
+  digests, and `actions/attest-build-provenance` attests that same build on tags. TUF
+  says the bytes you received are the ones the publisher signed; this says the bytes the
+  publisher signed are the ones this source produces.
 - **Time hardening** (Sec. 14.7): `clock_skew` classification + user guidance as a minimum;
   authenticated time (Roughtime/NTS) as opt-in for controlled fleets.
 - **Delta updates:** file-level delta (content-addressed) falls out of the TUF targets
@@ -1185,6 +1323,8 @@ because an unprivileged user can tamper with the cache while the helper reads it
   open, for large binaries that change slightly.
 - **Uptane** as a reference should the system ever move toward embedded/automotive (a TUF
   extension for exactly that case).
+- **Naming (2.1) is decided, not open** (IDN-20): functional names in code, mythology as
+  branding for the umbrella name only.
 - **When *without* TUF after all?** Only for single-vendor + single-HSM-key + tolerable
   compromise consequences + a hard minimalism constraint; then a tiny, externally audited
   own core. Conscious price: no online rotation, full break on key loss. For "Fort Knox",

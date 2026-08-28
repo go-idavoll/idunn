@@ -15,6 +15,7 @@
 package txn_test
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -296,4 +297,74 @@ func TestPhaseIsRecorded(t *testing.T) {
 	if last, _ := open(t, m).Last(); last.Phase != hook.PhaseApply {
 		t.Fatalf("phase %q survived as %q", hook.PhaseApply, last.Phase)
 	}
+}
+
+// The record ceiling is a boundary, and a boundary is where an off-by-one lives.
+// Exactly MaxRecords is a journal this code wrote; one more is not.
+//
+// This test exists because mutation testing (IDN-16) found that `>` and `>=`
+// were interchangeable here as far as the suite could tell. Coverage said the
+// line was exercised; nothing said it was exercised at the point where it
+// decides anything.
+func TestOpenAcceptsExactlyTheRecordCeilingAndRefusesOneMore(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		records int
+		accept  bool
+	}{
+		{"one below the ceiling", txn.MaxRecords - 1, true},
+		{"exactly the ceiling", txn.MaxRecords, true},
+		{"one above the ceiling", txn.MaxRecords + 1, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newRoot(t)
+			if err := m.MkdirAll(layout.Meta(root), 0o700); err != nil {
+				t.Fatalf("MkdirAll: %v", err)
+			}
+			if err := fsx.WriteFileAtomic(m, layout.Journal(root), journalWith(t, tc.records), 0o600); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+
+			_, err := txn.Open(m, root)
+			switch {
+			case tc.accept && err != nil:
+				t.Fatalf("a journal of %d records was refused: %v", tc.records, err)
+			case !tc.accept && err == nil:
+				t.Fatalf("a journal of %d records was accepted", tc.records)
+			}
+		})
+	}
+}
+
+// journalWith renders a journal document holding n records that form a legal
+// history: BEGIN once, then a state the transition table allows to repeat as
+// often as the count needs.
+//
+// The history has to be legal, or Open would refuse it for the wrong reason and
+// the boundary would never be reached.
+func journalWith(t *testing.T, n int) []byte {
+	t.Helper()
+	// BEGIN -> STAGED -> ROLLED_BACK -> BEGIN is the shortest cycle the
+	// transition table allows, so it is how a history of any length is built.
+	// Open checks transitions pairwise, which is what makes a stored history
+	// that long legal in the first place.
+	records := make([]txn.Record, 0, n)
+	for i := range n {
+		state := txn.StateBegin
+		switch i % 3 {
+		case 1:
+			state = txn.StateStaged
+		case 2:
+			state = txn.StateRolledBack
+		}
+		records = append(records, rec(state, "1.2.0", "1.3.0"))
+	}
+	raw, err := json.Marshal(struct {
+		SchemaVersion int          `json:"schema_version"`
+		Records       []txn.Record `json:"records"`
+	}{SchemaVersion: txn.JournalSchema, Records: records})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
 }

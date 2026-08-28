@@ -614,3 +614,74 @@ func TestRefreshAgainstAnUnreachableRepositoryFails(t *testing.T) {
 		t.Fatalf("err = %v, want ErrTrust", err)
 	}
 }
+
+// clientWith points a fresh client at the fixture's repository with the given
+// ceiling, and refreshes it.
+func (f *fixture) clientWith(t *testing.T, maxTarget int64) (*trust.Client, string) {
+	t.Helper()
+	work := t.TempDir()
+	c, err := trust.New(trust.Options{
+		Root:           f.build.RootBytes,
+		MetadataURL:    f.srv.MetadataURL(),
+		TargetsURL:     f.srv.TargetsURL(),
+		LocalDir:       work,
+		MaxTargetBytes: maxTarget,
+		Now:            func() time.Time { return f.refTime },
+	})
+	if err != nil {
+		t.Fatalf("trust.New: %v", err)
+	}
+	c.UnsafeSetRefTime(f.refTime)
+	if err := c.Refresh(); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	return c, work
+}
+
+// A target whose signed length is above the ceiling is refused before a byte of
+// it is requested (IDN-12).
+//
+// go-tuf hands a target over as one []byte, so the signed length is also the
+// allocation about to happen. A repository is untrusted input even when it is
+// correctly signed, and an unbounded allocation from it is an OOM kill with no
+// diagnosis. Refusing is the fail-closed answer, and it names the knob to raise.
+func TestATargetAboveTheCeilingIsRefusedBeforeItIsFetched(t *testing.T) {
+	f := refreshed(t, nil)
+	c, work := f.clientWith(t, 1) // one byte: everything is too big.
+
+	_, err := c.Target(f.build.DescriptorTarget())
+	if err == nil {
+		t.Fatal("a target above the ceiling was accepted")
+	}
+	if !errors.Is(err, trust.ErrTrust) {
+		t.Errorf("err = %v, want an ErrTrust", err)
+	}
+	// The refusal has to say what to do about it, or an operator with a
+	// legitimately large release has an unexplained failure.
+	if !strings.Contains(err.Error(), "MaxTargetBytes") {
+		t.Errorf("the refusal does not name the option to raise: %v", err)
+	}
+	// And nothing was fetched: a refusal that downloads first has saved nothing.
+	entries, err := os.ReadDir(filepath.Join(work, "targets"))
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("the refused target left %d files in the cache", len(entries))
+	}
+}
+
+// A ceiling above the target changes nothing, so the guard cannot be the reason
+// an honest repository stops working.
+func TestATargetBelowTheCeilingIsUnaffected(t *testing.T) {
+	f := refreshed(t, nil)
+	c, _ := f.clientWith(t, trust.DefaultMaxTargetBytes)
+
+	raw, err := c.Target(f.build.DescriptorTarget())
+	if err != nil {
+		t.Fatalf("Target: %v", err)
+	}
+	if len(raw) == 0 {
+		t.Error("the descriptor resolved to no bytes")
+	}
+}

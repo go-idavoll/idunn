@@ -41,10 +41,12 @@ transaction: no trust client, no filesystem, no root, no channel, `RetainVersion
 below 2 (that would leave no rollback target), a negative `QuiesceTimeout`, an
 unknown `OnBusy` or elevation mode, or an elevated mode with no `Elevator`.
 
-`Policy.EnforceExpiry` is forced to `true` whatever the caller passed. Go cannot tell
-"left unset" from "deliberately false", and the unsafe reading must not win by
-accident — TUF metadata expiry is the freeze defence and nothing above go-tuf may
-relax it.
+There is no switch for metadata expiry, and there is not going to be one. It is
+checked inside go-tuf during `Refresh`, which runs before this package decides
+anything, and the freeze defence *is* that check — a flag that could relax it would
+be a way to ask for the attack. An earlier `EnforceExpiry` existed and was always
+forced to `true`; it was removed rather than kept as decoration, because a knob that
+cannot be turned is a knob somebody will eventually believe in (IDN-15).
 
 Defaults: `RetainVersions` 2, `QuiesceTimeout` 30s, `OnBusy` `BusyAbort` (the zero
 value fails rather than forces), `Elevation` `ElevationNone`, `Now` `time.Now`, `OS`

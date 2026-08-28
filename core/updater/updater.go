@@ -55,6 +55,18 @@ type Resolver interface {
 
 	// Target returns the verified bytes of one target.
 	Target(targetPath string) ([]byte, error)
+
+	// SignedLength is the length the repository signed for a target, and
+	// Accepts is go-tuf's verdict on whether given bytes are that target. The
+	// two exist so staging can reuse a file that is already installed without
+	// this package — or that one — growing a second opinion about what is
+	// acceptable (docs/design.md §6.4 stage 1).
+	SignedLength(targetPath string) (int64, error)
+	Accepts(targetPath string, data []byte) error
+
+	// SignedSHA256 is the hash the repository signed for a target. It is how a
+	// delta patch is named (§6.4 stage 2) and never a check of its own.
+	SignedSHA256(targetPath string) (string, error)
 }
 
 // AppLock is the exclusive lock a running host application holds, and the ground
@@ -126,22 +138,17 @@ type Options struct {
 }
 
 // Policy holds the operator-tunable decisions. The zero value is the safe one:
-// no downgrade, expiry enforced.
+// no downgrade, no forcing, the minimum retention that still leaves a rollback
+// target.
+//
+// There is deliberately no switch here for metadata expiry. It is checked inside
+// go-tuf during Refresh, which runs before this package decides anything, and the
+// freeze defence *is* that check (§11.3 T5) — a flag that could relax it would be
+// a way to ask for the attack. An earlier `EnforceExpiry` existed and was always
+// forced to true; it was removed rather than kept as decoration, because a knob
+// that cannot be turned is a knob somebody will eventually believe in (IDN-15).
 type Policy struct {
 	AllowDowngrade bool // default false (blocks rollback attacks).
-
-	// EnforceExpiry is always on and cannot be turned off from here.
-	//
-	// TUF metadata expiry is checked inside go-tuf during Refresh, which runs
-	// before this package decides anything, and no flag above it may relax that
-	// — the freeze defence is exactly that check (§11.3 T5). New sets this to
-	// true whatever the caller passed, because Go cannot distinguish "left
-	// unset" from "deliberately false" and the unsafe reading must not be the
-	// one that wins by accident.
-	//
-	// TODO(release): schema 1 descriptors carry no validity window of their own.
-	// When they do, this flag governs that app-level check on top of TUF's.
-	EnforceExpiry bool
 
 	// VerifyAfterApply re-reads every installed file after the swap and compares
 	// it against its verified target bytes. Belt and braces: the bytes were
@@ -163,7 +170,16 @@ type Policy struct {
 	QuiesceTimeout time.Duration // default 30s.
 
 	// OnBusy decides what happens if the target app cannot be quiesced in time.
-	OnBusy BusyPolicy // default BusyDeferToRestart.
+	//
+	// The zero value is BusyAbort and stays that way. BusyDeferToRestart is what
+	// docs/design.md §14.3 recommends for a host whose running application
+	// updates itself, and a host that wants it says so — New does not promote an
+	// unset field to it. Go cannot tell "left unset" from "deliberately chosen",
+	// so promoting would turn a forgotten field into a change of behaviour in
+	// the apply path: an update that quietly stays staged and lands at the next
+	// start, on a host that never asked for one. The safe reading has to be the
+	// one that wins by accident (AGENTS.md §1.1).
+	OnBusy BusyPolicy
 }
 
 // ElevationMode selects how a privileged apply is performed.
@@ -274,7 +290,6 @@ func New(o Options) (*Updater, error) {
 	}
 	// See the field comment: expiry is not negotiable from here, and the value
 	// Go gives an unset bool is the unsafe one.
-	p.EnforceExpiry = true
 
 	now := o.Now
 	if now == nil {

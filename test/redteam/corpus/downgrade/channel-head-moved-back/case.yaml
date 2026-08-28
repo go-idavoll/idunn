@@ -1,0 +1,25 @@
+# Copyright 2026 The idunn Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+description: "the channel head names a release older than the one installed, with all metadata current"
+class: downgrade
+expect: reject
+error_class: downgrade
+history: downgrade
+notes: >
+  Role versions rise while the release goes backwards, so TUF has no reason to
+  object: every document is authentic, signed and fresh. Only the app-level
+  version floor (§14.6, T19) stands between the client and an older release, and
+  the case proves that by first showing a client with no installation accepts
+  the very same repository.

@@ -56,9 +56,11 @@ _This is the designed scope, not a claim about today's code — see
 - **Privilege model**: per-user in-process, or a privileged system helper over
   authenticated IPC (privilege boundary == trust boundary).
 - **Garbage collection** of old versions with a configurable retention window.
-- **Reproducible, signed releases** maintained via `go:generate` and a TUF repo.
-- **Auditable by design**: a written security concept (threat model + mitigations)
-  and a 100% coverage goal for the lifecycle code.
+- **Reproducible, signed releases** maintained via `go:generate` and a TUF repo —
+  two builds of a commit must produce the same bytes, and CI proves it every run.
+- **Auditable by design**: a written security concept (threat model + mitigations),
+  a 100% coverage goal for the lifecycle code, and mutation testing to check that
+  the coverage means something.
 
 ## How it works
 
@@ -93,11 +95,13 @@ github.com/go-idavoll/idunn          # core library (this repo)
   core/launch     # start-of-day: settle the journal, apply a deferred update
   core/timefloor  # monotonic known-good time floor (clock rollback defence)
   internal/safepath # the single validator for untrusted install-relative paths
+  internal/delta    # the intra-file delta patch format (fuzzed apply path)
   internal/packer   # the publishing engine: pack.yaml -> signed TUF repository
   cmd/installer   # thin installer binary
   cmd/launcher    # the stable shim the install layout starts with
   cmd/packer      # go:generate TUF repo maintenance + build tool
   test/redteam    # standing adversarial corpus + harness (build tag: redteam)
+  test/e2e        # the whole chain as real processes (build tag: e2e)
 ```
 
 ### UI sidecars
@@ -177,6 +181,11 @@ renewal — the same apples that keep your software fresh. The imagery is delibe
 Guardian's shield plus the bridge between worlds — protection and delivery, in one
 mark.
 
+The mythology stops at the mark. Packages, types, error classes and target paths carry
+functional names — `trust`, `fetch`, `stage`, `txn` — and always will
+([`design.md`](docs/design.md) §2.1). A codename is charming in a README and a question
+an auditor has to stop and ask in a stack trace.
+
 ## Status
 
 **Early implementation.** The architecture and security concept are complete; the
@@ -189,15 +198,16 @@ What exists today:
 |---|---|
 | Descriptor & channel-pointer ingest (`core/release`, `internal/safepath`) | implemented, fuzzed, adversarially tested |
 | TUF trust client and resolve (`core/trust`, `core/fetch`) | implemented, unit-tested and adversarially tested |
-| Adversarial corpus (`test/redteam`) | 22 cases, gates every PR |
+| Adversarial corpus (`test/redteam`) | 25 cases, gates every PR |
+| End-to-end suite (`test/e2e`) | 11 scenarios over the real packer, installer, launcher and a host app, on all three platforms |
 | Apply path: staging, journal, crash recovery, hooks, GC (`core/stage`, `core/txn`, `core/updater`, `core/installer`) | implemented, tested |
-| Elevation (`core/elevate`) | Windows `ElevationInteractive` implemented; privileged helper service and POSIX prompts fail closed |
+| Elevation (`core/elevate`) | interactive elevation on Windows (UAC) and Linux (pkexec); the privileged helper service runs on all three (Unix socket with peer credentials, named pipe with a security descriptor); the macOS prompt fails closed |
 | Clock rollback defence (`core/timefloor`) | implemented: known-good time floor, checked before every refresh and apply |
-| Delta stage 1 (content-addressed reuse) | go-tuf cache reuse only; local relink from retained versions not implemented |
-| Packer (`cmd/packer`, `internal/packer`) | publishes a delegated, reproducible TUF repository; retention not implemented |
+| Delta stage 1 (content-addressed reuse) | go-tuf cache plus verified reuse of files already installed; relink (reflink/hardlink) open |
+| Packer (`cmd/packer`, `internal/packer`) | publishes a delegated, reproducible TUF repository; `--retain N` retires old releases and the payloads only they named |
 | Installer binary (`cmd/installer`) | implemented: embedded anchor, elevation decision, privileged `apply` verb |
-| Launcher (`cmd/launcher`, `core/launch`) and `BusyDeferToRestart` | implemented: a busy application defers, the launcher applies at the next start |
-| Delta stage 2 (binary patches) | not implemented |
+| Launcher (`cmd/launcher`, `core/launch`) and `BusyDeferToRestart` | implemented: a busy application defers, the launcher applies at the next start and replaces itself when a release ships a new one |
+| Delta stage 2 (binary patches) | implemented: `internal/delta`, patches emitted by the packer and found by convention, with the full target as the fallback |
 
 The full section-by-section reconciliation against the design lives in
 [`docs/status.md`](docs/status.md); the open work is tracked in

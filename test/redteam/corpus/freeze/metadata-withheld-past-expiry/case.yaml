@@ -1,0 +1,25 @@
+# Copyright 2026 The idunn Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+description: "the server stops publishing and pins the client to the last state it saw"
+class: freeze
+expect: reject
+error_class: verify
+history: freeze
+notes: >
+  No mutator: the repository is honest and simply never updated. The attacker's
+  whole power is to withhold — to keep a client from ever learning about a fixed
+  release — and expiry is what bounds how long that works. The case also checks
+  that a freshly published repository IS accepted at the same clock, so the
+  refusal cannot be the clock in disguise.

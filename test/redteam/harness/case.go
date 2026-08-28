@@ -43,6 +43,12 @@ const (
 	// repository may be flawless — the attack is on the client's environment,
 	// not on the bytes it is served (§14.7, T22).
 	ClassClock ErrorClass = "clock"
+	// ClassDowngrade is a refusal by the app-level version floor: every
+	// document is authentic and current, and the release they name is older
+	// than what is already installed (§14.6, T19). TUF cannot catch it — a
+	// publisher is entitled to point a channel wherever it likes; what is not
+	// acceptable is walking an installation backwards without being told to.
+	ClassDowngrade ErrorClass = "downgrade"
 )
 
 // ClockAttack is a manipulation of the client's clock rather than of the
@@ -58,6 +64,33 @@ const (
 	// ClockRollback turns the clock back after the client has already run, to
 	// bring expired metadata back inside its validity window.
 	ClockRollback ClockAttack = "rollback"
+)
+
+// HistoryAttack is an attack that needs the client to have run before. It is a
+// third axis of a case: a repository mutation attacks the bytes, a clock attack
+// attacks the machine, and this one attacks the *memory* — what the client
+// already trusts, and what is already installed.
+//
+// These are the attacks TUF's freshness guarantees exist for, and none of them
+// is expressible against a client with no past: served version 1 metadata is
+// only a rollback if the client has seen version 5, and an older release is only
+// a downgrade if something newer is installed.
+type HistoryAttack string
+
+const (
+	// HistoryNone is a case that needs no prior run.
+	HistoryNone HistoryAttack = ""
+
+	// HistoryRollback serves metadata older than what the client already
+	// trusts.
+	HistoryRollback HistoryAttack = "rollback"
+
+	// HistoryFreeze withholds new metadata: the server keeps handing out what
+	// it handed out before, until it is stale.
+	HistoryFreeze HistoryAttack = "freeze"
+
+	// HistoryDowngrade moves the channel head below the installed version.
+	HistoryDowngrade HistoryAttack = "downgrade"
 )
 
 // Case is one adversarial scenario, loaded from a case.yaml.
@@ -79,6 +112,11 @@ type Case struct {
 	// mutator: the repository is the honest baseline, and what is tampered with
 	// is the machine the client runs on.
 	Clock ClockAttack `yaml:"clock"`
+
+	// History names an attack that needs the client to have run before. Like
+	// Clock it stands in for a mutator: the runner drives the two phases, and
+	// the mutator field (if set) describes only the *first*, honest one.
+	History HistoryAttack `yaml:"history"`
 }
 
 // LoadCases walks root (typically test/redteam/corpus) and returns every case in
@@ -147,7 +185,7 @@ func loadCase(dir string) (Case, error) {
 		return c, fmt.Errorf("harness: %s: expect must be \"reject\", got %q", dir, c.Expect)
 	}
 	switch c.ErrorClass {
-	case ClassVerify, ClassDescriptor, ClassResolve, ClassClock:
+	case ClassVerify, ClassDescriptor, ClassResolve, ClassClock, ClassDowngrade:
 	default:
 		return c, fmt.Errorf("harness: %s: unknown error_class %q", dir, c.ErrorClass)
 	}
@@ -156,10 +194,21 @@ func loadCase(dir string) (Case, error) {
 	default:
 		return c, fmt.Errorf("harness: %s: unknown clock %q", dir, c.Clock)
 	}
-	// A case attacks the repository, the clock, or both — but it has to attack
-	// something, or it is a baseline dressed up as an adversary.
-	if c.Mutator == "" && c.Clock == ClockNone {
-		return c, fmt.Errorf("harness: %s: neither a mutator nor a clock attack", dir)
+	switch c.History {
+	case HistoryNone, HistoryRollback, HistoryFreeze, HistoryDowngrade:
+	default:
+		return c, fmt.Errorf("harness: %s: unknown history %q", dir, c.History)
+	}
+	// Two axes that both drive the whole run would each have to decide what the
+	// other does. Refusing the combination is cheaper than defining it, and no
+	// attack so far needs both.
+	if c.Clock != ClockNone && c.History != HistoryNone {
+		return c, fmt.Errorf("harness: %s: a case attacks the clock or the client's history, not both", dir)
+	}
+	// A case attacks the repository, the clock, or the client's history — but it
+	// has to attack something, or it is a baseline dressed up as an adversary.
+	if c.Mutator == "" && c.Clock == ClockNone && c.History == HistoryNone {
+		return c, fmt.Errorf("harness: %s: neither a mutator, a clock attack nor a history attack", dir)
 	}
 	if c.Mutator != "" {
 		if _, ok := Mutators[c.Mutator]; !ok {

@@ -1,11 +1,11 @@
 # The packer
 
-> **Status: implemented, except retention.** `cmd/packer publish` reads a
-> `pack.yaml`, emits payloads, descriptors and channel pointers as delegated TUF
-> targets, and re-signs `targets`, the delegations, `snapshot` and `timestamp`
-> (IDN-01, IDN-02). The engine lives in `internal/packer`; `cmd/packer` is flags,
-> exit codes and nothing else. What is still open is **retention** (IDN-03, §4
-> step 4): nothing is ever removed from a delegation yet.
+> **Status: implemented.** `cmd/packer publish` reads a `pack.yaml`, emits payloads,
+> descriptors and channel pointers as delegated TUF targets, re-signs `targets`, the
+> delegations, `snapshot` and `timestamp` (IDN-01, IDN-02), and retires releases
+> beyond a keep window when asked to (IDN-03, `--retain N`, §4 step 4 and §4.1). The
+> engine lives in `internal/packer`; `cmd/packer` is flags, exit codes and nothing
+> else.
 >
 > The other producer of a TUF repository in this repo is the red-team harness
 > (`test/redteam/harness`, `make baseline`). It builds a *test* repository with
@@ -129,9 +129,12 @@ name.
 2. **Write the release descriptor** and add it as a target in the same delegation.
 3. **Set the channel pointer** to the new version and add it as a target in the
    **channel delegation** (`stable`).
-4. **Retention:** remove targets of retired releases beyond the keep window,
-   respecting any delta patch sources that still reference them (§6.4).
-   *Not implemented — IDN-03.*
+4. **Retention** (`--retain N`, off by default): keep the newest *N* releases per
+   platform in the release line being published and remove the rest, together with
+   every payload no retained release still names. Content addressing makes this
+   reference counting rather than path guessing, which is what lets two releases
+   share one payload target safely. Files are deleted **after** the new metadata is
+   published, never before.
 5. **Re-sign** the roles this publish touched (the two delegations with the
    offline/HSM key, then `snapshot` and `timestamp` with the CI keys). Consistent
    snapshots on.
@@ -148,6 +151,31 @@ silent key rotation for a role the operator did not mean to publish.
 a separate controlled ceremony (offline, m-of-n; `tuf-on-ci` is the recommendation).
 A publish that could touch `root` would put the highest asset in the model behind the
 most frequently run command.
+
+### 4.1 What retention will not do
+
+Three refusals, each of them a way retention could otherwise break a repository:
+
+- **It never removes a release a channel pointer still names.** The pointers are read
+  and parsed with the client's own parser, not inferred from a path — what a pointer
+  names is a property of its content. A publisher that retired its own channel head
+  would be running the freeze attack against its own clients.
+- **It never touches another release line.** Retiring an old major is an end-of-life
+  decision, and it would need that line's signing key, which the operator did not
+  offer for this release.
+- **It refuses a window of one.** Two is the floor (`packer.MinRetain`), for three
+  independent reasons: a client mid-download when a publish lands would have its
+  target deleted underneath it, `min_from_version` chains need a predecessor to
+  still be fetchable, and delta stage 2 patches are computed against previous
+  releases.
+
+Retention is **off by default**. Removing a published target is the one thing a
+publish does that cannot be undone, so it happens because an operator asked, never
+because they forgot to say otherwise. A publish reports every retired target by name.
+
+A client holding a snapshot older than the retiring publish can still resolve a
+retired target and get a 404. That is inherent to retention of any kind; the keep
+window is what bounds it, which is why the minimum is not one.
 
 ## 5. Hard rules
 
@@ -275,15 +303,16 @@ scripts.
 
 ## 8. Beyond a first version
 
-- **Delta stage 2** (§6.4): optional patch targets against the last *N* versions,
-  referenced from the descriptor's `custom` field. Discovery is by convention and
-  needs no extra signature — the *result* is verified against the signed target hash,
-  so a broken or tampered patch only causes a fallback to the full target (backlog
-  IDN-14).
+- **Delta stage 2** (§6.4, IDN-14): `--patch-against N` publishes patch targets from
+  the last *N* releases of each platform, where the patch is meaningfully smaller than
+  the payload. The descriptor references nothing — the client derives the path from the
+  hash it has and the hash it wants — and the *result* is verified against the signed
+  target hash, so a broken or tampered patch only causes a fallback to the full target.
+  Retention retires a patch when the payload it produces is retired; the payload it
+  starts from may be long gone, and a client running a retired version is exactly who
+  the patch forward is for.
 - **Provenance / SLSA** alongside reproducible builds, as an additional supply-chain
   proof beside TUF (IDN-18).
-- **Retention** (§4 step 4, IDN-03): the one part of the flow above that is not
-  built. A delegation grows for the lifetime of the product until it is.
 - **Root bootstrapping** stays out: a repository must already contain a
   `<version>.root.json` from the ceremony. The packer refuses to create one, so the
   command that runs on every release can never mint a trust anchor.

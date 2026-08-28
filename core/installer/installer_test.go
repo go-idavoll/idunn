@@ -15,7 +15,10 @@
 package installer_test
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -69,6 +72,25 @@ func (f *fakeTrust) Target(path string) ([]byte, error) {
 		return nil, errors.New("no such target: " + path)
 	}
 	return data, nil
+}
+
+func (f *fakeTrust) SignedLength(path string) (int64, error) {
+	data, ok := f.targets[path]
+	if !ok {
+		return 0, errors.New("no such target: " + path)
+	}
+	return int64(len(data)), nil
+}
+
+func (f *fakeTrust) Accepts(path string, data []byte) error {
+	want, ok := f.targets[path]
+	if !ok {
+		return errors.New("no such target: " + path)
+	}
+	if !bytes.Equal(want, data) {
+		return errors.New("bytes are not target " + path)
+	}
+	return nil
 }
 
 func descriptor(version string) *release.Descriptor {
@@ -444,4 +466,13 @@ func TestInstalledVersionRefusesAnInconsistentInstall(t *testing.T) {
 			t.Fatal("an unreadable state was reported as no installation")
 		}
 	})
+}
+
+func (f *fakeTrust) SignedSHA256(path string) (string, error) {
+	data, ok := f.targets[path]
+	if !ok {
+		return "", errors.New("no such target: " + path)
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
 }

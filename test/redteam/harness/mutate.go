@@ -149,6 +149,28 @@ func init() {
 		},
 	})
 
+	// --- prior-state attacks: what the client already trusts is the weapon ---
+
+	register(&Mutator{
+		Name: "advanced_metadata_versions",
+		Desc: "an honest repository, published far enough along that rolling it back is visible",
+		Metadata: func(b *Build) error {
+			// Not an attack by itself. It is the *first* half of one: a
+			// repository a client can legitimately come to trust at version 5,
+			// so that serving it version 1 afterwards is a rollback rather than
+			// a first contact. Every reference is moved with it, because a
+			// repository that disagreed with itself would be caught as
+			// mix-and-match and prove nothing about rollback.
+			const v = 5
+			b.Targets.Signed.Version = v
+			b.Snapshot.Signed.Version = v
+			b.Snapshot.Signed.Meta["targets.json"].Version = v
+			b.Timestamp.Signed.Version = v
+			b.Timestamp.Signed.Meta["snapshot.json"].Version = v
+			return nil
+		},
+	})
+
 	// --- app-level attacks: caught by idunn's descriptor/pointer ingest ---
 
 	register(&Mutator{
