@@ -719,8 +719,12 @@ if targetsKey == "" || snapshotKey == "" || timestampKey == "" {
 }
 ```
 
-> **As built:** steps 1–3 and 5 exist in `internal/packer`; step 4 (retention) does
-> not yet (IDN-03). Two details differ from the sketch above and are argued in
+> **As built:** steps 1–5 exist in `internal/packer`. Retention is `--retain N` and
+> is off by default, because deleting a published target is the one thing a publish
+> cannot undo; content addressing turns it into reference counting, and it refuses to
+> retire a release a channel pointer still names or to touch another release line
+> ([`packer.md`](packer.md) §4.1). Two details differ from the sketch above and are
+> argued in
 > [`packer.md`](packer.md): payload targets are named by content hash, and `custom`
 > is not used — `dst`, `mode` and `kind` describe a release's *use* of a target, not
 > the target, and the descriptor already carries them where the client validates

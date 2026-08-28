@@ -74,7 +74,7 @@ func usage(w io.Writer) {
 	_, _ = fmt.Fprint(w, `idunn packer — publishes a TUF repository.
 
 Usage:
-  packer publish --config pack.yaml --repo ./tuf-repo [--now <RFC3339>]
+  packer publish --config pack.yaml --repo ./tuf-repo [--now <RFC3339>] [--retain N]
 
 Role keys are read from the environment as file paths (KMS/HSM URIs later),
 never from pack.yaml and never as key material:
@@ -86,6 +86,12 @@ never from pack.yaml and never as key material:
 
 The reference time (--now, or `+envSourceDateEpoch+`) is an input, not the wall
 clock: two runs over the same inputs must produce a byte-identical repository.
+
+--retain N keeps the newest N releases per platform in the release line being
+published and removes the rest, together with every payload no retained release
+still names. It is off by default: deleting a published target is the one thing a
+publish does that cannot be undone. It never removes a release a channel pointer
+still names, and it never touches another release line.
 
 root is never signed, written, or created here. Key rotation is a separate,
 offline, m-of-n ceremony.
@@ -102,6 +108,7 @@ func publish(args []string, stdout, stderr io.Writer) int {
 		targets   = fs.Duration("targets-expiry", packer.DefaultTargetsExpiry, "validity of the targets roles")
 		snapshot  = fs.Duration("snapshot-expiry", packer.DefaultSnapshotExpiry, "validity of the snapshot role")
 		timestamp = fs.Duration("timestamp-expiry", packer.DefaultTimestampExpiry, "validity of the timestamp role")
+		retain    = fs.Int("retain", 0, "releases to keep per platform in this release line; 0 keeps everything")
 	)
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
@@ -127,6 +134,7 @@ func publish(args []string, stdout, stderr io.Writer) int {
 		TargetsExpiry:   *targets,
 		SnapshotExpiry:  *snapshot,
 		TimestampExpiry: *timestamp,
+		Retain:          *retain,
 	})
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "idunn packer: %v\n", err)
@@ -172,6 +180,12 @@ func report(w io.Writer, res *packer.Result) {
 		_, _ = fmt.Fprintf(w, "  delegation %-6s holds %d targets\n", role, res.Delegations[role])
 	}
 	_, _ = fmt.Fprintf(w, "  %d new targets\n", len(res.AddedTargets))
+	// Retired targets are named one by one, not counted. They are the only
+	// files a publish deletes, and an operator reading this output is entitled
+	// to see exactly which.
+	for _, target := range res.RetiredTargets {
+		_, _ = fmt.Fprintf(w, "  retired %s\n", target)
+	}
 }
 
 func sortedKeys[V any](m map[string]V) []string {

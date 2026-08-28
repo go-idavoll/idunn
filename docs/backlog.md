@@ -42,12 +42,18 @@ It is not in the coverage universe on purpose: the work happens in child
 processes, which carry no instrumentation, so tagging it into that job would cost
 runtime and credit nothing.
 
-### IDN-03 — Packer: retention (§4.1, §9 step 4)
-Remove targets of retired releases beyond a keep window, respecting delta patch
-sources. Without it the delegation grows for the lifetime of the product.
+### IDN-03 — Packer: retention (§4.1, §9 step 4) — **done**
+`--retain N` keeps the newest N releases per platform in the release line being
+published and retires the rest, together with every payload no retained release still
+names. Content addressing made it a reference-counting problem rather than a
+path-guessing one, which is also what lets two releases share one payload safely.
 
-Content addressing makes this a reference-counting problem rather than a
-path-guessing one: a payload target is retired when no retained descriptor names it.
+Three boundaries, argued in [`packer.md`](packer.md) §4.1: it never retires a release
+a channel pointer still names (read with the client's own parser, not inferred from a
+path — that would be the freeze attack with the publisher holding the knife), it never
+touches another release line (an end-of-life decision needing a key this publish was
+not given), and it refuses a window of one. It is off by default, because deleting a
+published target is the one thing a publish cannot undo.
 
 ### IDN-04 — `cmd/installer`: the actual binary (§5) — **done**
 The binary carries its trust anchor and repository description in

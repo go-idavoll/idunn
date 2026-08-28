@@ -15,7 +15,7 @@ piece of the section is missing; **open** — contract only, or nothing.
 | §3.1 | Payload files as TUF targets | **done** |
 | §3.2 | Release descriptor & channel pointer | **done** — `core/release`, strict parse, fuzzed |
 | §4 | TUF roles & key management (client side) | **done** — embedded root, `Refresh`, resolve |
-| §4.1 | Delegations, dedup, retention | **partial** — the packer delegates per channel and per release line from the first publish, and content-addressed payload targets deduplicate; retention is open (IDN-03) |
+| §4.1 | Delegations, dedup, retention | **done** — the packer delegates per channel and per release line from the first publish, content-addressed payload targets deduplicate, and `--retain N` retires releases beyond the window together with every payload no retained release names |
 | §5 | Installer flow | **done** — `core/installer` plus the `cmd/installer` binary: embedded anchor, flags, elevation decision, exit codes |
 | §6.1 | Blue/green layout + pointer | **done** — `internal/layout`, symlink (POSIX) / pointer file (Windows), plus the launcher shim (`core/launch`, `cmd/launcher`) |
 | §6.2 | Transaction flow, journal, recovery | **done** — `core/txn`, crash-injection tests |
@@ -24,7 +24,7 @@ piece of the section is missing; **open** — contract only, or nothing.
 | §6.4 | Delta stage 2 (binary patches) | **open** — `stage.ApplyPatch` fails closed |
 | §7 | Hook system | **done** — all six hooks defined and wired |
 | §8 | Headless default, UI sidecars | **done** in `core` (no UI dependency); sidecar repos are out of tree |
-| §9 | Packer | **partial** — `cmd/packer publish` builds and signs a release end to end (`internal/packer`); retention (step 4) is open |
+| §9 | Packer | **done** — `cmd/packer publish` builds, signs and retires end to end (`internal/packer`) |
 | §10 | TUF repository layout | **done** — the packer produces it, the client resolves it, a golden test pins the emitted bytes |
 | §11 | Security concept | **done** as a document; per-threat coverage below |
 | §12 | Test concept | **partial** — unit, adversarial corpus and an end-to-end suite over the real binaries (`test/e2e`, IDN-22); no mutation testing, one fuzz target missing |
@@ -77,7 +77,7 @@ Not yet enforced:
 | `core/hook` | no test files (interface definitions only) |
 | `core/launch` | 87.5% — deferred updates applied, skipped, failed, and nothing to do |
 | `core/timefloor` | 94.0% — the floor, its refusals, and a damaged or unwritable floor file |
-| `internal/packer` | 86.1% — publish end to end against `core/trust`, plus golden metadata |
+| `internal/packer` | 86.1% — publish end to end against `core/trust`, plus golden metadata and retention (window, reference counting, the pointer protection) |
 | `cmd/installer` | not in the coverage universe, but tested: a real install against a served repository |
 | `test/e2e` | not in the coverage universe by design — the work happens in child processes, which carry no instrumentation |
 

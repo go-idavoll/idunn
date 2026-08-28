@@ -60,6 +60,14 @@ type Options struct {
 	SnapshotExpiry  time.Duration
 	TimestampExpiry time.Duration
 
+	// Retain is how many releases per platform stay in the release line this
+	// publish touches. Zero disables retention entirely and keeps everything,
+	// which is the safe default: removing a published target is the one thing a
+	// publish does that cannot be undone, so it happens because an operator
+	// asked, never because they forgot to say otherwise. See retire and
+	// MinRetain for what it will and will not remove.
+	Retain int
+
 	// LookupEnv resolves role key references. Nil selects the process
 	// environment.
 	LookupEnv func(string) (string, bool)
@@ -81,6 +89,11 @@ type Result struct {
 	// Delegations maps each delegated role to the number of targets it holds
 	// after the publish.
 	Delegations map[string]int
+
+	// RetiredTargets lists the target paths retention removed, sorted. It is
+	// empty when retention is off, and an operator is entitled to see it: these
+	// are the only files a publish ever deletes.
+	RetiredTargets []string
 }
 
 // blob is one target this publish emits: the bytes, where they live in the
@@ -376,6 +389,17 @@ func writeRelease(o Options, cfg *Config, st *state, keys *keyring, blobs []blob
 	}
 	sort.Strings(res.AddedTargets)
 
+	// Retention runs on the merged view, so the release being published is
+	// already part of what the window is counted over, and it runs before
+	// anything is signed: a role is signed once, over its final content.
+	retired, err := retire(o, cfg, st, blobs, roleTargets, contentRoleOf(touched))
+	if err != nil {
+		return nil, err
+	}
+	if retired != nil {
+		res.RetiredTargets = retired.Targets
+	}
+
 	roleNames := make([]string, 0, len(roleTargets))
 	for role := range roleTargets {
 		roleNames = append(roleNames, role)
@@ -475,7 +499,31 @@ func writeRelease(o Options, cfg *Config, st *state, keys *keyring, blobs []blob
 			return nil, fmt.Errorf("%w: writing timestamp.json: %w", ErrRepo, err)
 		}
 	}
+
+	// Deletion comes last, after the metadata that no longer names these files
+	// is the metadata being served. The reverse order would open a window in
+	// which the repository points at files that are already gone -- the one
+	// failure a retention pass can cause that a client cannot tell from an
+	// attack.
+	if retired != nil {
+		for _, rel := range retired.Files {
+			if err := os.Remove(filepath.Join(st.targetsDir, filepath.FromSlash(rel))); err != nil && !os.IsNotExist(err) {
+				return nil, fmt.Errorf("%w: retiring %s: %w", ErrRepo, rel, err)
+			}
+		}
+	}
 	return res, nil
+}
+
+// contentRoleOf picks the release-line role out of the roles this publish
+// touches. Retention is scoped to that one role; see retire.
+func contentRoleOf(touched []string) string {
+	for _, role := range touched {
+		if _, ok := majorNum(role); ok {
+			return role
+		}
+	}
+	return ""
 }
 
 // metadataFile is one metadata document waiting to be written.
