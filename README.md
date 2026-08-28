@@ -193,7 +193,7 @@ What exists today:
 | Adversarial corpus (`test/redteam`) | 25 cases, gates every PR |
 | End-to-end suite (`test/e2e`) | 9 scenarios over the real packer, installer, launcher and a host app, on all three platforms |
 | Apply path: staging, journal, crash recovery, hooks, GC (`core/stage`, `core/txn`, `core/updater`, `core/installer`) | implemented, tested |
-| Elevation (`core/elevate`) | Windows `ElevationInteractive` implemented; the privileged helper service has its protocol, authorization and POSIX transport; Windows IPC and POSIX prompts fail closed |
+| Elevation (`core/elevate`) | interactive elevation on Windows (UAC) and Linux (pkexec); the privileged helper service has its protocol, authorization and POSIX transport; the Windows helper IPC and the macOS prompt fail closed |
 | Clock rollback defence (`core/timefloor`) | implemented: known-good time floor, checked before every refresh and apply |
 | Delta stage 1 (content-addressed reuse) | go-tuf cache plus verified reuse of files already installed; relink (reflink/hardlink) open |
 | Packer (`cmd/packer`, `internal/packer`) | publishes a delegated, reproducible TUF repository; `--retain N` retires old releases and the payloads only they named |

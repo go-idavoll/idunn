@@ -327,8 +327,16 @@ func (s *serviceElevator) Apply(ctx context.Context, root string, d *release.Des
 	}
 	_ = conn.SetDeadline(deadline)
 
-	if err := encodeRequest(conn, req); err != nil {
-		return fmt.Errorf("%w: %w", ErrHelper, err)
+	// A write failure is not necessarily the end of the exchange. The helper
+	// decides who may ask *before* it reads anything — that ordering is what
+	// keeps an unpermitted peer away from the parser — so a refusal can arrive
+	// while this side is still writing, and the close behind it turns the rest
+	// of the write into a broken pipe. Reading the answer first means the caller
+	// learns "denied" instead of "the pipe broke", which is the difference
+	// between a diagnosis and a shrug.
+	writeErr := encodeRequest(conn, req)
+	if err := decodeResponse(conn); err != nil || writeErr == nil {
+		return err
 	}
-	return decodeResponse(conn)
+	return fmt.Errorf("%w: %w", ErrHelper, writeErr)
 }

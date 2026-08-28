@@ -1020,6 +1020,21 @@ type Elevator interface {
 }
 ```
 
+> **As built (`ElevationInteractive` on Linux, IDN-08):** `pkexec`, found at an
+> absolute path rather than through `PATH` — the program found through `PATH` is the
+> one that would show an authentication dialog with the system's face on it, and a
+> user who types their password into a planted binary has been robbed by us. The
+> request crosses as an argument vector, so unlike the Windows path nothing is
+> rendered into a string that has to be re-split. The environment handed across is
+> empty: what pkexec sanitizes is *our* environment, and the smallest thing to
+> sanitize is nothing. Cancelling the context abandons the wait and not the apply, for
+> the same reason it does on Windows. An example polkit policy is in
+> [`examples/org.idunn.apply.policy`](examples/org.idunn.apply.policy).
+>
+> macOS is open (IDN-08): Authorization Services and `SMAppService` are Objective-C
+> frameworks with no pure-Go binding, so it is a cgo decision rather than a coding
+> one, and `newInteractive` fails closed there with that written down.
+
 #### 14.2.1 Windows `ElevationInteractive` (implemented)
 
 `elevate.NewInteractive` launches the configured apply helper through

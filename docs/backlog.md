@@ -116,11 +116,24 @@ unprivileged user, nor is there the read-only fd hand-off (`SCM_RIGHTS` /
 `DuplicateHandle` pulled by the helper) that would avoid both a second download and a
 path-based TOCTOU (§14.8).
 
-### IDN-08 — POSIX interactive elevation (§14.2)
-`ElevationInteractive` exists on Windows only; `interactive_other.go` returns
-`ErrNotImplemented`. Needs `pkexec`/polkit on Linux and Authorization Services /
-`SMAppService` on macOS, with the same three-scalar request grammar the Windows path
-already enforces.
+### IDN-08 — POSIX interactive elevation (§14.2) — **Linux done, macOS open**
+Linux is `pkexec`, with the same three-scalar request grammar the Windows path
+enforces — and one thing better than Windows: pkexec is exec'd with an argument
+vector, so the scalars are never rendered into a string anything has to re-split.
+pkexec is looked for at absolute paths rather than through `PATH`, because the program
+found through `PATH` is the one that shows an authentication dialog with the system's
+face on it. The environment handed across is empty: what pkexec sanitizes is *our*
+environment, and the smallest thing to sanitize is nothing. A dismissed dialog is
+`ErrDeclined`, never a failure to retry. An example polkit policy is in
+[`examples/org.idunn.apply.policy`](examples/org.idunn.apply.policy).
+
+macOS is open, and not by oversight. The counterpart is Authorization Services
+(`AuthorizationExecuteWithPrivileges`, deprecated since 10.7) or a launchd helper
+registered with `SMAppService` and reached over XPC. Both are Objective-C frameworks
+with no pure-Go binding, so the choice is a cgo dependency in `core` — which changes
+how the whole module cross-compiles — or a helper built outside it. That is a
+maintainer decision, so `newInteractive` fails closed there with the reason in the doc
+comment rather than being guessed at.
 
 ### IDN-09 — Monotonic known-good time floor (§14.7, T22) — **done**
 `core/timefloor` persists `max(build time, clock at the last successful refresh)` in

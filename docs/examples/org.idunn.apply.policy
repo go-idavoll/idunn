@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/software/polkit/policyconfig-1.dtd">
+<!--
+  Example polkit policy for idunn's interactive elevation on Linux (design §14.2,
+  IDN-08). Install as /usr/share/polkit-1/actions/<your-reverse-dns>.policy and
+  replace the action id, the vendor and the helper path with your own.
+
+  Without a policy file pkexec still works: polkit falls back to asking for
+  administrator authentication for an unknown program. What the file buys is a
+  message the user can act on, and a documented decision about whether the
+  authorization is remembered for the session.
+
+  Two things it deliberately does NOT do:
+
+    * annotate the action with allow_active="yes". That would let any logged-in
+      user install a new version without authenticating, on a machine where the
+      install root is root-owned precisely because not everyone may write it.
+    * pass arguments through org.freedesktop.policykit.exec.argv1. The helper's
+      arguments are the request, and idunn validates them before pkexec is ever
+      started; putting them in the policy would move that decision into a file an
+      administrator edits.
+-->
+<policyconfig>
+  <vendor>Acme</vendor>
+  <vendor_url>https://example.com/</vendor_url>
+
+  <action id="com.example.acme.apply-update">
+    <description>Install an Acme update</description>
+    <message>Authentication is required to install an update for Acme.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/opt/acme/acme-helper</annotate>
+  </action>
+</policyconfig>
