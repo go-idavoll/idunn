@@ -93,6 +93,31 @@ jobs:
       - name: End-to-end
         run: go test -tags=e2e -count=1 -timeout 20m ./test/e2e/...
 
+  # Mutation testing asks the question coverage cannot: not "did this line run?"
+  # but "would the suite notice if it were wrong?". It gates on thresholds set
+  # below the measured scores, so it catches a regression rather than the
+  # weather; the numbers to beat are in docs/status.md and are meant to rise.
+  #
+  # A surviving mutant is a test-gap issue. It is never a reason to weaken an
+  # assertion, and a change that raises the score by deleting a check is the
+  # reward-hacking AGENTS.md §6 asks reviewers to look for.
+  mutate:
+    name: mutation testing (lifecycle code)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+
+      - name: Install gremlins
+        run: go install github.com/go-gremlins/gremlins/cmd/gremlins@latest
+
+      - name: Mutate
+        run: make mutate
+
   # Coverage is measured once, on Linux, and deliberately not by the plain
   # `go test ./...` above, which understates it badly:
   #

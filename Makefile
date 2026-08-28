@@ -1,8 +1,17 @@
 .PHONY: all build test cover vet fmt lint license license-fix vuln tidy \
-	e2e redteam redteam-corpus redteam-fuzz redteam-agent test-keys baseline clean
+	e2e mutate redteam redteam-corpus redteam-fuzz redteam-agent test-keys baseline clean
 
 GO              ?= go
 REDTEAM_FUZZTIME ?= 60s
+
+## Mutation testing (see the `mutate` target). The packages are the lifecycle
+## code README sets a 100% coverage goal for; the thresholds sit below today's
+## measured scores so the gate catches a regression rather than the weather, and
+## they are meant to be raised as the gaps in docs/status.md are closed.
+MUTATE_PKGS     ?= ./core/txn ./core/stage ./core/updater ./core/launch
+MUTATE_TIMEOUT  ?= 20
+MUTATE_EFFICACY ?= 75
+MUTATE_MCOVER   ?= 75
 LICENSE_YEAR    ?= 2026
 LICENSE_HOLDER  ?= The idunn Authors
 
@@ -58,6 +67,23 @@ tidy:
 ## talks over a socket, which is why it is not part of `make test`.
 e2e:
 	$(GO) test -tags=e2e -count=1 ./test/e2e/...
+
+## mutation testing: does the suite actually notice when the code is wrong?
+##
+## Coverage says a line ran. This says a line mattered. A surviving mutant is a
+## test-gap issue -- never a reason to weaken an assertion (AGENTS.md §4, §6).
+##
+## The timeout coefficient is not decoration: gremlins derives a per-mutant test
+## timeout from the baseline run, and the default is too tight for suites that do
+## real filesystem work, which reports every mutant as TIMED OUT and every score
+## as zero.
+mutate:
+	@command -v gremlins >/dev/null 2>&1 || { 		echo "gremlins is not installed:"; 		echo "  go install github.com/go-gremlins/gremlins/cmd/gremlins@latest"; 		exit 1; }
+	@for pkg in $(MUTATE_PKGS); do 		echo ">> $$pkg"; 		gremlins unleash 			--timeout-coefficient $(MUTATE_TIMEOUT) 			--threshold-efficacy $(MUTATE_EFFICACY) 			--threshold-mcover $(MUTATE_MCOVER) 			$$pkg || exit 1; 	done
+
+## the surviving mutants only, which is the list worth reading
+mutate-survivors:
+	@for pkg in $(MUTATE_PKGS); do 		echo ">> $$pkg"; 		gremlins unleash --timeout-coefficient $(MUTATE_TIMEOUT) -S l $$pkg; 	done
 
 ## run the full adversarial suite (corpus + fuzzers)
 redteam: redteam-corpus redteam-fuzz

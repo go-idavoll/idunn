@@ -289,9 +289,28 @@ AGENTS.md §1.2 warns about, and it buys nothing `timestamp.expires` does not al
 give. Removing the field rather than leaving it forced to `true` is the point — a knob
 that cannot be turned is one somebody will eventually believe in.
 
-### IDN-16 — Mutation testing (§12, AGENTS.md §4)
-`go-mutesting` (or equivalent) as the quality bar for assertions. Coverage is high;
-nothing currently measures whether the tests would fail if the code were wrong.
+### IDN-16 — Mutation testing (§12, AGENTS.md §4) — **done**
+`make mutate` runs [gremlins](https://github.com/go-gremlins/gremlins) over the
+lifecycle packages and gates on thresholds; CI runs it on every PR. `make
+mutate-survivors` prints the list worth reading.
+
+One practical note that cost an hour: gremlins derives a per-mutant test timeout from
+the baseline run, and its default is too tight for suites that do real filesystem work.
+Without `--timeout-coefficient` every mutant is reported as TIMED OUT and every score as
+0.00%, which looks like a catastrophic result and is actually a misconfiguration. The
+Makefile sets it.
+
+The baseline it established, and the gaps it found, are in
+[`status.md`](status.md#mutation-score). It has already paid for itself once: the record
+ceiling in `core/txn` was covered but not *pinned* — `>` and `>=` were interchangeable as
+far as the suite could tell — and `TestOpenAcceptsExactlyTheRecordCeilingAndRefusesOneMore`
+now holds it. One survivor in that package is argued rather than fixed: the same ceiling
+in `Append` cannot be reached, because a `BEGIN` resets the history and the transition
+table bounds a transaction at six records. It stays as defence against a future
+transition table that loops.
+
+The thresholds are deliberately below today's scores. They exist to catch a regression,
+not to be exactly met, and raising them as the gaps close is the intended ratchet.
 
 ### IDN-17 — Launcher self-replacement (§13) — **done**
 The layout is why this needed a step of its own on every platform, not only Windows: a

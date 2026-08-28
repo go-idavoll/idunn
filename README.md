@@ -57,8 +57,9 @@ _This is the designed scope, not a claim about today's code — see
   authenticated IPC (privilege boundary == trust boundary).
 - **Garbage collection** of old versions with a configurable retention window.
 - **Reproducible, signed releases** maintained via `go:generate` and a TUF repo.
-- **Auditable by design**: a written security concept (threat model + mitigations)
-  and a 100% coverage goal for the lifecycle code.
+- **Auditable by design**: a written security concept (threat model + mitigations),
+  a 100% coverage goal for the lifecycle code, and mutation testing to check that
+  the coverage means something.
 
 ## How it works
 

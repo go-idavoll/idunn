@@ -27,7 +27,7 @@ piece of the section is missing; **open** — contract only, or nothing.
 | §9 | Packer | **done** — `cmd/packer publish` builds, signs and retires end to end (`internal/packer`) |
 | §10 | TUF repository layout | **done** — the packer produces it, the client resolves it, a golden test pins the emitted bytes |
 | §11 | Security concept | **done** as a document; per-threat coverage below |
-| §12 | Test concept | **partial** — unit, adversarial corpus and an end-to-end suite over the real binaries (`test/e2e`, IDN-22); no mutation testing, one fuzz target missing |
+| §12 | Test concept | **done** — unit, adversarial corpus, an end-to-end suite over the real binaries (`test/e2e`), three fuzz targets, and mutation testing gated in CI |
 | §13 | Cross-platform specifics | **done** — layout, elevation and the launcher hand-over are per-OS, and the launcher replaces itself: a rename over the name on POSIX, rename-aside plus `MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)` on Windows (IDN-17) |
 | §14.1 | GC / retention | **done** — `stage.GC`, soft-fails on locked dirs |
 | §14.2 | Elevation | **partial** — Windows `ElevationInteractive` done, and `cmd/installer apply` is the privileged helper it launches. `ElevationService` is built on all three: the protocol and authorization (IDN-07a), peer credentials on Linux and macOS, and a named pipe whose security descriptor is the access decision on Windows (IDN-07b). The macOS audit-token refinement (IDN-07c) is open. Interactive elevation is built on Linux (`pkexec`, IDN-08); macOS needs an Objective-C framework and fails closed with the reason |
@@ -114,6 +114,29 @@ driven through the real install path where a version floor is involved. Fuzzers:
   below that line would mean a second download-and-verify path beside go-tuf, which
   AGENTS.md §1.2 rules out. `trust.Options.MaxTargetBytes` bounds the damage in the
   meantime: a target above the ceiling is refused before it is requested.
+
+## Mutation score
+
+`make mutate` (gremlins) over the lifecycle packages. *Efficacy* is the share of covered
+mutants the suite kills; *mutant coverage* is the share of mutants any test reaches at
+all. Measured on the tree that closed IDN-16:
+
+| Package | Efficacy | Mutant coverage |
+|---|---|---|
+| `core/txn` | 98.7% | 97.4% |
+| `core/updater` | 89.3% | 97.2% |
+| `core/stage` | 88.3% | 95.9% |
+| `core/launch` | 85.4% | 82.0% |
+
+CI gates at 75% on both, which catches a regression without failing on the weather. The
+numbers above are what to raise it towards.
+
+A surviving mutant is a test-gap issue, never a reason to weaken an assertion — a change
+that raises this score by deleting a check is the reward-hacking AGENTS.md §6 asks
+reviewers to look for. The one survivor in `core/txn` is argued rather than fixed: the
+record ceiling in `Append` cannot be reached, because a `BEGIN` resets the history and
+the transition table bounds a transaction at six records. It stays as defence against a
+future table that loops.
 
 ## Deliberate non-goals for now
 
