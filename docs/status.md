@@ -98,6 +98,14 @@ what it already trusts and what is already installed — so they run in two phas
 driven through the real install path where a version floor is involved. Fuzzers: `FuzzDescriptor`, `FuzzDstSanitize`.
 `FuzzPatchApply` waits on a patch format (§6.4 stage 2).
 
+## Blocked on upstream
+
+- **Streaming target downloads (IDN-12).** go-tuf v2.4.2's `Fetcher` returns `[]byte`
+  and verifies over the whole slice, so a payload is held in memory whole. Fixing it
+  below that line would mean a second download-and-verify path beside go-tuf, which
+  AGENTS.md §1.2 rules out. `trust.Options.MaxTargetBytes` bounds the damage in the
+  meantime: a target above the ceiling is refused before it is requested.
+
 ## Deliberate non-goals for now
 
 These are open in the design and stay open on purpose, not by oversight: TAP-4

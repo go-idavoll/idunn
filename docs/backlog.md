@@ -147,10 +147,28 @@ authority verifiable, an unknown one stays refused), the user agent, the timeout
 and the refusals. Three corpus cases were added for the resolve mutators that were
 registered but never exercised by a case.
 
-### IDN-12 — Streaming targets instead of whole-file buffers
-`trust.Target` holds every payload in memory because go-tuf's `DownloadTarget`
-returns a slice (`TODO(stage)` in `core/trust`). A multi-hundred-megabyte payload is
-a memory spike today. Needs a fetcher that exposes the response body.
+### IDN-12 — Streaming targets instead of whole-file buffers — **blocked upstream**
+`trust.Target` holds every payload in memory. This is not a shortcut taken here: at
+go-tuf v2.4.2 — the newest release — the fetcher contract is
+
+```go
+DownloadFile(urlPath string, maxLength int64, _ time.Duration) ([]byte, error)
+```
+
+and `Updater.DownloadTarget` verifies with `VerifyLengthHashes` over the complete
+slice. There is no seam below that line to stream through. Getting one locally would
+mean fetching and verifying beside go-tuf rather than through it, which AGENTS.md §1.2
+forbids and which is not worth a memory optimisation. **The fix belongs upstream:** a
+`Fetcher` that can hand back an `io.ReadCloser`, and a `DownloadTarget` that verifies
+incrementally.
+
+What *was* in this repository's hands is done: `trust.Options.MaxTargetBytes`
+(default 2 GiB) refuses a target whose signed length is above the ceiling **before a
+byte of it is requested**. The signed length is the allocation about to be made, and a
+repository is untrusted input even when correctly signed — so the failure mode changes
+from an OOM kill with no diagnosis to a typed refusal that names the option to raise.
+
+Done when: go-tuf exposes a streaming target download, and `core/fetch` implements it.
 
 ---
 
