@@ -27,6 +27,21 @@ patterns would otherwise overlap; the property the design asks for — disjoint
 patterns, a client loading only what it follows — holds and is tested against
 go-tuf's own matcher. See [`packer.md`](packer.md) §5.
 
+### IDN-22 — End-to-end tests against the real binaries (§12) — **done**
+`test/e2e` (build tag `e2e`, `make e2e`) drives the whole chain as separate
+processes: `cmd/packer` publishes into a repository whose root came from a
+throwaway ceremony, an HTTP server hands it out, and `cmd/installer`,
+`cmd/launcher` and a host application built from `test/e2e/fixtures/app` consume
+it. Nine scenarios cover install, self-update, deferral finished by the launcher,
+a crash inside the transaction, a failing migration, the downgrade preflight, a
+tampered payload, delta stage 1, and retention. CI runs it on all three
+platforms, because that is where the install pointer, the launcher hand-over and
+GC over a locked directory differ.
+
+It is not in the coverage universe on purpose: the work happens in child
+processes, which carry no instrumentation, so tagging it into that job would cost
+runtime and credit nothing.
+
 ### IDN-03 — Packer: retention (§4.1, §9 step 4)
 Remove targets of retired releases beyond a keep window, respecting delta patch
 sources. Without it the delegation grows for the lifetime of the product.
@@ -98,6 +113,12 @@ verified, which is the evidence that actually exists.
 (reflink/CoW, else hardlink, else copy) — re-hashed, never adopted on name alone.
 Needs the signed hash surfaced from `core/trust`, which the `Materializer` interface
 does not expose yet.
+
+The end-to-end suite (IDN-22) put a number on what is missing: a payload target's
+path carries its release line (`payloads/v<major>/<sha256>`), and the go-tuf cache
+is keyed by path, so identical bytes republished under a new major are fetched
+again. Reuse keyed on the *content* of what is already installed is what closes
+that, and it is the same mechanism this item asks for.
 
 ### IDN-11 — Test coverage for `core/trust` and `core/fetch` — **done**
 Both had no unit test at all. `core/trust` now has direct tests of the layer the

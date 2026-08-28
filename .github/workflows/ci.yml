@@ -65,6 +65,34 @@ jobs:
       - name: Test (race)
         run: go test -race ./...
 
+  # End-to-end: the real packer, installer, launcher and host application, as
+  # separate processes against a served TUF repository. It runs on the same
+  # three platforms as `test` because most of what it covers -- the install
+  # pointer, the launcher hand-over, GC on a locked directory -- is exactly
+  # where the three differ.
+  e2e:
+    name: end-to-end (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+
+      # The suite builds the binaries it drives, so the module cache has to be
+      # warm before the first test starts its own `go build`.
+      - name: Warm the build cache
+        run: go build ./...
+
+      - name: End-to-end
+        run: go test -tags=e2e -count=1 -timeout 20m ./test/e2e/...
+
   # Coverage is measured once, on Linux, and deliberately not by the plain
   # `go test ./...` above, which understates it badly:
   #
@@ -76,6 +104,11 @@ jobs:
   #     stage and safepath would be attributed to nothing.
   #   * ./... as the coverage universe counts cmd/ and the harness tooling,
   #     which are build plumbing and will never carry tests.
+  #
+  # The end-to-end suite is deliberately NOT added here. It drives the real
+  # binaries as child processes, and a coverage profile only records the process
+  # that carries the instrumentation -- so tagging it in would double this job's
+  # runtime and credit nothing. Its job is the `e2e` one above.
   #
   # Scoping to ./core/... and ./internal/... measures the lifecycle code the
   # README sets a 100% goal for -- 72% at the time of writing, against the 17%
@@ -116,7 +149,7 @@ jobs:
   # main so a pull request can never mutate the branch.
   badge:
     name: coverage badge
-    needs: [test, coverage]
+    needs: [test, e2e, coverage]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:

@@ -1,5 +1,5 @@
 .PHONY: all build test cover vet fmt lint license license-fix vuln tidy \
-	redteam redteam-corpus redteam-fuzz redteam-agent test-keys baseline clean
+	e2e redteam redteam-corpus redteam-fuzz redteam-agent test-keys baseline clean
 
 GO              ?= go
 REDTEAM_FUZZTIME ?= 60s
@@ -52,6 +52,12 @@ vuln:
 
 tidy:
 	$(GO) mod tidy
+
+## end-to-end: the real packer, installer, launcher and host application as
+## separate processes against a served TUF repository. It builds binaries and
+## talks over a socket, which is why it is not part of `make test`.
+e2e:
+	$(GO) test -tags=e2e -count=1 ./test/e2e/...
 
 ## run the full adversarial suite (corpus + fuzzers)
 redteam: redteam-corpus redteam-fuzz

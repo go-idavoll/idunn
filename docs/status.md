@@ -27,7 +27,7 @@ piece of the section is missing; **open** — contract only, or nothing.
 | §9 | Packer | **partial** — `cmd/packer publish` builds and signs a release end to end (`internal/packer`); retention (step 4) is open |
 | §10 | TUF repository layout | **done** — the packer produces it, the client resolves it, a golden test pins the emitted bytes |
 | §11 | Security concept | **done** as a document; per-threat coverage below |
-| §12 | Test concept | **partial** — see coverage below; no mutation testing, one fuzz target missing |
+| §12 | Test concept | **partial** — unit, adversarial corpus and an end-to-end suite over the real binaries (`test/e2e`, IDN-22); no mutation testing, one fuzz target missing |
 | §13 | Cross-platform specifics | **partial** — layout, elevation and the launcher hand-over are per-OS; no `MoveFileEx` self-update of the launcher itself (IDN-17) |
 | §14.1 | GC / retention | **done** — `stage.GC`, soft-fails on locked dirs |
 | §14.2 | Elevation | **partial** — Windows `ElevationInteractive` done, and `cmd/installer apply` is the privileged helper it launches; `ElevationService` fails closed everywhere; POSIX interactive (`pkexec`, Authorization Services) not built |
@@ -78,6 +78,15 @@ Not yet enforced:
 | `core/timefloor` | 94.0% — the floor, its refusals, and a damaged or unwritable floor file |
 | `internal/packer` | 86.1% — publish end to end against `core/trust`, plus golden metadata |
 | `cmd/installer` | not in the coverage universe, but tested: a real install against a served repository |
+| `test/e2e` | not in the coverage universe by design — the work happens in child processes, which carry no instrumentation |
+
+The end-to-end suite (`make e2e`, build tag `e2e`) holds nine scenarios that drive
+`cmd/packer`, `cmd/installer`, `cmd/launcher` and a host application as separate
+processes against a served repository: install and launch, self-update with the
+predecessor retained, a deferral finished by the launcher, a crash inside the
+transaction, a failing migration, the downgrade preflight, a tampered payload, delta
+stage 1, and retention. It runs on all three platforms in CI. See
+[`test/e2e/README.md`](../test/e2e/README.md).
 
 The adversarial corpus (`make redteam-corpus`, build tag `redteam`) holds 22 cases
 across clock rollback, expiry, malformed descriptors, mix-and-match, path traversal,
