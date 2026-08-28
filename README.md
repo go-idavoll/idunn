@@ -190,7 +190,7 @@ What exists today:
 |---|---|
 | Descriptor & channel-pointer ingest (`core/release`, `internal/safepath`) | implemented, fuzzed, adversarially tested |
 | TUF trust client and resolve (`core/trust`, `core/fetch`) | implemented, unit-tested and adversarially tested |
-| Adversarial corpus (`test/redteam`) | 22 cases, gates every PR |
+| Adversarial corpus (`test/redteam`) | 25 cases, gates every PR |
 | End-to-end suite (`test/e2e`) | 9 scenarios over the real packer, installer, launcher and a host app, on all three platforms |
 | Apply path: staging, journal, crash recovery, hooks, GC (`core/stage`, `core/txn`, `core/updater`, `core/installer`) | implemented, tested |
 | Elevation (`core/elevate`) | Windows `ElevationInteractive` implemented; privileged helper service and POSIX prompts fail closed |

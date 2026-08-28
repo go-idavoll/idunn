@@ -45,8 +45,9 @@ Enforced in code, with a test: T1–T6, T7 (`internal/safepath`, fuzzed), T8 (st
 (`Migrator.Rollback`), T12 (go-tuf), T13 (`internal/packer` resolves every role key
 and verifies the repository before it writes anything, and refuses a root it cannot
 publish under), T14 (`SchemaVersion`, `MinClientVersion`), T15
-(`stage.GC`), T17 (quiesce), T19 (installer preflight), T20 (`Outcome` carries no paths
-or raw error strings), T21 (every staged byte re-checked against the signed hash),
+(`stage.GC`), T17 (quiesce), T19 (installer preflight, now also as a two-phase corpus
+case where the channel head moves backwards under fresh metadata), T20 (`Outcome`
+carries no paths or raw error strings), T21 (every staged byte re-checked against the signed hash),
 T22 (`core/timefloor`: the known-good floor is checked before every refresh and
 before an apply, and raised by every successful refresh).
 
@@ -88,12 +89,13 @@ transaction, a failing migration, the downgrade preflight, a tampered payload, d
 stage 1, and retention. It runs on all three platforms in CI. See
 [`test/e2e/README.md`](../test/e2e/README.md).
 
-The adversarial corpus (`make redteam-corpus`, build tag `redteam`) holds 22 cases
-across clock rollback, expiry, malformed descriptors, mix-and-match, path traversal,
-resolve (pointer/descriptor disagreement), unknown key, wrong hash, wrong key, and
-wrong length. All but one attack the repository; the clock case attacks the machine
-and is driven through the real install path, because the time floor only exists where
-there is an installation. Fuzzers: `FuzzDescriptor`, `FuzzDstSanitize`.
+The adversarial corpus (`make redteam-corpus`, build tag `redteam`) holds 25 cases
+across clock rollback, downgrade, expiry, freeze, malformed descriptors, mix-and-match,
+path traversal, resolve (pointer/descriptor disagreement), rollback, unknown key, wrong
+hash, wrong key, and wrong length. Most attack the repository; the clock case attacks
+the machine, and the rollback, freeze and downgrade cases attack the client's *memory* —
+what it already trusts and what is already installed — so they run in two phases and are
+driven through the real install path where a version floor is involved. Fuzzers: `FuzzDescriptor`, `FuzzDstSanitize`.
 `FuzzPatchApply` waits on a patch format (§6.4 stage 2).
 
 ## Deliberate non-goals for now

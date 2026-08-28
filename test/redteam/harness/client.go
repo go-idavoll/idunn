@@ -146,6 +146,9 @@ func classify(err error) ErrorClass {
 	if errors.Is(err, timefloor.ErrClockRollback) {
 		return ClassClock
 	}
+	if errors.Is(err, installer.ErrRefused) {
+		return ClassDowngrade
+	}
 	if errors.Is(err, release.ErrInvalid) {
 		return ClassDescriptor
 	}

@@ -49,11 +49,16 @@ test/redteam/
     main.go                  # runs client vs. proposed repos, reports acceptances
 ```
 
-Classes that exist as directories but hold no case yet — `rollback`, `freeze`,
-`downgrade`, `patch-poison`, `cache-poison` — need client-side prior state (a previously
-trusted metadata version, an installed version, a populated cache) or code that is not
-written yet (`stage.ApplyPatch`, `core/elevate`). They land as the harness grows; the
-corpus only ever grows.
+`rollback`, `freeze` and `downgrade` are **history** cases: they need a client with a
+past, because served version 1 metadata is only a rollback if the client has seen
+version 5, and an older release is only a downgrade if something newer is installed.
+The runner drives both phases — publish something honest, let the client come to trust
+it, then change what the server offers — and asserts that phase one *succeeded*, so a
+case whose setup silently broke cannot pass while testing nothing.
+
+Classes that exist as directories but hold no case yet — `patch-poison`, `cache-poison`
+— wait on code that is not written (`stage.ApplyPatch` for IDN-14, the privileged helper
+for IDN-07). They land as those do; the corpus only ever grows.
 
 ## How a case is built
 
@@ -65,6 +70,12 @@ corpus only ever grows.
 | `Metadata` | change role objects (expiry, versions, thresholds) before signing |
 | `Signing` | redirect which key signs which role |
 | `OnDisk` | change published bytes *after* signing — the only way to make content disagree with signed metadata |
+
+A case attacks one of three axes, and never two: the **repository** (a mutator), the
+**clock** (`clock:`), or the client's **history** (`history:`). The last two need no
+mutator of their own — the repository stays honest and what is attacked is the machine
+or its memory. A history case may still name a mutator, and then it describes the
+honest *first* phase, not the attack.
 
 A mutator that attacks the trust anchor itself sets `SeedMutatedRoot: true`. Without it
 the client keeps the root it shipped with and simply ignores a served root of an
