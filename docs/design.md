@@ -446,7 +446,7 @@ type Policy struct {
     QuiesceTimeout time.Duration // default 30s.
 
     // OnBusy decides what happens if the target app cannot be quiesced in time.
-    OnBusy BusyPolicy // default BusyDeferToRestart.
+    OnBusy BusyPolicy // zero value BusyAbort; see 14.3 for what to set it to.
 }
 
 type ElevationMode int
@@ -1022,7 +1022,9 @@ writing concurrently.
   quit, update pending") and waits up to `QuiesceTimeout`.
 - On timeout `Policy.OnBusy` decides:
     - `BusyAbort` — abort cleanly, retry later.
-    - `BusyDeferToRestart` (**recommended default** when the running app updates itself):
+    - `BusyDeferToRestart` (**the recommended setting** when the running app updates
+      itself — a recommendation to the host, not a language default; see the note
+      below):
       the package stays staged, a "pending update" marker is set; the **launcher** performs
       swap+migrate at the next start — *before* the app opens the DB, when no lock is held.
       Sidesteps the concurrency problem entirely.
@@ -1042,8 +1044,11 @@ shared state are host knowledge and are configured.
 > handing over. A newer update may supersede one that is still waiting (`BEGIN` is legal
 > after `DEFERRED`), so a machine that never restarts cannot wedge the updater.
 >
-> `BusyDeferToRestart` is **not** the zero value and is not promoted to one: Go's zero
-> value has to be the failing one, and here that is `BusyAbort` (backlog IDN-21).
+> `BusyDeferToRestart` is **not** the zero value and is not promoted to one. Go's zero
+> value has to be the failing one, and here that is `BusyAbort`; and Go cannot tell
+> "left unset" from "deliberately chosen", so promoting an unset field would turn a
+> forgotten line of host configuration into an update that quietly stays staged and
+> lands at the next start. A host that wants deferral asks for it. (IDN-21, closed.)
 
 ### 14.4 Enterprise networks: proxy, PAC & custom CA
 

@@ -163,7 +163,16 @@ type Policy struct {
 	QuiesceTimeout time.Duration // default 30s.
 
 	// OnBusy decides what happens if the target app cannot be quiesced in time.
-	OnBusy BusyPolicy // default BusyDeferToRestart.
+	//
+	// The zero value is BusyAbort and stays that way. BusyDeferToRestart is what
+	// docs/design.md §14.3 recommends for a host whose running application
+	// updates itself, and a host that wants it says so — New does not promote an
+	// unset field to it. Go cannot tell "left unset" from "deliberately chosen",
+	// so promoting would turn a forgotten field into a change of behaviour in
+	// the apply path: an update that quietly stays staged and lands at the next
+	// start, on a host that never asked for one. The safe reading has to be the
+	// one that wins by accident (AGENTS.md §1.1).
+	OnBusy BusyPolicy
 }
 
 // ElevationMode selects how a privileged apply is performed.
