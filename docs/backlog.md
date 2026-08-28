@@ -85,15 +85,36 @@ while it waits is a no-op rather than a re-download; a *different* version super
 it, so a machine that never restarts cannot wedge the updater.
 
 ### IDN-07 — Privileged helper service and its IPC (§14.2, §14.8, T16, T23)
-`elevate.NewService` fails closed. This is the largest remaining piece and the one
-with the most attack surface: peer-credential authentication (Windows named-pipe
-client token, Linux `SO_PEERCRED`, macOS audit token), a full TUF `Refresh` +
-verification inside the privileged context, request-shape validation, rate limiting,
-and the read-only fd hand-off (`SCM_RIGHTS` / `DuplicateHandle` pulled by the helper)
-that avoids both a second download and path-based TOCTOU.
 
-Done when: the helper installs only what it verified itself, never a caller-supplied
-path, and the corpus grows cases for a hostile caller.
+**IDN-07a — protocol, authorization, POSIX transport — done.** `elevate.NewHelper` is
+the privileged listener and `elevate.NewService` the unprivileged caller's `Elevator`.
+The wire format carries the same three validated scalars as the command line, as lines,
+because the request grammar forbids every byte that would need escaping. The helper
+decides who is asking (kernel peer credentials, never a claim), how often (a minimum
+interval), and what is asked (the grammar and `AllowedRoots`), before it does any work.
+`Applier` is the seam a host implements around `core/installer` with its own embedded
+anchor — `core/elevate` cannot construct one, on purpose. Peer credentials: Linux
+`SO_PEERCRED` and macOS `LOCAL_PEERCRED`.
+
+The hostile-caller cases live in `core/elevate/service_test.go` rather than in
+`test/redteam/corpus`, and that is deliberate: the corpus is built out of tampered
+*repositories*, and none of these tampers with one. The repository is honest; the
+attacker is the process on the other end of the socket. Each case asserts that the
+privileged applier was never reached, and the two that matter most — a root outside the
+allowed set, a uid outside the allowed set — were checked against the mutation that
+removes the guard.
+
+**IDN-07b — Windows named pipe.** `listenLocal`/`dialLocal` and the client token
+(`GetNamedPipeClientProcessId` / `ImpersonateNamedPipeClient`). Fails closed today.
+
+**IDN-07c — macOS audit token.** `LOCAL_PEERTOKEN` identifies the signed application
+rather than only the user; it refines the `LOCAL_PEERCRED` check that is in place.
+
+**Still open for all three: T23.** The helper uses its own TUF cache in its own
+directory, and nothing yet enforces that the directory is not writable by an
+unprivileged user, nor is there the read-only fd hand-off (`SCM_RIGHTS` /
+`DuplicateHandle` pulled by the helper) that would avoid both a second download and a
+path-based TOCTOU (§14.8).
 
 ### IDN-08 — POSIX interactive elevation (§14.2)
 `ElevationInteractive` exists on Windows only; `interactive_other.go` returns

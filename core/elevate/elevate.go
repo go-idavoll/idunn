@@ -172,15 +172,5 @@ func NewInteractive(opts InteractiveOptions) (Elevator, error) {
 	return newInteractive(opts)
 }
 
-// NewService returns an Elevator that hands the apply to an already privileged
-// helper over local IPC. The helper authenticates the caller and re-verifies
-// everything it installs.
-func NewService() (Elevator, error) {
-	// TODO(elevate): the privileged helper and its authenticated IPC. It is the
-	// largest remaining piece of §14.2/§14.8 and the one with the most attack
-	// surface: peer-credential authentication, a full TUF re-verification on the
-	// privileged side, and the read-only fd hand-off that avoids both a second
-	// download and path-based TOCTOU. It is deliberately not sketched here —
-	// half a privilege boundary is worse than none.
-	return nil, fmt.Errorf("%w: privileged helper service", ErrNotImplemented)
-}
+// The privileged helper service lives in service.go: NewService is the
+// unprivileged caller's Elevator, NewHelper is the privileged listener.

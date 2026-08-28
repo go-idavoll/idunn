@@ -196,12 +196,15 @@ func systemRoot(t *testing.T) string {
 	return filepath.Join(dir, "System32")
 }
 
-func TestNewServiceIsNotImplemented(t *testing.T) {
+// The caller's side of the helper needs somewhere to send the request, and an
+// Elevator that would decide that for itself is one that could be pointed
+// somewhere by whatever set an environment variable.
+func TestNewServiceNeedsAnEndpoint(t *testing.T) {
 	t.Parallel()
 
-	el, err := elevate.NewService()
-	if !errors.Is(err, elevate.ErrNotImplemented) {
-		t.Fatalf("NewService() = %v, want ErrNotImplemented", err)
+	el, err := elevate.NewService(elevate.ServiceOptions{})
+	if !errors.Is(err, elevate.ErrRequest) {
+		t.Fatalf("NewService() = %v, want ErrRequest", err)
 	}
 	if el != nil {
 		t.Fatal("NewService() returned an Elevator alongside its error")

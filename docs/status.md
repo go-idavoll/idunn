@@ -30,13 +30,13 @@ piece of the section is missing; **open** — contract only, or nothing.
 | §12 | Test concept | **partial** — unit, adversarial corpus and an end-to-end suite over the real binaries (`test/e2e`, IDN-22); no mutation testing, one fuzz target missing |
 | §13 | Cross-platform specifics | **partial** — layout, elevation and the launcher hand-over are per-OS; no `MoveFileEx` self-update of the launcher itself (IDN-17) |
 | §14.1 | GC / retention | **done** — `stage.GC`, soft-fails on locked dirs |
-| §14.2 | Elevation | **partial** — Windows `ElevationInteractive` done, and `cmd/installer apply` is the privileged helper it launches; `ElevationService` fails closed everywhere; POSIX interactive (`pkexec`, Authorization Services) not built |
+| §14.2 | Elevation | **partial** — Windows `ElevationInteractive` done, and `cmd/installer apply` is the privileged helper it launches. `ElevationService` has its protocol, authorization and POSIX transport (IDN-07a: `elevate.NewHelper`/`NewService`, peer credentials on Linux and macOS); the Windows named pipe (IDN-07b) and the macOS audit token (IDN-07c) fail closed. POSIX interactive (`pkexec`, Authorization Services) not built |
 | §14.3 | Quiesce, app lock, `OnBusy` | **done** — lock + coordinator + all three policies; `BusyDeferToRestart` keeps the staged tree in a resting `DEFERRED` journal state and the launcher finishes it at the next start. `BusyAbort` is the zero value and is not promoted; deferral is a recommendation to the host, which the design now says in those words (IDN-21) |
 | §14.4 | Enterprise proxy / CA | **partial** — system trust store + `ExtraCAs` + env proxy, now under test; no PAC/WPAD resolution, no ranged resume, no mTLS |
 | §14.5 | Telemetry + staged rollout | **done** — `Reporter` with a closed error-class vocabulary; local rollout bucketing |
 | §14.6 | Installer downgrade preflight | **done** |
 | §14.7 | Clock skew | **done** — expiry is classified as `clock_skew`, and `core/timefloor` persists the monotonic known-good time floor that refuses a rolled-back clock |
-| §14.8 | Shared TUF cache in elevated mode | **open** — belongs to the unbuilt helper service |
+| §14.8 | Shared TUF cache in elevated mode | **open** — the helper exists now (IDN-07a) and refreshes into its own cache; the cache-ownership check and the read-only fd hand-off are not built |
 
 ## Threat model coverage (§11.3)
 
@@ -53,9 +53,14 @@ before an apply, and raised by every successful refresh).
 
 Not yet enforced:
 
-- **T16, T23** (LPE via the helper, cache TOCTOU) — the helper service does not exist;
-  `NewService` fails closed. The Windows interactive path enforces its half: three
-  validated scalars cross the boundary, nothing else.
+- **T16** (LPE via the helper) — enforced on POSIX and under test: the helper answers
+  only permitted uids, writes only install roots it was configured for, rate-limits, and
+  parses a grammar that cannot express anything else. The negative cases live in
+  `core/elevate/service_test.go` rather than in the repository corpus, because the
+  attacker there is the caller and not the server. Windows is not covered yet (IDN-07b).
+- **T23** (cache TOCTOU) — still open. The helper does its own refresh into its own
+  cache, but nothing enforces that the cache directory is out of an unprivileged user's
+  reach, and there is no read-only fd hand-off (§14.8).
 - **T18** (enterprise DPI) — tolerated by design, but PAC and resumable downloads are
   missing, so the *availability* half is incomplete.
 
@@ -65,7 +70,7 @@ Not yet enforced:
 
 | Package | Coverage |
 |---|---|
-| `core/elevate` | 94.6% |
+| `core/elevate` | 94.6%, plus the helper service: the control, and a hostile caller against every guard it has |
 | `core/release` | 94.4% |
 | `core/fsx` | 93.3% |
 | `core/stage` | 90.8% |

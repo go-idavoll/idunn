@@ -969,6 +969,40 @@ request shape, rate-limit, no shell.
 **Least privilege:** download+verify run unprivileged into staging; only the minimal
 re-verify+swap runs elevated.
 
+> **As built (`ElevationService`, IDN-07a):** `core/elevate` has both halves.
+> `NewService` is the unprivileged caller's `Elevator`; `NewHelper` is the privileged
+> listener. What crosses is the same three validated scalars the command-line contract
+> carries, in a line format rather than a serialization — the request grammar already
+> forbids every byte that would need escaping, so "one field per line" is injective
+> without a quoting rule anyone could get wrong, and the parser on the privileged side
+> is the smallest thing that can do the job: fixed keys, fixed order, hard bounds, no
+> vocabulary beyond it.
+>
+> The helper decides in this order: **who** is asking (peer credentials from the kernel,
+> never a claim by the caller), **how often** (a minimum interval, because a caller that
+> can ask in a loop can keep a machine reinstalling), **what** is being asked (the
+> grammar), and only then does any work. `HelperOptions.AllowedRoots` must name at least
+> one root and a request for anything else is denied — that list is the difference
+> between a helper and a local root exploit, because the *bytes* are signed but a caller
+> who could choose *where* they land would be writing publisher-signed content to a path
+> of their choosing, as root (T16). `AllowedUIDs` empty reads as "the superuser and
+> nobody else", never as "everyone".
+>
+> The answer back is a class from a closed vocabulary and nothing else: it crosses to a
+> less privileged process, which must not be told about a filesystem it may not be able
+> to read (T20).
+>
+> `Applier` is the seam the host implements around `core/installer` with the anchor its
+> build embeds. `core/elevate` deliberately cannot construct one: a package that could
+> would have to know a repository URL, and then the privileged side's trust anchor would
+> be a parameter rather than a build-time fact.
+>
+> Transport and peer credentials are per-OS. Linux (`SO_PEERCRED`) and macOS
+> (`LOCAL_PEERCRED`) are built; the Windows named pipe with its client token is IDN-07b
+> and fails closed, as does the macOS audit token refinement (IDN-07c). A helper that
+> cannot establish who is asking does not answer — half a privilege boundary is worse
+> than none.
+
 ```go
 // Package elevate abstracts how the privileged apply runs. core stays OS-agnostic.
 package elevate

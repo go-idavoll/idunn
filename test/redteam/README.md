@@ -57,8 +57,15 @@ it, then change what the server offers — and asserts that phase one *succeeded
 case whose setup silently broke cannot pass while testing nothing.
 
 Classes that exist as directories but hold no case yet — `patch-poison`, `cache-poison`
-— wait on code that is not written (`stage.ApplyPatch` for IDN-14, the privileged helper
-for IDN-07). They land as those do; the corpus only ever grows.
+— wait on code that is not written (`stage.ApplyPatch` for IDN-14, the helper's own TUF
+cache for §14.8). They land as those do; the corpus only ever grows.
+
+**Attacks on the caller live elsewhere.** The privileged helper's hostile-caller cases
+are in `core/elevate/service_test.go`, not here. Everything in this tree is built out of
+a tampered *repository* — the fixture is a signed TUF tree and the mutators change bytes
+the server hands out. Those attacks change none of that: the repository is honest, and
+the attacker is the process on the other end of the helper's socket. They are permanent
+regression cases all the same.
 
 ## How a case is built
 
