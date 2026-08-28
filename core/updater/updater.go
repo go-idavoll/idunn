@@ -138,22 +138,17 @@ type Options struct {
 }
 
 // Policy holds the operator-tunable decisions. The zero value is the safe one:
-// no downgrade, expiry enforced.
+// no downgrade, no forcing, the minimum retention that still leaves a rollback
+// target.
+//
+// There is deliberately no switch here for metadata expiry. It is checked inside
+// go-tuf during Refresh, which runs before this package decides anything, and the
+// freeze defence *is* that check (§11.3 T5) — a flag that could relax it would be
+// a way to ask for the attack. An earlier `EnforceExpiry` existed and was always
+// forced to true; it was removed rather than kept as decoration, because a knob
+// that cannot be turned is a knob somebody will eventually believe in (IDN-15).
 type Policy struct {
 	AllowDowngrade bool // default false (blocks rollback attacks).
-
-	// EnforceExpiry is always on and cannot be turned off from here.
-	//
-	// TUF metadata expiry is checked inside go-tuf during Refresh, which runs
-	// before this package decides anything, and no flag above it may relax that
-	// — the freeze defence is exactly that check (§11.3 T5). New sets this to
-	// true whatever the caller passed, because Go cannot distinguish "left
-	// unset" from "deliberately false" and the unsafe reading must not be the
-	// one that wins by accident.
-	//
-	// TODO(release): schema 1 descriptors carry no validity window of their own.
-	// When they do, this flag governs that app-level check on top of TUF's.
-	EnforceExpiry bool
 
 	// VerifyAfterApply re-reads every installed file after the swap and compares
 	// it against its verified target bytes. Belt and braces: the bytes were
@@ -295,7 +290,6 @@ func New(o Options) (*Updater, error) {
 	}
 	// See the field comment: expiry is not negotiable from here, and the value
 	// Go gives an unset bool is the unsafe one.
-	p.EnforceExpiry = true
 
 	now := o.Now
 	if now == nil {

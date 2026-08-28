@@ -278,10 +278,16 @@ repository mutation of the kind the corpus harness builds — the repository is 
 the patch is a legitimately signed target — so it belongs where it can actually be
 built, next to the code it constrains.
 
-### IDN-15 — Descriptor-level validity window (§6.3 `EnforceExpiry`)
-Schema 1 descriptors carry no validity window, so `Policy.EnforceExpiry` currently
-governs nothing beyond TUF's own metadata expiry (`TODO(release)` in
-`core/updater`). Either add the field in schema 2 or drop the flag.
+### IDN-15 — Descriptor-level validity window (§6.3 `EnforceExpiry`) — **done, by removal**
+Decided the second way: the flag is gone.
+
+It governed nothing. Schema 1 descriptors carry no validity window, so the only expiry
+in play was TUF's own — checked inside go-tuf during `Refresh`, before this package
+decides anything, and not relaxable from above by design. Adding a second, app-level
+window in schema 2 was the alternative and is worse: it is exactly the parallel check
+AGENTS.md §1.2 warns about, and it buys nothing `timestamp.expires` does not already
+give. Removing the field rather than leaving it forced to `true` is the point — a knob
+that cannot be turned is one somebody will eventually believe in.
 
 ### IDN-16 — Mutation testing (§12, AGENTS.md §4)
 `go-mutesting` (or equivalent) as the quality bar for assertions. Coverage is high;

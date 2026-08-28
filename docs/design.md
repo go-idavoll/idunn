@@ -429,7 +429,6 @@ type Options struct {
 
 type Policy struct {
     AllowDowngrade   bool // default false (blocks rollback attacks).
-    EnforceExpiry    bool // default true; enforce descriptor validity on top of TUF metadata expiry.
     VerifyAfterApply bool // re-hash installed files post-swap (belt & braces).
 
     // RetainVersions is how many version dirs to keep after a successful commit,
@@ -479,6 +478,14 @@ func (u *Updater) CheckForUpdate(ctx context.Context) (*Release, error)
 // rolls back files and calls Migrator.Rollback. Safe to call again after a crash.
 func (u *Updater) Apply(ctx context.Context, r *Release) error
 ```
+
+> **As built:** there is no `EnforceExpiry`. Schema 1 descriptors carry no validity
+> window of their own, so the flag governed nothing beyond TUF's metadata expiry —
+> which go-tuf checks during `Refresh` and which nothing above it may relax. A second,
+> app-level expiry was considered and dropped: it is the kind of parallel check §1.2 of
+> `AGENTS.md` warns about, and it buys nothing `timestamp.expires` does not already
+> give. The field was removed rather than left forced-true, because a knob that cannot
+> be turned is one somebody will eventually believe in (IDN-15).
 
 ### 6.4 Delta / differential updates (content-addressed)
 
