@@ -289,6 +289,29 @@ func (c *Client) SignedLength(targetPath string) (int64, error) {
 	return info.Length, nil
 }
 
+// SignedSHA256 returns the hex sha256 the repository signed for a target.
+//
+// It exists for delta stage 2 (docs/design.md §6.4): a client that knows the hash
+// of what it has and the hash of what it wants can name the patch target that
+// connects the two, without the descriptor carrying a reference to it. The hash
+// is read from the signed target metadata this client already trusts, so it is
+// not a second source of truth — it is the same one, asked a different question.
+//
+// It is not a verification, and nothing may use it as one: comparing a hash we
+// computed against a hash we read is a hand-written check beside go-tuf's, which
+// is what Accepts is for (AGENTS.md §1.2).
+func (c *Client) SignedSHA256(targetPath string) (string, error) {
+	info, err := c.up.GetTargetInfo(targetPath)
+	if err != nil {
+		return "", fmt.Errorf("%w: target %q: %w", ErrTrust, targetPath, err)
+	}
+	sum, ok := info.Hashes["sha256"]
+	if !ok {
+		return "", fmt.Errorf("%w: target %q carries no sha256 hash", ErrTrust, targetPath)
+	}
+	return sum.String(), nil
+}
+
 // Accepts reports whether data is exactly the bytes the repository signed for
 // targetPath.
 //

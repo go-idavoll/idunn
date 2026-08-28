@@ -27,6 +27,7 @@ socket — `go test ./...` stays fast and hermetic.
 | `TestUnchangedPayloadsAreNotRefetched` | delta stage 1: unchanged bytes cross the wire once (§6.4) |
 | `TestGarbageCollectionKeepsTheRollbackTarget` | retention drops the old and keeps the rollback target (§14.1) |
 | `TestTheLauncherReplacesItself` | the shim above `versions/` is carried forward by the start after the update (§13, IDN-17) |
+| `TestAChangedFileArrivesAsAPatch` | delta stage 2: a changed binary crosses the wire as the difference (§6.4) |
 
 ## How it is built
 

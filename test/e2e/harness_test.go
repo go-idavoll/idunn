@@ -42,6 +42,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -334,6 +335,10 @@ type release struct {
 	// this string. A release that ships one is how the shim at the top of the
 	// install root ever gets refreshed (IDN-17).
 	launcher string
+
+	// patchAgainst is how many previous releases this publish emits delta
+	// patches against (§6.4 stage 2).
+	patchAgainst int
 }
 
 // publish builds the host application at version, writes a pack.yaml around it,
@@ -395,6 +400,7 @@ targets:
 		// make every scenario a freshness test. Reproducibility of the packer's
 		// output is pinned by internal/packer's golden test, not here.
 		"--now", time.Now().UTC().Format(time.RFC3339),
+		"--patch-against", strconv.Itoa(rel.patchAgainst),
 	)
 	cmd.Env = append(os.Environ(),
 		packer.EnvTargetsKey+"="+r.keyPath(metadata.TARGETS),
@@ -436,6 +442,7 @@ type server struct {
 
 	mu       sync.Mutex
 	payloads int
+	patches  int
 	requests []string
 }
 
@@ -460,8 +467,11 @@ func (s *server) record(path string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.requests = append(s.requests, path)
-	if strings.HasPrefix(path, "/targets/payloads/") {
+	switch {
+	case strings.HasPrefix(path, "/targets/payloads/"):
 		s.payloads++
+	case strings.HasPrefix(path, "/targets/patches/"):
+		s.patches++
 	}
 }
 
@@ -474,10 +484,17 @@ func (s *server) payloadRequests() int {
 	return s.payloads
 }
 
+// patchRequests is how many delta patches were fetched so far.
+func (s *server) patchRequests() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.patches
+}
+
 func (s *server) resetCounts() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.payloads = 0
+	s.payloads, s.patches = 0, 0
 	s.requests = nil
 }
 

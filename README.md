@@ -93,6 +93,7 @@ github.com/go-idavoll/idunn          # core library (this repo)
   core/launch     # start-of-day: settle the journal, apply a deferred update
   core/timefloor  # monotonic known-good time floor (clock rollback defence)
   internal/safepath # the single validator for untrusted install-relative paths
+  internal/delta    # the intra-file delta patch format (fuzzed apply path)
   internal/packer   # the publishing engine: pack.yaml -> signed TUF repository
   cmd/installer   # thin installer binary
   cmd/launcher    # the stable shim the install layout starts with
@@ -191,7 +192,7 @@ What exists today:
 | Descriptor & channel-pointer ingest (`core/release`, `internal/safepath`) | implemented, fuzzed, adversarially tested |
 | TUF trust client and resolve (`core/trust`, `core/fetch`) | implemented, unit-tested and adversarially tested |
 | Adversarial corpus (`test/redteam`) | 25 cases, gates every PR |
-| End-to-end suite (`test/e2e`) | 10 scenarios over the real packer, installer, launcher and a host app, on all three platforms |
+| End-to-end suite (`test/e2e`) | 11 scenarios over the real packer, installer, launcher and a host app, on all three platforms |
 | Apply path: staging, journal, crash recovery, hooks, GC (`core/stage`, `core/txn`, `core/updater`, `core/installer`) | implemented, tested |
 | Elevation (`core/elevate`) | interactive elevation on Windows (UAC) and Linux (pkexec); the privileged helper service runs on all three (Unix socket with peer credentials, named pipe with a security descriptor); the macOS prompt fails closed |
 | Clock rollback defence (`core/timefloor`) | implemented: known-good time floor, checked before every refresh and apply |
@@ -199,7 +200,7 @@ What exists today:
 | Packer (`cmd/packer`, `internal/packer`) | publishes a delegated, reproducible TUF repository; `--retain N` retires old releases and the payloads only they named |
 | Installer binary (`cmd/installer`) | implemented: embedded anchor, elevation decision, privileged `apply` verb |
 | Launcher (`cmd/launcher`, `core/launch`) and `BusyDeferToRestart` | implemented: a busy application defers, the launcher applies at the next start and replaces itself when a release ships a new one |
-| Delta stage 2 (binary patches) | not implemented |
+| Delta stage 2 (binary patches) | implemented: `internal/delta`, patches emitted by the packer and found by convention, with the full target as the fallback |
 
 The full section-by-section reconciliation against the design lives in
 [`docs/status.md`](docs/status.md); the open work is tracked in

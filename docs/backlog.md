@@ -246,11 +246,37 @@ configuration to read. The interface they slot into exists, so a host that needs
 today can supply it without waiting for this. `http.ProxyFromEnvironment` remains the
 default.
 
-### IDN-14 — Delta stage 2: intra-file binary patches (§6.4)
-`stage.ApplyPatch` fails closed. Needs a chosen patch format (`zstd --patch-from`,
-bsdiff), patch targets emitted by the packer against the last N versions, descriptor
-`custom` references, fallback to the full target on mismatch, and `FuzzPatchApply`
-(the `TODO(redteam)` in the Makefile).
+### IDN-14 — Delta stage 2: intra-file binary patches (§6.4) — **done**
+The format is `internal/delta`: a two-opcode instruction stream, copy-from-base and
+insert-literal. Neither candidate the design named was taken, and the reason is where
+the code runs. zstd `--patch-from` and bsdiff would each be a dependency in the *apply*
+path — the one place in this project where a bug is a bug in what lands on a user's
+disk — and each brings a decoder far larger than the problem. What is needed is two
+instructions, and an apply small enough that a reviewer can hold it in their head and a
+fuzzer can cover it exhaustively. The trade is compression ratio against a suffix sort,
+and it is cheap: a worse patch costs bandwidth, because the result is checked against
+the signed target hash either way.
+
+`--patch-against N` emits patches from the last N releases of each platform, and only
+where the patch is meaningfully smaller than the payload. Nothing in the descriptor
+points at them: the client derives the target path from the hash it has and the hash it
+wants (`release.PatchPath`), which is the "discovery by convention" §6.4 asks for — so a
+publisher can start or stop emitting patches with no client noticing except in its
+bandwidth. Retention retires a patch when the payload it *produces* is retired; the
+payload it starts from may be long gone, and a client running a retired version is
+exactly who the patch forward is for.
+
+`FuzzPatchApply` is in `internal/delta` and in `make redteam-fuzz`. The apply path is
+the one that runs on bytes the repository chose *before* the check that decides whether
+they were the right ones, so every offset and length is bounded twice over and the
+output is a single allocation from a bounded header.
+
+The `patch-poison` corpus directory stays empty, and the case for it lives in
+`core/stage/patch_test.go`: a patch published at the path that promises one payload
+while reconstructing another is discarded in favour of the full download. It is not a
+repository mutation of the kind the corpus harness builds — the repository is honest and
+the patch is a legitimately signed target — so it belongs where it can actually be
+built, next to the code it constrains.
 
 ### IDN-15 — Descriptor-level validity window (§6.3 `EnforceExpiry`)
 Schema 1 descriptors carry no validity window, so `Policy.EnforceExpiry` currently

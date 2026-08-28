@@ -94,14 +94,18 @@ func channelPaths(channel string) []string {
 }
 
 // linePaths is the path pattern set of a release-line role: every descriptor of
-// that major, for every platform, and every payload of that line.
+// that major, for every platform, every payload of that line, and every delta
+// patch between two of those payloads (§6.4 stage 2).
 //
-// go-tuf matches a pattern segment by segment, so neither wildcard can cross a
-// "/" and neither pattern can be widened by a crafted target path.
+// go-tuf matches a pattern segment by segment, so no wildcard can cross a "/"
+// and no pattern can be widened by a crafted target path. A patch is a target
+// like any other — signed, hashed, and fetched through the same client — which is
+// why it needs a pattern here rather than a mechanism of its own.
 func linePaths(major string) []string {
 	return []string{
 		fmt.Sprintf("releases/*/%s.*.json", major),
 		fmt.Sprintf("payloads/v%s/*", major),
+		fmt.Sprintf("patches/v%s/*", major),
 	}
 }
 

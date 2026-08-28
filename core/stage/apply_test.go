@@ -17,6 +17,8 @@ package stage_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io/fs"
 	"strings"
@@ -441,4 +443,13 @@ func TestSwapRefusesAMissingVersionDirectory(t *testing.T) {
 	if got, _ := layout.PointerTarget(m, root); got != "" {
 		t.Fatalf("a refused Swap still moved the pointer to %q", got)
 	}
+}
+
+func (t *targets) SignedSHA256(path string) (string, error) {
+	data, ok := t.files[path]
+	if !ok {
+		return "", errors.New("no such target: " + path)
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
 }

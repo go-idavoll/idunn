@@ -63,6 +63,10 @@ type Resolver interface {
 	// acceptable (docs/design.md §6.4 stage 1).
 	SignedLength(targetPath string) (int64, error)
 	Accepts(targetPath string, data []byte) error
+
+	// SignedSHA256 is the hash the repository signed for a target. It is how a
+	// delta patch is named (§6.4 stage 2) and never a check of its own.
+	SignedSHA256(targetPath string) (string, error)
 }
 
 // AppLock is the exclusive lock a running host application holds, and the ground

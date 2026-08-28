@@ -303,11 +303,14 @@ scripts.
 
 ## 8. Beyond a first version
 
-- **Delta stage 2** (§6.4): optional patch targets against the last *N* versions,
-  referenced from the descriptor's `custom` field. Discovery is by convention and
-  needs no extra signature — the *result* is verified against the signed target hash,
-  so a broken or tampered patch only causes a fallback to the full target (backlog
-  IDN-14).
+- **Delta stage 2** (§6.4, IDN-14): `--patch-against N` publishes patch targets from
+  the last *N* releases of each platform, where the patch is meaningfully smaller than
+  the payload. The descriptor references nothing — the client derives the path from the
+  hash it has and the hash it wants — and the *result* is verified against the signed
+  target hash, so a broken or tampered patch only causes a fallback to the full target.
+  Retention retires a patch when the payload it produces is retired; the payload it
+  starts from may be long gone, and a client running a retired version is exactly who
+  the patch forward is for.
 - **Provenance / SLSA** alongside reproducible builds, as an additional supply-chain
   proof beside TUF (IDN-18).
 - **Root bootstrapping** stays out: a repository must already contain a

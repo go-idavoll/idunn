@@ -66,8 +66,7 @@ redteam: redteam-corpus redteam-fuzz
 redteam-corpus: baseline
 	$(GO) test -tags=redteam ./test/redteam/...
 
-## fuzz the parsers and the path sanitizer (the real bug-finders)
-## TODO(redteam): add FuzzPatchApply once stage.ApplyPatch has a patch format.
+## fuzz the parsers, the path sanitizer and the patch applier (the real bug-finders)
 ##
 ## On Windows, `go test -fuzz` execs a worker binary out of the build temp dir,
 ## which endpoint protection may block ("Access is denied"). Point GOTMPDIR at a
@@ -76,6 +75,7 @@ redteam-corpus: baseline
 redteam-fuzz:
 	$(GO) test -run=^$$ -fuzz=FuzzDescriptor   -fuzztime=$(REDTEAM_FUZZTIME) ./core/release
 	$(GO) test -run=^$$ -fuzz=FuzzDstSanitize  -fuzztime=$(REDTEAM_FUZZTIME) ./core/stage
+	$(GO) test -run=^$$ -fuzz=FuzzPatchApply  -fuzztime=$(REDTEAM_FUZZTIME) ./internal/delta
 
 ## generate TEST-ONLY role keys (never production)
 test-keys:

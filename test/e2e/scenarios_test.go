@@ -647,3 +647,50 @@ func launcherVersionOf(t *testing.T, shim string) string {
 	}
 	return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(out), "idunn launcher"))
 }
+
+// ---------------------------------------------------------------------------
+// 11. Delta stage 2: a changed file arrives as a patch (§6.4, IDN-14).
+// ---------------------------------------------------------------------------
+
+// Stage 1 keeps *unchanged* files off the wire. This is the other half: a file
+// that did change, and is nonetheless mostly what is already installed, arrives
+// as the difference rather than as itself.
+//
+// Nothing in the descriptor points at the patch. The client names it from the
+// hash it has and the hash it wants, asks for it, and is simply told there is no
+// such target when the publisher made none — which is what makes this an
+// optimisation a repository can start and stop offering without any client
+// caring.
+func TestAChangedFileArrivesAsAPatch(t *testing.T) {
+	t.Parallel()
+	r := newRepo(t)
+	r.publish("1.0.0", release{data: map[string]string{"share/readme.txt": "one"}})
+	in := newInstall(t, r)
+	if code, out := in.runInstaller(); code != exitOK {
+		t.Fatalf("installer = %d: %s", code, out)
+	}
+
+	// The application binary of 1.1.0 differs from 1.0.0 only in the version
+	// stamped into it — the shape a rebuilt binary usually has.
+	r.publish("1.1.0", release{
+		data:         map[string]string{"share/readme.txt": "one"},
+		patchAgainst: 1,
+	})
+
+	r.srv.resetCounts()
+	if code, out := in.selfUpdate(); code != exitOK {
+		t.Fatalf("self-update = %d: %s", code, out)
+	}
+
+	if got := r.srv.patchRequests(); got == 0 {
+		t.Error("no patch was fetched; the update took the full payload")
+	}
+	if got := r.srv.payloadRequests(); got != 0 {
+		t.Errorf("%d payloads were fetched; the changed binary should have arrived as a patch", got)
+	}
+	// And the result is the real thing, not an approximation of it: the
+	// application that was reconstructed runs and says which version it is.
+	if code, out := runProc(t, in.appPath()); code != exitOK || !strings.Contains(out, "app 1.1.0") {
+		t.Errorf("the patched application reports %q (%d)", out, code)
+	}
+}

@@ -533,9 +533,22 @@ source — so `RetainVersions` also affects delta efficiency.
 > copies is a weaker statement than comparing one against what was signed.
 
 **Packer/repo:** stage 1 requires **no** extra metadata (target hashes already exist).
-For stage 2 the packer optionally adds patch targets against the last N versions; the
-descriptor references them in its `custom` field. Discovery by convention, no signature
-needed.
+For stage 2 the packer optionally adds patch targets against the last N versions.
+Discovery by convention, no signature needed.
+
+> **As built (stage 2, IDN-14):** the descriptor references nothing. The client derives
+> the patch target's path from the hash it has and the hash the repository signed for
+> what it wants (`release.PatchPath`), asks for it, and is told there is no such target
+> when none was published — so "discovery by convention" is literal, and a publisher can
+> start or stop emitting patches without a descriptor changing or a client caring.
+>
+> The format is `internal/delta`: copy-from-base and insert-literal, and nothing else.
+> Neither zstd `--patch-from` nor bsdiff was taken, because both would be a dependency
+> in the *apply* path — the one place where a bug is a bug in what lands on a user's
+> disk — and both bring a decoder far larger than the problem. The cost is compression
+> ratio against a suffix sort, and it is a cheap cost: a worse patch is bandwidth, since
+> the result is checked against the signed hash either way, and a patch that reconstructs
+> anything else is discarded in favour of the full download.
 
 ```go
 // plan computes the minimal fetch set for a release Descriptor given what is

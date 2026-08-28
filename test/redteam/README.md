@@ -56,9 +56,16 @@ The runner drives both phases — publish something honest, let the client come 
 it, then change what the server offers — and asserts that phase one *succeeded*, so a
 case whose setup silently broke cannot pass while testing nothing.
 
-Classes that exist as directories but hold no case yet — `patch-poison`, `cache-poison`
-— wait on code that is not written (`stage.ApplyPatch` for IDN-14, the helper's own TUF
-cache for §14.8). They land as those do; the corpus only ever grows.
+`cache-poison` exists as a directory and holds no case yet: it waits on the helper's own
+TUF cache and the ownership check around it (§14.8). It lands as that does; the corpus
+only ever grows.
+
+`patch-poison` stays empty for a different reason, the same one as the hostile-caller
+cases below: a poisoned delta patch is not a tampered repository. The patch is a
+legitimately signed target published at a path the client derived itself, and what
+rejects it is the hash check on what it reconstructs. That case lives in
+`core/stage/patch_test.go`, next to the code it constrains, and the apply path itself is
+covered by `FuzzPatchApply` in `internal/delta`.
 
 **Attacks on the caller live elsewhere.** The privileged helper's hostile-caller cases
 are in `core/elevate/service_test.go`, not here. Everything in this tree is built out of

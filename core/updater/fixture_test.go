@@ -17,6 +17,8 @@ package updater_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"testing"
 	"time"
@@ -384,4 +386,13 @@ func (f *fixture) exists(name string) bool {
 		f.t.Fatalf("Stat(%s): %v", name, err)
 	}
 	return err == nil
+}
+
+func (f *fakeTrust) SignedSHA256(path string) (string, error) {
+	data, ok := f.targets[path]
+	if !ok {
+		return "", errors.New("no such target: " + path)
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
 }

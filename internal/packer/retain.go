@@ -118,9 +118,25 @@ func retire(o Options, cfg *Config, st *state, blobs []blob,
 	}
 
 	payloadPrefix := "payloads/" + contentRole + "/"
+	patchPrefix := "patches/" + contentRole + "/"
 	for target := range targets {
-		if strings.HasPrefix(target, payloadPrefix) && !referenced[target] {
-			drop = append(drop, target)
+		switch {
+		case strings.HasPrefix(target, payloadPrefix):
+			if !referenced[target] {
+				drop = append(drop, target)
+			}
+		case strings.HasPrefix(target, patchPrefix):
+			// A patch is retired when the payload it *produces* is gone: it
+			// reconstructs something nobody may install any more.
+			//
+			// The payload it starts from is a different matter and is
+			// deliberately not required to survive. A client can hold a version
+			// this repository has already retired — that is the ordinary state
+			// of a machine that has not updated in a while — and the patch from
+			// those bytes forward is exactly what makes catching up cheap.
+			if !referenced[payloadPrefix+patchTo(target, patchPrefix)] {
+				drop = append(drop, target)
+			}
 		}
 	}
 	if len(drop) == 0 {
@@ -138,6 +154,18 @@ func retire(o Options, cfg *Config, st *state, blobs []blob,
 		delete(targets, target)
 	}
 	return r, nil
+}
+
+// patchTo returns the hash a patch target reconstructs, or "" if the name is not
+// one this packer produced. An unrecognisable name is retired: nothing here
+// published it, and a target nobody can account for is not one to keep signing.
+func patchTo(target, prefix string) string {
+	name := strings.TrimPrefix(target, prefix)
+	_, to, ok := strings.Cut(name, "-")
+	if !ok {
+		return ""
+	}
+	return to
 }
 
 // partition splits the descriptors of one line role into what is kept and what

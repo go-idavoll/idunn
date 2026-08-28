@@ -17,6 +17,8 @@ package installer_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -464,4 +466,13 @@ func TestInstalledVersionRefusesAnInconsistentInstall(t *testing.T) {
 			t.Fatal("an unreadable state was reported as no installation")
 		}
 	})
+}
+
+func (f *fakeTrust) SignedSHA256(path string) (string, error) {
+	data, ok := f.targets[path]
+	if !ok {
+		return "", errors.New("no such target: " + path)
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
 }

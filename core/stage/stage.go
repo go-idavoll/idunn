@@ -23,6 +23,8 @@ package stage
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -31,6 +33,7 @@ import (
 
 	"github.com/go-idavoll/idunn/core/fsx"
 	"github.com/go-idavoll/idunn/core/release"
+	"github.com/go-idavoll/idunn/internal/delta"
 	"github.com/go-idavoll/idunn/internal/layout"
 	"github.com/go-idavoll/idunn/internal/safepath"
 )
@@ -70,6 +73,11 @@ type Materializer interface {
 	// never decides whether bytes are acceptable, only where they come from and
 	// where they go (AGENTS.md §1.2, §1.5).
 	Accepts(targetPath string, data []byte) error
+
+	// SignedSHA256 is the hash the repository signed for a target. It is how a
+	// delta patch target is named (docs/design.md §6.4 stage 2), and it is not a
+	// check: what decides whether reconstructed bytes may be used is Accepts.
+	SignedSHA256(targetPath string) (string, error)
 }
 
 // Stager writes verified files into a staging directory and swaps them in.
@@ -133,6 +141,13 @@ func (s *Stager) Stage(ctx context.Context, d *release.Descriptor) (string, erro
 	if err != nil {
 		return "", err
 	}
+	// The release line this publish belongs to. A patch target lives inside the
+	// delegated role that signs the release it belongs to, so its path carries
+	// the line (release.PatchPath).
+	major, err := release.Major(d.Version)
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", ErrStage, err)
+	}
 
 	stageDir := fsx.Join(layout.Staging(s.Root), d.Version)
 	// A leftover staging tree from an abandoned attempt is not a base to build
@@ -148,7 +163,7 @@ func (s *Stager) Stage(ctx context.Context, d *release.Descriptor) (string, erro
 		if err := ctx.Err(); err != nil {
 			return "", fmt.Errorf("%w: %w", ErrStage, err)
 		}
-		if err := s.stageFile(stageDir, &d.Files[i], reuseFrom); err != nil {
+		if err := s.stageFile(stageDir, &d.Files[i], reuseFrom, major); err != nil {
 			// Leave the staging tree where it is; the transaction's rollback
 			// and the next recovery both remove it, and removing it here would
 			// destroy the evidence of what went wrong.
@@ -185,7 +200,7 @@ func (s *Stager) Stage(ctx context.Context, d *release.Descriptor) (string, erro
 }
 
 // stageFile writes one payload file into the staging tree.
-func (s *Stager) stageFile(stageDir string, f *release.FileRef, reuseFrom []string) error {
+func (s *Stager) stageFile(stageDir string, f *release.FileRef, reuseFrom []string, major string) error {
 	dst, err := SanitizeDst(f.Dst)
 	if err != nil {
 		return fmt.Errorf("%w: %s: %w", ErrStage, f.Target, err)
@@ -212,6 +227,12 @@ func (s *Stager) stageFile(stageDir string, f *release.FileRef, reuseFrom []stri
 	data, err := s.reuse(f, reuseFrom)
 	if err != nil {
 		return err
+	}
+	if data == nil {
+		// Delta stage 2: an installed copy that is *not* the target may still be
+		// most of it. If the publisher made a patch from those exact bytes to
+		// these, fetching it is cheaper than fetching the file.
+		data = s.patch(f, reuseFrom, major)
 	}
 	if data == nil {
 		if data, err = s.Trust.Target(f.Target); err != nil {
@@ -264,9 +285,10 @@ func (s *Stager) reuseSources(live string) ([]string, error) {
 	return dirs, nil
 }
 
-// MaxReuseCandidate bounds a file read as a reuse candidate. It is a ceiling on
-// what a wrong answer can cost, not a policy: a candidate is only read at all
-// once its size matches the signed length exactly.
+// MaxReuseCandidate bounds a file read as a reuse candidate, and the result a
+// delta patch may reconstruct. It is a ceiling on what a wrong answer can cost,
+// not a policy: a candidate is only read at all once its size matches the signed
+// length exactly.
 const MaxReuseCandidate = 1 << 30 // 1 GiB
 
 // reuse returns the bytes of an already-installed copy of f's target, or nil if
@@ -318,6 +340,78 @@ func (s *Stager) reuse(f *release.FileRef, dirs []string) ([]byte, error) {
 		return data, nil
 	}
 	return nil, nil
+}
+
+// patch reconstructs f's target from an installed file plus a published delta,
+// or returns nil if that cannot be done.
+//
+// Every failure along the way is a nil rather than an error, and that is the
+// design rather than laziness: the fallback is the full download, which is
+// strictly more expensive and exactly as verified. There is nothing a broken,
+// missing or hostile patch can achieve here beyond making this function return
+// nothing — the bytes it produces are candidates, and Accepts decides
+// (docs/design.md §6.4, AGENTS.md §1.5).
+//
+// Discovery is by convention: the patch target's path is derived from the hash of
+// what is on disk and the hash the repository signed for what is wanted. Nothing
+// in the descriptor points at it, so a publisher can add or drop patches between
+// releases without the descriptors changing, and a client that asks for one that
+// was never made is simply told there is no such target.
+func (s *Stager) patch(f *release.FileRef, dirs []string, major string) []byte {
+	if len(dirs) == 0 {
+		return nil
+	}
+	want, err := s.Trust.SignedSHA256(f.Target)
+	if err != nil {
+		return nil
+	}
+	dst, err := SanitizeDst(f.Dst)
+	if err != nil {
+		return nil
+	}
+
+	for _, dir := range dirs {
+		base := s.readCandidate(fsx.Join(dir, dst))
+		if base == nil {
+			continue
+		}
+		sum := sha256.Sum256(base)
+		patchTarget := release.PatchPath(major, hex.EncodeToString(sum[:]), want)
+
+		raw, err := s.Trust.Target(patchTarget)
+		if err != nil {
+			continue // no patch was published from these bytes to those.
+		}
+		out, err := ApplyPatch(base, raw)
+		if err != nil {
+			continue
+		}
+		if err := s.Trust.Accepts(f.Target, out); err != nil {
+			// A patch that reconstructs something else is not a fallback and
+			// not a fault to work around: it is discarded, and the full target
+			// is fetched instead (§6.4).
+			continue
+		}
+		return out
+	}
+	return nil
+}
+
+// readCandidate reads an installed file that may serve as a patch base.
+//
+// Unlike reuse it does not care about the length: the whole point is a file that
+// is *not* the target. What it still refuses to do is follow anything that is not
+// a plain regular file.
+func (s *Stager) readCandidate(name string) []byte {
+	info, err := fsx.Lstat(s.FS, name)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > MaxReuseCandidate {
+		return nil
+	}
+	data, err := fsx.ReadFile(s.FS, name, MaxReuseCandidate)
+	if err != nil {
+		return nil
+	}
+	return data
 }
 
 // makeDirs creates the relative directory chain under base and returns the
@@ -495,22 +589,25 @@ func retained(versions []string, live string, retain int) (map[string]bool, erro
 	return keep, nil
 }
 
-// ApplyPatch reconstructs a target from a base file and a delta patch. The result
-// is accepted only if it matches the signed target hash; a patch that produces the
-// wrong bytes is a failure, never a fallback. It is the fuzz target FuzzPatchApply.
+// ApplyPatch reconstructs a target from a base file and a delta patch
+// (docs/design.md §6.4 stage 2).
 //
-// Intra-file binary deltas are stage 2 of docs/design.md §6.4 and are deliberately
-// not implemented yet: they need a chosen patch format (zstd --patch-from, bsdiff)
-// and a packer that emits patch targets, and they buy nothing until then, because
-// stage 1 — content-addressed targets plus the go-tuf cache — already keeps
-// unchanged files off the network. Returning an error rather than a best guess
-// keeps the fail-closed rule intact for any caller that reaches here early.
+// The result is a *candidate*, and this function has no idea what the right
+// answer is — which is precisely why it cannot be talked into producing it. The
+// caller checks the result against the signed target hash before anything is
+// written, exactly as it would a download, and a patch that reconstructs
+// something else is discarded in favour of the full target rather than
+// accommodated.
 //
-// no body yet; renaming them to _ would delete the only thing it currently says.
-//
-//nolint:revive // The parameter names are the contract of a function that has
+// The format and the bounds live in internal/delta, which is also where
+// FuzzPatchApply covers them (§12). This is the seam the rest of core reaches it
+// through.
 func ApplyPatch(base, patch []byte) ([]byte, error) {
-	return nil, fmt.Errorf("%w: intra-file delta patches are not implemented (docs/design.md §6.4 stage 2)", ErrStage)
+	out, err := delta.Apply(base, patch, MaxReuseCandidate)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrStage, err)
+	}
+	return out, nil
 }
 
 // check validates the Stager's own configuration. A half-configured Stager must
