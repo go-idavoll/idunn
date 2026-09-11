@@ -449,8 +449,15 @@ func wireElevation(o *installer.Options, c config) (int, error) {
 		return exitPrivileges, fmt.Errorf("%s needs privileges, and this build embeds no trust anchor to "+
 			"re-verify with once elevated; re-run with those privileges instead", c.root)
 	}
-	el, err := elevate.NewInteractive(elevate.InteractiveOptions{})
-	if err != nil {
+	// NewInteractive is the one call here whose outcome is platform-dependent:
+	// on Windows it can succeed, everywhere else it is the fail-closed "not
+	// implemented" stub. staticcheck type-checks one GOOS at a time, so off
+	// Windows it proves the error non-nil and reads the check below as dead
+	// (SA4023). That check is load-bearing on the platform that does have a
+	// prompt -- dropping it would use a nil Elevator there -- so the analysis
+	// is suppressed on both lines rather than the code bent to fit one GOOS.
+	el, err := elevate.NewInteractive(elevate.InteractiveOptions{}) //nolint:staticcheck // SA4023: see above
+	if err != nil {                                                 //nolint:staticcheck // SA4023: see above
 		if errors.Is(err, elevate.ErrNotImplemented) {
 			return exitPrivileges, fmt.Errorf("%s needs privileges and this platform has no prompt yet (%w); "+
 				"re-run with those privileges", c.root, err)
