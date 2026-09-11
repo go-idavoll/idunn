@@ -23,7 +23,7 @@ piece of the section is missing; **open** — contract only, or nothing.
 | §6.4 | Delta stage 1 (content-addressed reuse) | **partial** — go-tuf cache reuse works; local relink from `current`/retained versions is not implemented |
 | §6.4 | Delta stage 2 (binary patches) | **open** — `stage.ApplyPatch` fails closed |
 | §7 | Hook system | **done** — all six hooks defined and wired |
-| §8 | Headless default, UI sidecars | **done** in `core` (no UI dependency); sidecar repos are out of tree |
+| §8 | Headless default, UI sidecars | **done** in `core` (no UI dependency); `idunn-fyne` is the first out-of-tree sidecar and exercises the `Observer`/`Prompter` surface end to end (IDN-19) |
 | §9 | Packer | **partial** — `cmd/packer publish` builds and signs a release end to end (`internal/packer`); retention (step 4) is open |
 | §10 | TUF repository layout | **done** — the packer produces it, the client resolves it, a golden test pins the emitted bytes |
 | §11 | Security concept | **done** as a document; per-threat coverage below |
