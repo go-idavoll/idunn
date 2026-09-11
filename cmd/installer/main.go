@@ -449,8 +449,14 @@ func wireElevation(o *installer.Options, c config) (int, error) {
 		return exitPrivileges, fmt.Errorf("%s needs privileges, and this build embeds no trust anchor to "+
 			"re-verify with once elevated; re-run with those privileges instead", c.root)
 	}
-	el, err := elevate.NewInteractive(elevate.InteractiveOptions{})
-	if err != nil {
+	// SA4023 is suppressed on both lines below, and only here. On every platform
+	// but Windows, newInteractive is the stub that always returns
+	// ErrNotImplemented, so staticcheck can prove the comparison constant and
+	// says so. It is not constant: the Windows build returns a working Elevator,
+	// and dropping the check would leave the one platform that can elevate as
+	// the one platform that does not notice when it cannot.
+	el, err := elevate.NewInteractive(elevate.InteractiveOptions{}) //nolint:staticcheck // SA4023: platform-dependent.
+	if err != nil {                                                 //nolint:staticcheck // SA4023: platform-dependent.
 		if errors.Is(err, elevate.ErrNotImplemented) {
 			return exitPrivileges, fmt.Errorf("%s needs privileges and this platform has no prompt yet (%w); "+
 				"re-run with those privileges", c.root, err)
