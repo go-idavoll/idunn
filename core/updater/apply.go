@@ -68,22 +68,35 @@ func (u *Updater) Apply(ctx context.Context, r *Release) error {
 // plan settles an interrupted transaction and then works out which releases
 // have to be installed to reach the one asked for.
 //
-// Recovery has to come first, and this is the only reason this function exists
-// rather than the planning happening inline. A crash between the swap and the
-// commit leaves `current` already pointing at the new version with nothing
-// having said so; a plan made from that state refuses the very transaction
-// recovery is about to finish, and the install keeps a pointer to one version
-// and a state file naming another for as long as anyone keeps trying.
+// The order of the three things it does is the whole of it.
 //
-// Everything here may give up and answer "just the release that was asked
-// for". A precondition that no longer holds, a journal that will not settle, a
-// floor with no path around it: each of those is refused inside the transaction
-// below, where it is rolled back and reported like any other failure. Refusing
-// them here as well would mean two places deciding the same thing, which is one
-// place too many for them to still agree in a year.
+// The clock first, because everything after it is a decision taken on this
+// machine's word about the time. Recovery finishes an update forward or undoes
+// it, and planning reads repository metadata whose expiry is judged against
+// this very clock — neither may happen below the known-good floor, which is
+// what makes turning the clock back useless rather than merely detectable
+// (§14.7, T22).
+//
+// Recovery second, and this is the only reason this function exists rather
+// than the planning happening inline. A crash between the swap and the commit
+// leaves `current` already pointing at the new version with nothing having said
+// so; a plan made from that state refuses the very transaction recovery is
+// about to finish, and the install keeps a pointer to one version and a state
+// file naming another for as long as anyone keeps trying.
+//
+// Everything here may then give up and answer "just the release that was asked
+// for". A clock below the floor, a precondition that no longer holds, a journal
+// that will not settle, a migration floor with no path around it: each of those
+// is refused inside the transaction below, where it is rolled back and reported
+// like any other failure. Refusing them here as well would mean two places
+// deciding the same thing, which is one place too many for them to still agree
+// in a year.
 func (u *Updater) plan(ctx context.Context, r *Release) []*release.Descriptor {
 	alone := []*release.Descriptor{r.Descriptor}
 
+	if err := u.floor.Check(u.now()); err != nil {
+		return alone
+	}
 	if _, err := txn.RecoverResult(ctx, u.fs, u.root, u.migrate); err != nil {
 		return alone
 	}
@@ -203,11 +216,23 @@ func (u *Updater) applyRelease(ctx context.Context, r *Release) error {
 	// the failure it is handling. The rollback's own error is joined to the
 	// original rather than replacing it: an operator needs to know both that
 	// the update failed and that undoing it did too.
+	//
+	// What is undone is this call's own transaction, and only that. A refusal
+	// in pre-flight opened none, and an interrupted one it happens to find is
+	// not its to undo: rolling that back moves `current` and deletes a version
+	// directory, which is a decision about what runs on this machine — taken by
+	// a call that has just established it may not take one. A clock below the
+	// floor is exactly that case, and undoing a swapped transaction under it
+	// would be a downgrade for the asking (§14.7, T22). An older transaction is
+	// settled by recovery instead, at the start of the next apply or the next
+	// launch, both of which check the floor first.
 	result := "aborted"
-	if rbErr := u.rollback(ctx); rbErr != nil {
-		err = errors.Join(err, rbErr)
-	} else if phaseIsTransactional(phase) {
-		result = "rolled_back"
+	if phaseIsTransactional(phase) {
+		if rbErr := u.rollback(ctx); rbErr != nil {
+			err = errors.Join(err, rbErr)
+		} else {
+			result = "rolled_back"
+		}
 	}
 	u.reportOutcome(ctx, r, result, classify(err), phase)
 	return err
@@ -651,8 +676,12 @@ func openLines(hist History, goos, goarch, from, to string) {
 	if !ok || !ok2 || last < first || last-first > maxLines {
 		return
 	}
-	for major := first; major <= last; major++ {
-		hist.OpenLine(goos, goarch, strconv.FormatUint(major, 10))
+	// Counted by steps rather than by counting up to `last`: a major of
+	// 18446744073709551615 is a version SemVer allows, and a loop that
+	// increments past it wraps to zero and never ends. The span is bounded
+	// above, so first+step cannot pass last either.
+	for step := uint64(0); step <= last-first; step++ {
+		hist.OpenLine(goos, goarch, strconv.FormatUint(first+step, 10))
 	}
 }
 

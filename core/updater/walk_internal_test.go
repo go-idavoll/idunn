@@ -152,6 +152,14 @@ func TestOpenLinesCoversTheWalk(t *testing.T) {
 		{name: "an end that is not a version", from: "one", to: "2.0.0", want: nil},
 		{name: "a target that is not a version", from: "1.0.0", to: "next", want: nil},
 		{name: "further behind than a walk would help", from: "1.0.0", to: "99.0.0", want: nil},
+		// The largest line there is. What is under test is that the walk ends:
+		// counting up to it and past it is how a loop over major numbers wraps
+		// to zero and never stops.
+		{
+			name: "the last line SemVer can express",
+			from: "18446744073709551615.0.0", to: "18446744073709551615.1.0",
+			want: []string{"18446744073709551615"},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHistory(map[string]map[string]string{})
