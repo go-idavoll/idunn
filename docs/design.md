@@ -499,7 +499,12 @@ files are individual, content-addressed targets. Two stages:
 
 **Stage 2 — intra-file binary delta (optional, large binaries):**
 - For a changed file, instead of the full target, fetch a **patch target**
-  `oldHash → newHash` (`zstd --patch-from` / bsdiff) and apply it locally.
+  `oldHash → newHash` and apply it locally. The format is the bsdiff arrangement
+  — control runs, byte-wise differences against the base, literals — in idunn's
+  own container with deflate streams (`core/stage`, reader; `internal/delta`,
+  generator). Both halves are standard library only, so the trust path gains no
+  dependency for delta; a raw-dictionary zstd delta was measured first and falls
+  apart above ~32 MiB of base with the Go implementations available.
 - The patch needs no separate trust handling: the *result* is checked against the signed
   target hash. A tampered/broken patch only produces a hash mismatch ⇒ fallback to the
   full target. Minimal attack surface.

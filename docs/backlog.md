@@ -133,11 +133,27 @@ Missing: OS-native proxy resolution incl. PAC (WinHTTP/WinINET, `SCDynamicStore`
 GSettings) behind a `ProxyResolver`; ranged/resumable downloads (`Options.Resume` is
 accepted and ignored today); proxy auth; mTLS client certificates.
 
-### IDN-14 — Delta stage 2: intra-file binary patches (§6.4)
-`stage.ApplyPatch` fails closed. Needs a chosen patch format (`zstd --patch-from`,
-bsdiff), patch targets emitted by the packer against the last N versions, descriptor
-`custom` references, fallback to the full target on mismatch, and `FuzzPatchApply`
-(the `TODO(redteam)` in the Makefile).
+### IDN-14 — Delta stage 2: intra-file binary patches (§6.4) — **in progress**
+Done: the format and both halves of it. `stage.ApplyPatch` reads idunn's delta
+container — the bsdiff arrangement of control runs, byte-wise differences and
+literals, deflate-compressed — bounded by the signed target length, fuzzed by
+`FuzzPatchApply`, standard library only so `core` gains no dependency.
+`internal/delta` generates one: anchors on identical 64-byte blocks found through a
+rolling hash, grows each run for as long as the two files keep roughly agreeing (which
+is what absorbs a relink's scattered pointer changes), and emits the same container.
+
+Measured on a 200 MiB stand-in for a browser runtime, rebuilt with 1% rewritten, 50k
+scattered byte changes and a megabyte inserted: a 3.3 MiB patch (1.64%), six seconds
+to generate, a quarter of a second to apply
+(`IDUNN_SCALE=1 go test ./internal/delta -run ReleaseScale`). A raw-dictionary zstd
+delta — the other candidate the design named — was measured first: usable below 32 MiB
+of base, 43% of the target at 64 MiB and 63% at 96 MiB with the Go implementations
+available, so it was dropped.
+
+Open: patch targets emitted by the packer against the last N versions, how the client
+discovers them (the design says a descriptor `custom` field, which schema 1 has no room
+for — a path derived by convention from the two hashes needs no schema change), the
+fetch-and-fall-back path in `stage.stageFile`, and the `patch-poison` corpus case.
 
 ### IDN-15 — Descriptor-level validity window (§6.3 `EnforceExpiry`)
 Schema 1 descriptors carry no validity window, so `Policy.EnforceExpiry` currently
