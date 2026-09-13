@@ -586,6 +586,21 @@ func publishing(t *testing.T, versions ...string) *fixture {
 	})
 }
 
+// Opening a line the repository does not publish adds nothing and fails
+// nothing: a walk through it simply finds no releases. (What opening a line
+// that *is* published does is only visible where roles are delegated per line,
+// which is the packer's fixture, not this one.)
+func TestOpenLineOfAnUnpublishedLineIsHarmless(t *testing.T) {
+	f := publishing(t, "1.0.0")
+	before := f.client.Versions(testOS, testArch)
+
+	f.client.OpenLine(testOS, testArch, "9")
+
+	if after := f.client.Versions(testOS, testArch); len(after) != len(before) {
+		t.Fatalf("Versions = %v, want %v", after, before)
+	}
+}
+
 // A client that skipped releases has to walk the ones it missed, and the walk
 // needs to know they exist. That knowledge is already signed: every descriptor
 // is a target, and its path states its version.

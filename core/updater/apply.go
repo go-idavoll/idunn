@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/go-idavoll/idunn/core/fsx"
@@ -51,17 +52,8 @@ func (u *Updater) Apply(ctx context.Context, r *Release) error {
 		return fmt.Errorf("%w: no release to apply", ErrConfig)
 	}
 
-	installed, err := u.installedVersion()
-	if err != nil {
-		return err
-	}
-	walk, err := u.steps(r.Descriptor, installed)
-	if err != nil {
-		return err
-	}
-
 	from := r.FromVersion
-	for i, step := range walk {
+	for i, step := range u.plan(ctx, r) {
 		if err := u.applyRelease(ctx, &Release{Descriptor: step, FromVersion: from}); err != nil {
 			if i == 0 {
 				return err
@@ -71,6 +63,39 @@ func (u *Updater) Apply(ctx context.Context, r *Release) error {
 		from = step.Version
 	}
 	return nil
+}
+
+// plan settles an interrupted transaction and then works out which releases
+// have to be installed to reach the one asked for.
+//
+// Recovery has to come first, and this is the only reason this function exists
+// rather than the planning happening inline. A crash between the swap and the
+// commit leaves `current` already pointing at the new version with nothing
+// having said so; a plan made from that state refuses the very transaction
+// recovery is about to finish, and the install keeps a pointer to one version
+// and a state file naming another for as long as anyone keeps trying.
+//
+// Everything here may give up and answer "just the release that was asked
+// for". A precondition that no longer holds, a journal that will not settle, a
+// floor with no path around it: each of those is refused inside the transaction
+// below, where it is rolled back and reported like any other failure. Refusing
+// them here as well would mean two places deciding the same thing, which is one
+// place too many for them to still agree in a year.
+func (u *Updater) plan(ctx context.Context, r *Release) []*release.Descriptor {
+	alone := []*release.Descriptor{r.Descriptor}
+
+	if _, err := txn.RecoverResult(ctx, u.fs, u.root, u.migrate); err != nil {
+		return alone
+	}
+	installed, err := u.installedVersion()
+	if err != nil || installed != r.FromVersion || installed == r.Descriptor.Version {
+		return alone
+	}
+	walk, err := u.steps(r.Descriptor, installed)
+	if err != nil {
+		return alone
+	}
+	return walk
 }
 
 // steps is the releases that have to be installed to reach d, in order.
@@ -102,6 +127,7 @@ func (u *Updater) steps(d *release.Descriptor, installed string) ([]*release.Des
 	// Between rather than Chain: stepping through releases for their migrations
 	// does not need the installed release to still be published, only the ones
 	// on top of it.
+	openLines(hist, d.OS, d.Arch, installed, d.Version)
 	walk, walkErr := release.Between(hist.Versions(d.OS, d.Arch), installed, d.Version)
 	if walkErr != nil {
 		return nil, err
@@ -602,6 +628,32 @@ type History interface {
 	// Versions lists the releases the repository publishes for a platform,
 	// oldest first.
 	Versions(goos, goarch string) []string
+
+	// OpenLine makes one release line's descriptors visible to Versions.
+	OpenLine(goos, goarch, major string)
+}
+
+// maxLines bounds how many release lines a walk will open. Each one is a
+// metadata file to fetch and verify, and a client this many majors behind is
+// not going to be walked anywhere — it will be told to fetch the release it is
+// going to, which is the fallback either way.
+const maxLines = 8
+
+// openLines makes every release line between two versions visible to the walk.
+//
+// Without it a walk can only see the line it is going to. Delegated roles load
+// lazily, so a client that has just resolved a 2.0.0 head knows the 2.x
+// descriptors and no others — and would conclude that the 1.5.0 it has to step
+// through, or patch through, was never published.
+func openLines(hist History, goos, goarch, from, to string) {
+	first, ok := release.Major(from)
+	last, ok2 := release.Major(to)
+	if !ok || !ok2 || last < first || last-first > maxLines {
+		return
+	}
+	for major := first; major <= last; major++ {
+		hist.OpenLine(goos, goarch, strconv.FormatUint(major, 10))
+	}
 }
 
 // maxWalk bounds how many releases a patched update will walk through.
@@ -627,14 +679,15 @@ func (u *Updater) route(d *release.Descriptor, installed string) stage.Route {
 		return nil
 	}
 
-	// Resolving the installed release first is not only for its file list: the
-	// repository delegates per release line, and a line's targets are known to
-	// the client once something in it has been resolved. Without this the walk
-	// would not see the releases it starts from.
+	// Resolving the installed release first is not only for its file list: it
+	// is also the descriptor whose payload targets the first patch starts from,
+	// and a release the repository no longer publishes is one no patch can be
+	// applied against.
 	first, err := hist.ReleaseVersion(d.OS, d.Arch, installed)
 	if err != nil {
 		return nil
 	}
+	openLines(hist, d.OS, d.Arch, installed, d.Version)
 	walk, err := release.Chain(hist.Versions(d.OS, d.Arch), installed, d.Version)
 	if err != nil || len(walk) > maxWalk {
 		return nil

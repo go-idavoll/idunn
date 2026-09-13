@@ -187,6 +187,15 @@ apply enforces, so the planner cannot pick a step the apply then refuses. A step
 fails leaves the install on the last release that committed — a published release, not a
 half-state — and says so.
 
+One thing a walk has to do first is see the releases it walks through. A repository
+delegates per release line, and a client loads a delegated role only when it resolves a
+target in it — so a client that has just resolved a 2.0.0 head knows the 2.x descriptors
+and no others, and would conclude that the 1.5.0 it has to step through was never
+published. `trust.OpenLine` makes a line's role load; the walk opens every line between
+the installed release and the one it is going to, bounded, before it asks which releases
+exist. `internal/packer` tests this against a real delegated repository, because a fake
+history that knows every release cannot show it.
+
 Also done: the corpus cases. The harness publishes a previous release and the patches
 between it and the head — in the content-addressed layout the packer really produces —
 and drives the whole story: a machine installed on the older release, updated to the

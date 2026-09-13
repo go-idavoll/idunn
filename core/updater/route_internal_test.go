@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/go-idavoll/idunn/core/release"
@@ -37,6 +38,13 @@ type history struct {
 
 	failing map[string]bool
 	asked   []string
+
+	// open are the release lines whose delegated role the client has loaded.
+	// A real client loads one when it resolves a release of that line, and
+	// knows nothing of the others — modelling that here is the only way a
+	// test can tell a walk that finds its releases from one that only looks
+	// like it does.
+	open map[string]bool
 }
 
 func newHistory(releases map[string]map[string]string) *history {
@@ -45,8 +53,18 @@ func newHistory(releases map[string]map[string]string) *history {
 		floors:   map[string]string{},
 		channels: map[string]string{},
 		failing:  map[string]bool{},
+		open:     map[string]bool{},
 	}
 }
+
+// lineOf is the release line a version belongs to, as a delegated role name
+// would spell it.
+func lineOf(version string) string {
+	major, _, _ := strings.Cut(version, ".")
+	return major
+}
+
+func (h *history) OpenLine(_, _, major string) { h.open[major] = true }
 
 func (h *history) Refresh() error { return nil }
 
@@ -60,7 +78,9 @@ func (h *history) VerifyTarget(string, []byte) error  { return errors.New("not u
 func (h *history) Versions(_, _ string) []string {
 	var out []string
 	for v := range h.releases {
-		out = append(out, v)
+		if h.open[lineOf(v)] {
+			out = append(out, v)
+		}
 	}
 	// Deliberately unsorted-ish: the ordering is release.Chain's job, and this
 	// is where a route that depended on map order would show up.
@@ -78,6 +98,8 @@ func (h *history) ReleaseVersion(goos, goarch, version string) (*release.Descrip
 	if !ok {
 		return nil, errors.New("no such release")
 	}
+	// Resolving a release is what loads its line, here as in go-tuf.
+	h.open[lineOf(version)] = true
 	d := descriptorOf(goos, goarch, version, files)
 	d.Requirements.MinFromVersion = h.floors[version]
 	if ch := h.channels[version]; ch != "" {

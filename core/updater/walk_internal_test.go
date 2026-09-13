@@ -17,6 +17,7 @@ package updater
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -133,4 +134,37 @@ func versionsOf(walk []*release.Descriptor) []string {
 		out = append(out, d.Version)
 	}
 	return out
+}
+
+// Opening lines is bounded and total: every line from the installed release to
+// the one being walked to, nothing when the ends make no sense, and nothing at
+// all for a client so far behind that walking was never the answer.
+func TestOpenLinesCoversTheWalk(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		from, to string
+		want     []string
+	}{
+		{name: "one line", from: "1.0.0", to: "1.9.0", want: []string{"1"}},
+		{name: "across two", from: "1.9.0", to: "2.1.0", want: []string{"1", "2"}},
+		{name: "across three", from: "1.0.0", to: "3.0.0", want: []string{"1", "2", "3"}},
+		{name: "backwards", from: "2.0.0", to: "1.0.0", want: nil},
+		{name: "an end that is not a version", from: "one", to: "2.0.0", want: nil},
+		{name: "a target that is not a version", from: "1.0.0", to: "next", want: nil},
+		{name: "further behind than a walk would help", from: "1.0.0", to: "99.0.0", want: nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHistory(map[string]map[string]string{})
+			openLines(h, "linux", "amd64", tc.from, tc.to)
+
+			var got []string
+			for major := range h.open {
+				got = append(got, major)
+			}
+			slices.Sort(got)
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("opened %v, want %v", got, tc.want)
+			}
+		})
+	}
 }

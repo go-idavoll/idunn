@@ -327,6 +327,28 @@ func (c *Client) Versions(goos, goarch string) []string {
 	return out
 }
 
+// OpenLine makes the descriptors of one release line visible to Versions.
+//
+// A TUF client loads delegated roles lazily: a role is pulled in, verified and
+// kept when a target it owns is resolved. That is the right behaviour for
+// fetching — a client following one release line never downloads another line's
+// metadata — and the wrong one for planning a walk, which needs the list of
+// releases *before* it resolves any of them. A client that has just resolved a
+// 2.0.0 head knows the 2.x line and nothing else, and would conclude that the
+// 1.x releases it has to walk through do not exist.
+//
+// So this asks for a target in the line and throws the answer away: what
+// matters is the role that gets loaded and verified on the way, not whether
+// that particular path exists. Nothing is trusted differently for having been
+// loaded this way — it is the same role, verified by the same delegation, and
+// every target in it is still checked when it is used.
+//
+// A line the repository does not publish loads nothing, which is not an error:
+// a walk through it simply finds no releases.
+func (c *Client) OpenLine(goos, goarch, major string) {
+	_, _ = c.up.GetTargetInfo(release.DescriptorPath(goos, goarch, major+".0.0"))
+}
+
 // MaterializeTarget places the verified bytes of a TUF target at dst, reusing the
 // local cache only when the cached bytes match the signed hash and length. A
 // cached file is never trusted on name alone (AGENTS.md §1.5).

@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -54,6 +55,9 @@ type fakeTrust struct {
 	// patched update follows, and the stepping stones a migration floor
 	// demands.
 	releases map[string]*release.Descriptor
+
+	// openLines are the release lines whose delegated role has been loaded.
+	openLines map[string]bool
 }
 
 // publish adds a release to the repository this fake stands for, with the
@@ -68,20 +72,40 @@ func (f *fakeTrust) publish(d *release.Descriptor, payloads map[string][]byte) {
 	}
 }
 
+// OpenLine and the bookkeeping around it model how a real client comes to know
+// which releases exist: a delegated role per release line, loaded only when
+// something in it is resolved. A fake that simply knew every release would hide
+// the case where a walk has to reach into a line the client never touched.
+func (f *fakeTrust) OpenLine(_, _, major string) {
+	if f.openLines == nil {
+		f.openLines = map[string]bool{}
+	}
+	f.openLines[major] = true
+}
+
+func (f *fakeTrust) lineOpen(version string) bool {
+	major, _, _ := strings.Cut(version, ".")
+	return f.openLines[major]
+}
+
 func (f *fakeTrust) Versions(string, string) []string {
 	out := make([]string, 0, len(f.releases)+1)
 	for v := range f.releases {
-		out = append(out, v)
+		if f.lineOpen(v) {
+			out = append(out, v)
+		}
 	}
-	if f.descriptor != nil && f.releases[f.descriptor.Version] == nil {
+	if f.descriptor != nil && f.releases[f.descriptor.Version] == nil && f.lineOpen(f.descriptor.Version) {
 		out = append(out, f.descriptor.Version)
 	}
 	slices.Sort(out)
 	return out
 }
 
-func (f *fakeTrust) ReleaseVersion(_, _, version string) (*release.Descriptor, error) {
+func (f *fakeTrust) ReleaseVersion(goos, goarch, version string) (*release.Descriptor, error) {
 	f.asked = append(f.asked, "release/"+version)
+	// Resolving a release loads its line, here as in go-tuf.
+	f.OpenLine(goos, goarch, version[:strings.Index(version+".", ".")])
 	if d, ok := f.releases[version]; ok {
 		return d, nil
 	}
@@ -100,6 +124,9 @@ func (f *fakeTrust) LatestRelease(ch, goos, goarch string) (*release.Descriptor,
 	f.asked = append(f.asked, ch+"/"+goos+"-"+goarch)
 	if f.latestErr != nil {
 		return nil, f.latestErr
+	}
+	if f.descriptor != nil {
+		f.OpenLine(goos, goarch, f.descriptor.Version[:strings.Index(f.descriptor.Version+".", ".")])
 	}
 	return f.descriptor, nil
 }

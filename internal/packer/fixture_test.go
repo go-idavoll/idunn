@@ -233,6 +233,21 @@ func (f *fixture) seedRelease() {
 // prove nothing.
 func (f *fixture) client(now time.Time) (*trust.Client, string, error) {
 	f.t.Helper()
+	c, work, err := f.newClient(now)
+	if err != nil {
+		return nil, "", err
+	}
+	if err := c.Refresh(); err != nil {
+		return nil, "", err
+	}
+	return c, work, nil
+}
+
+// newClient is the same client before the TUF workflow has run. The installer
+// and the updater refresh for themselves, and go-tuf runs that workflow once
+// per client — which is also what two runs on one machine look like.
+func (f *fixture) newClient(now time.Time) (*trust.Client, string, error) {
+	f.t.Helper()
 	mux := http.NewServeMux()
 	mux.Handle("/metadata/", http.StripPrefix("/metadata/",
 		http.FileServer(http.Dir(filepath.Join(f.repo, MetadataDir)))))
@@ -253,9 +268,6 @@ func (f *fixture) client(now time.Time) (*trust.Client, string, error) {
 		return nil, "", err
 	}
 	c.UnsafeSetRefTime(now)
-	if err := c.Refresh(); err != nil {
-		return nil, "", err
-	}
 	return c, work, nil
 }
 
