@@ -133,7 +133,7 @@ func TestStageWritesAVersionDirectory(t *testing.T) {
 		ref("targets/app", "app", release.KindExe, 0o755),
 		ref("targets/plugin.so", "lib/plugin.so", release.KindLib, 0o644),
 		ref("targets/icon.png", "assets/icon.png", release.KindData, 0),
-	))
+	), nil)
 	if err != nil {
 		t.Fatalf("Stage: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestStageAppliesFileModes(t *testing.T) {
 	if _, err := s.Stage(context.Background(), descriptor(
 		ref("targets/app", "app", release.KindExe, 0),
 		ref("targets/data", "data", release.KindData, 0o640),
-	)); err != nil {
+	), nil); err != nil {
 		t.Fatalf("Stage: %v", err)
 	}
 
@@ -204,7 +204,7 @@ func TestStageRefusesEscapingDestinations(t *testing.T) {
 			tr := newTargets(map[string][]byte{"targets/app": []byte("payload")})
 			s := &stage.Stager{FS: m, Trust: tr, Root: root}
 
-			_, err := s.Stage(context.Background(), descriptor(ref("targets/app", dst, release.KindData, 0o644)))
+			_, err := s.Stage(context.Background(), descriptor(ref("targets/app", dst, release.KindData, 0o644)), nil)
 			if err == nil {
 				t.Fatalf("destination %q was accepted", dst)
 			}
@@ -248,7 +248,7 @@ func TestStageRefusesToWriteThroughASymlink(t *testing.T) {
 		// time the write happens — which is itself the defence being asserted.
 		if _, err := s.Stage(context.Background(), descriptor(
 			ref("targets/app", "lib/plugin.so", release.KindLib, 0o644),
-		)); err != nil {
+		), nil); err != nil {
 			t.Fatalf("Stage: %v", err)
 		}
 		if _, err := m.Stat("/outside/planted"); err == nil {
@@ -284,7 +284,7 @@ func TestStageRefusesToWriteThroughASymlink(t *testing.T) {
 
 		_, err := s.Stage(context.Background(), descriptor(
 			ref("targets/app", "lib/plugin.so", release.KindLib, 0o644),
-		))
+		), nil)
 		if err == nil {
 			t.Fatal("staging descended through a symlinked directory")
 		}
@@ -310,7 +310,7 @@ func TestStageRefusesTheLiveVersion(t *testing.T) {
 	tr := newTargets(map[string][]byte{"targets/app": []byte("payload")})
 	s := &stage.Stager{FS: m, Trust: tr, Root: root}
 
-	if _, err := s.Stage(context.Background(), descriptor(ref("targets/app", "app", release.KindExe, 0o755))); err == nil {
+	if _, err := s.Stage(context.Background(), descriptor(ref("targets/app", "app", release.KindExe, 0o755)), nil); err == nil {
 		t.Fatal("staging overwrote the running version")
 	}
 }
@@ -325,7 +325,7 @@ func TestStageRefusesAnExistingVersionDirectory(t *testing.T) {
 	tr := newTargets(map[string][]byte{"targets/app": []byte("payload")})
 	s := &stage.Stager{FS: m, Trust: tr, Root: root}
 
-	if _, err := s.Stage(context.Background(), descriptor(ref("targets/app", "app", release.KindExe, 0o755))); err == nil {
+	if _, err := s.Stage(context.Background(), descriptor(ref("targets/app", "app", release.KindExe, 0o755)), nil); err == nil {
 		t.Fatal("staging replaced an existing version directory")
 	}
 }
@@ -344,7 +344,7 @@ func TestStageClearsAnAbandonedStagingTree(t *testing.T) {
 
 	tr := newTargets(map[string][]byte{"targets/app": []byte("payload")})
 	s := &stage.Stager{FS: m, Trust: tr, Root: root}
-	if _, err := s.Stage(context.Background(), descriptor(ref("targets/app", "app", release.KindExe, 0o755))); err != nil {
+	if _, err := s.Stage(context.Background(), descriptor(ref("targets/app", "app", release.KindExe, 0o755)), nil); err != nil {
 		t.Fatalf("Stage: %v", err)
 	}
 	if _, err := m.Stat("/opt/app/versions/1.3.0/stale.dll"); err == nil {
@@ -361,7 +361,7 @@ func TestStageStopsAtTheFirstUnavailableTarget(t *testing.T) {
 	_, err := s.Stage(context.Background(), descriptor(
 		ref("targets/app", "app", release.KindExe, 0o755),
 		ref("targets/plugin.so", "lib/plugin.so", release.KindLib, 0o644),
-	))
+	), nil)
 	if err == nil {
 		t.Fatal("staging completed although a target could not be materialized")
 	}
@@ -378,7 +378,7 @@ func TestStageHonoursCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	if _, err := s.Stage(ctx, descriptor(ref("targets/app", "app", release.KindExe, 0o755))); err == nil {
+	if _, err := s.Stage(ctx, descriptor(ref("targets/app", "app", release.KindExe, 0o755)), nil); err == nil {
 		t.Fatal("staging ignored a cancelled context")
 	}
 	if len(tr.asked) != 0 {
@@ -399,14 +399,14 @@ func TestStageRejectsAnUnusableStager(t *testing.T) {
 		{"no trust client", &stage.Stager{FS: fsx.NewMem(), Root: root}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := tc.s.Stage(context.Background(), d); err == nil {
+			if _, err := tc.s.Stage(context.Background(), d, nil); err == nil {
 				t.Fatal("an unusable stager was allowed to run")
 			}
 		})
 	}
 
 	s := &stage.Stager{FS: newRoot(t), Trust: tr, Root: root}
-	if _, err := s.Stage(context.Background(), nil); err == nil {
+	if _, err := s.Stage(context.Background(), nil, nil); err == nil {
 		t.Fatal("Stage accepted a nil descriptor")
 	}
 }

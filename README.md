@@ -198,7 +198,7 @@ What exists today:
 | Packer (`cmd/packer`, `internal/packer`) | publishes a delegated, reproducible TUF repository; retention not implemented |
 | Installer binary (`cmd/installer`) | implemented: embedded anchor, elevation decision, privileged `apply` verb |
 | Launcher (`cmd/launcher`, `core/launch`) and `BusyDeferToRestart` | implemented: a busy application defers, the launcher applies at the next start |
-| Delta stage 2 (binary patches) | patch format implemented on both sides (reader in `core/stage`, generator in `internal/delta`, standard library only); patch targets are not published or fetched yet |
+| Delta stage 2 (binary patches) | client side complete: patch format (`core/stage`, `internal/delta`), the release walk a skipped-releases client follows, and staging that patches hop by hop and falls back to the full target; the packer does not publish patch targets yet |
 
 The full section-by-section reconciliation against the design lives in
 [`docs/status.md`](docs/status.md); the open work is tracked in

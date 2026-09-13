@@ -420,6 +420,20 @@ func TestApplyPatchRefusesMalformedInput(t *testing.T) {
 			},
 		},
 		{
+			name: "bytes after the last stream",
+			patch: func() []byte {
+				return append(valid().build(t), 0x00, 0x01, 0x02)
+			},
+		},
+		{
+			name: "bytes between two streams",
+			patch: func() []byte {
+				b := valid()
+				b.rawCtrl = append(deflate(t, b.ctrl), 0xff)
+				return b.build(t)
+			},
+		},
+		{
 			name: "truncated mid-stream",
 			patch: func() []byte {
 				b := valid()

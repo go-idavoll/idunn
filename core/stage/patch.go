@@ -121,11 +121,15 @@ func ApplyPatch(base, patch []byte, maxOut int64) ([]byte, error) {
 	// not act on, which is the kind of "understood most of it" that fails
 	// closed here — including for a stream the control entries never used.
 	for _, s := range []struct {
-		name string
-		r    io.Reader
-	}{{"control", ctrl}, {"difference", diff}, {"literal", extra}} {
+		name       string
+		r          io.Reader
+		compressed *bytes.Reader
+	}{{"control", ctrl, ctrlRaw}, {"difference", diff, diffRaw}, {"literal", extra, extraRaw}} {
 		if n, err := s.r.Read(make([]byte, 1)); n != 0 || !errors.Is(err, io.EOF) {
 			return nil, fmt.Errorf("%w: patch: the %s stream does not end cleanly", ErrStage, s.name)
+		}
+		if s.compressed.Len() != 0 {
+			return nil, fmt.Errorf("%w: patch: %d bytes follow the %s stream", ErrStage, s.compressed.Len(), s.name)
 		}
 	}
 	return out, nil

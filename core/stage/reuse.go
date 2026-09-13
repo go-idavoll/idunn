@@ -82,10 +82,21 @@ func (s *Stager) reuseSources(live, staging string) []string {
 // check and is skipped — reuse never degrades into "close enough", it degrades
 // into a download (AGENTS.md §1.5).
 func (s *Stager) reuse(f *release.FileRef, dst string, sources []string) []byte {
+	return s.local(f.Target, dst, sources)
+}
+
+// local returns the bytes of a payload target from an installed version, or nil
+// if no version on disk holds them at dst.
+//
+// The target need not be the one being installed: the same lookup finds the base
+// a delta patch starts from, which is a payload of an older release. That the
+// two share this code is the point — a base is admitted by the same verdict as a
+// reused file, so a patch cannot start from bytes a reuse would have refused.
+func (s *Stager) local(target, dst string, sources []string) []byte {
 	if len(sources) == 0 {
 		return nil
 	}
-	want, err := s.Trust.TargetLength(f.Target)
+	want, err := s.Trust.TargetLength(target)
 	if err != nil || want <= 0 {
 		// A zero-length target is not worth a filesystem walk: fetching it
 		// costs nothing, and fsx.ReadFile has no meaningful limit to run with.
@@ -93,7 +104,7 @@ func (s *Stager) reuse(f *release.FileRef, dst string, sources []string) []byte 
 	}
 
 	for _, dir := range sources {
-		if data := s.candidate(fsx.Join(dir, dst), want, f.Target); data != nil {
+		if data := s.candidate(fsx.Join(dir, dst), want, target); data != nil {
 			return data
 		}
 	}

@@ -97,11 +97,14 @@ func SanitizeDst(dst string) (string, error) {
 // TUF-signed target hash before it is written, whether it was downloaded, reused
 // from cache, or reconstructed from a delta patch.
 //
+// route is the byte-level history of the releases being walked, and may be nil:
+// without it every file is reused from disk or fetched whole.
+//
 // The files are assembled under .updater/staging/<version>/ and moved into place
 // with a single rename at the end. Nothing incomplete is ever visible under
 // versions/, so a crash mid-staging leaves a tree the recovery can simply delete
 // rather than one it has to inspect file by file.
-func (s *Stager) Stage(ctx context.Context, d *release.Descriptor) (string, error) {
+func (s *Stager) Stage(ctx context.Context, d *release.Descriptor, route Route) (string, error) {
 	if err := s.check(); err != nil {
 		return "", err
 	}
@@ -145,7 +148,7 @@ func (s *Stager) Stage(ctx context.Context, d *release.Descriptor) (string, erro
 		if err := ctx.Err(); err != nil {
 			return "", fmt.Errorf("%w: %w", ErrStage, err)
 		}
-		if err := s.stageFile(stageDir, &d.Files[i], sources); err != nil {
+		if err := s.stageFile(stageDir, &d.Files[i], sources, route); err != nil {
 			// Leave the staging tree where it is; the transaction's rollback
 			// and the next recovery both remove it, and removing it here would
 			// destroy the evidence of what went wrong.
@@ -184,7 +187,7 @@ func (s *Stager) Stage(ctx context.Context, d *release.Descriptor) (string, erro
 // stageFile writes one payload file into the staging tree, taking its bytes from
 // an installed version when one holds exactly the signed content and from the
 // trust layer otherwise.
-func (s *Stager) stageFile(stageDir string, f *release.FileRef, sources []string) error {
+func (s *Stager) stageFile(stageDir string, f *release.FileRef, sources []string, route Route) error {
 	dst, err := SanitizeDst(f.Dst)
 	if err != nil {
 		return fmt.Errorf("%w: %s: %w", ErrStage, f.Target, err)
@@ -211,6 +214,13 @@ func (s *Stager) stageFile(stageDir string, f *release.FileRef, sources []string
 	// would make an unchanged payload free rather than cheap; both need an fsx
 	// operation that does not exist yet.
 	data := s.reuse(f, dst, sources)
+	if data == nil {
+		// A changed file may still be mostly the old one. Reconstructing it
+		// from what is on disk plus the patches the repository publishes is
+		// delta stage 2; it produces bytes that are verified exactly like
+		// downloaded ones, and falls back to the download whenever it cannot.
+		data = s.patched(f, dst, sources, route)
+	}
 	if data == nil {
 		var err error
 		if data, err = s.Trust.Target(f.Target); err != nil {

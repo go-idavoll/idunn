@@ -157,13 +157,22 @@ refuses everything it cannot answer unambiguously, and `trust.Versions` says whi
 releases exist — read out of the signed targets metadata, where every descriptor's path
 already states its version, so no new document is published or signed for it.
 
-Open: patch targets emitted by the packer against the last N versions, how the client
-discovers them (the design says a descriptor `custom` field, which schema 1 has no room
-for — a path derived by convention from the two content hashes needs no schema change),
-the fetch-and-fall-back path in `stage.stageFile` walking the chain hop by hop, the
-migration case (a `MinFromVersion` floor is the one thing that forces the intermediate
-releases to be *installed* rather than only walked through, and today it is refused
-outright in `core/updater`), and the `patch-poison` corpus case.
+Also done: the client side of applying one. `release.PatchPath` derives the target path
+of a patch from the two content hashes the descriptors already carry — so discovery
+needs no descriptor field and no schema bump, and the signed metadata answers whether a
+patch exists before a byte is fetched. `core/updater` collects the byte-level history of
+the walk into a `stage.Route`; `core/stage` reconstructs each changed file from the
+cheapest published set of hops (a shortest path by patch bytes, weights straight out of
+the signed metadata, the full target as the upper bound), verifies every intermediate
+against that release's signed hash, and answers every failure — no patch published, a
+poisoned patch, a missing base, a route that costs more than the file — with the
+download it was trying to avoid.
+
+Open: patch targets emitted by the packer against the last N versions (the delegated
+role `v<major>` needs `patches/v<major>/*` in its path patterns, plus a size policy and
+golden tests), the migration case (a `MinFromVersion` floor is the one thing that forces
+the intermediate releases to be *installed* rather than only walked through, and today
+it is refused outright in `core/updater`), and the `patch-poison` corpus case.
 
 ### IDN-15 — Descriptor-level validity window (§6.3 `EnforceExpiry`)
 Schema 1 descriptors carry no validity window, so `Policy.EnforceExpiry` currently

@@ -72,7 +72,7 @@ func TestStageReusesAnUnchangedFileFromTheLiveVersion(t *testing.T) {
 
 	if _, err := s.Stage(context.Background(), descriptor(
 		ref("targets/libcef.so", "lib/libcef.so", release.KindLib, 0o644),
-	)); err != nil {
+	), nil); err != nil {
 		t.Fatalf("Stage: %v", err)
 	}
 	if got := read(t, m, "/opt/app/versions/1.3.0/lib/libcef.so"); got != "the runtime" {
@@ -99,7 +99,7 @@ func TestStageReusesFromARetainedVersion(t *testing.T) {
 
 	if _, err := s.Stage(context.Background(), descriptor(
 		ref("targets/libcef.so", "lib/libcef.so", release.KindLib, 0o644),
-	)); err != nil {
+	), nil); err != nil {
 		t.Fatalf("Stage: %v", err)
 	}
 	if len(tr.asked) != 0 {
@@ -130,7 +130,7 @@ func TestStageRefusesALocallyTamperedFile(t *testing.T) {
 
 			if _, err := s.Stage(context.Background(), descriptor(
 				ref("targets/libcef.so", "lib/libcef.so", release.KindLib, 0o644),
-			)); err != nil {
+			), nil); err != nil {
 				t.Fatalf("Stage: %v", err)
 			}
 			if got := read(t, m, "/opt/app/versions/1.3.0/lib/libcef.so"); got != "the runtime" {
@@ -166,7 +166,7 @@ func TestStageDoesNotFollowASymlinkedCandidate(t *testing.T) {
 
 	if _, err := s.Stage(context.Background(), descriptor(
 		ref("targets/libcef.so", "lib/libcef.so", release.KindLib, 0o644),
-	)); err != nil {
+	), nil); err != nil {
 		t.Fatalf("Stage: %v", err)
 	}
 	if !slices.Contains(tr.asked, "targets/libcef.so") {
@@ -212,7 +212,7 @@ func TestStageFetchesWhenReuseCannotBeDecided(t *testing.T) {
 
 			if _, err := s.Stage(context.Background(), descriptor(
 				ref(tc.target, "lib/libcef.so", release.KindLib, 0o644),
-			)); err != nil {
+			), nil); err != nil {
 				t.Fatalf("Stage: %v", err)
 			}
 			if got := read(t, m, "/opt/app/versions/1.3.0/lib/libcef.so"); got != tc.content {
@@ -239,7 +239,7 @@ func TestStageFetchesANewDestination(t *testing.T) {
 
 	if _, err := s.Stage(context.Background(), descriptor(
 		ref("targets/libcef.so", "lib/moved/libcef.so", release.KindLib, 0o644),
-	)); err != nil {
+	), nil); err != nil {
 		t.Fatalf("Stage: %v", err)
 	}
 	if !slices.Contains(tr.asked, "targets/libcef.so") {
@@ -268,7 +268,7 @@ func TestStageFetchesWhenACandidateCannotBeRead(t *testing.T) {
 
 	if _, err := s.Stage(context.Background(), descriptor(
 		ref("targets/libcef.so", "lib/libcef.so", release.KindLib, 0o644),
-	)); err != nil {
+	), nil); err != nil {
 		t.Fatalf("Stage: %v", err)
 	}
 	if got := read(t, m, "/opt/app/versions/1.3.0/lib/libcef.so"); got != "the runtime" {
@@ -306,7 +306,7 @@ func TestStageRefusesACandidateSwappedAfterTheSizeCheck(t *testing.T) {
 
 	if _, err := s.Stage(context.Background(), descriptor(
 		ref("targets/libcef.so", "lib/libcef.so", release.KindLib, 0o644),
-	)); err != nil {
+	), nil); err != nil {
 		t.Fatalf("Stage: %v", err)
 	}
 	if got := read(t, m, "/opt/app/versions/1.3.0/lib/libcef.so"); got != "the runtime" {

@@ -22,6 +22,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/go-idavoll/idunn/core/release"
 )
 
 // The delegation scheme (docs/design.md §4.1, docs/packer.md §5).
@@ -106,8 +108,10 @@ func linePaths(major string) []string {
 }
 
 // payloadTarget is the target path of a payload file with the given content.
+// The layout itself lives in core/release, which is also where the client reads
+// it back out of a descriptor, so the two cannot drift apart.
 func payloadTarget(major string, sum [sha256.Size]byte) string {
-	return fmt.Sprintf("payloads/v%s/%s", major, hex.EncodeToString(sum[:]))
+	return release.PayloadPath(major, sum[:])
 }
 
 // majorOf returns the major component of a SemVer version. The version must

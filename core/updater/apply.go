@@ -169,7 +169,7 @@ func (u *Updater) apply(ctx context.Context, r *Release) (hook.Phase, func(), er
 	// From here on every failure is transactional: the journal exists, and the
 	// caller's rollback will find it and undo whatever got done.
 	u.emit(hook.PhaseDownload, "staging "+d.Version, nil)
-	versionDir, err := u.stager.Stage(ctx, d)
+	versionDir, err := u.stager.Stage(ctx, d, u.route(d, installed))
 	if err != nil {
 		return hook.PhaseStage, unlock, err
 	}
@@ -470,4 +470,77 @@ func (u *Updater) reportOutcome(ctx context.Context, r *Release, result, class s
 	if err := u.report.Report(context.WithoutCancel(ctx), o); err != nil {
 		u.emit(phase, "reporting the outcome failed", err)
 	}
+}
+
+// History is the optional capability of looking a release up by version and
+// saying which releases exist at all.
+//
+// It is separate from Resolver because it is not part of applying an update: a
+// client that cannot answer these questions still updates, it just fetches full
+// targets where it could have patched. Keeping it optional also keeps the
+// mandatory trust surface at what the apply path truly needs (the same reason
+// installer.VersionResolver stands apart).
+type History interface {
+	// ReleaseVersion resolves one explicitly named release.
+	ReleaseVersion(goos, goarch, version string) (*release.Descriptor, error)
+
+	// Versions lists the releases the repository publishes for a platform,
+	// oldest first.
+	Versions(goos, goarch string) []string
+}
+
+// maxWalk bounds how many releases a patched update will walk through.
+//
+// It is a cost bound, not a safety one — every hop is verified, so a longer
+// walk is not less trustworthy, only less likely to be worth it. A client this
+// far behind is better served by downloading the release it is going to, which
+// is exactly what an unavailable route falls back to.
+const maxWalk = 32
+
+// route works out the byte-level history of the release being applied: for each
+// destination, the payload targets it had at the releases between the installed
+// version and this one.
+//
+// Everything here is an optimisation with the same fallback — fetch the full
+// target — so nothing in it returns an error. A trust client that cannot list
+// releases, a chain that is not published end to end, an intermediate
+// descriptor that will not resolve: each simply means there is no route, and
+// the update proceeds the way it did before patches existed.
+func (u *Updater) route(d *release.Descriptor, installed string) stage.Route {
+	hist, ok := u.trust.(History)
+	if !ok || installed == "" {
+		return nil
+	}
+
+	// Resolving the installed release first is not only for its file list: the
+	// repository delegates per release line, and a line's targets are known to
+	// the client once something in it has been resolved. Without this the walk
+	// would not see the releases it starts from.
+	first, err := hist.ReleaseVersion(d.OS, d.Arch, installed)
+	if err != nil {
+		return nil
+	}
+	walk, err := release.Chain(hist.Versions(d.OS, d.Arch), installed, d.Version)
+	if err != nil || len(walk) > maxWalk {
+		return nil
+	}
+
+	route := stage.Route{}
+	for i, v := range walk {
+		step := first
+		switch {
+		case i == 0:
+		case v == d.Version:
+			step = d
+		default:
+			if step, err = hist.ReleaseVersion(d.OS, d.Arch, v); err != nil {
+				return nil
+			}
+		}
+		for j := range step.Files {
+			f := &step.Files[j]
+			route[f.Dst] = append(route[f.Dst], f.Target)
+		}
+	}
+	return route
 }
