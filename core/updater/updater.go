@@ -358,7 +358,13 @@ func (u *Updater) CheckForUpdate(ctx context.Context) (*Release, error) {
 		return nil, nil
 	}
 
-	if err := u.applicable(d, installed); err != nil {
+	// Whether this install may take the release is the same question as how it
+	// gets there: usually in one step, and where a migration floor forbids that,
+	// through the releases the repository published in between. Asking for the
+	// walk rather than only for the verdict is what keeps the answer here and
+	// the answer in Apply the same one.
+	walk, err := u.steps(d, installed)
+	if err != nil {
 		return nil, u.checkFailed(err)
 	}
 	if !u.inRollout(d) {
@@ -366,7 +372,12 @@ func (u *Updater) CheckForUpdate(ctx context.Context) (*Release, error) {
 		return nil, nil
 	}
 
-	u.emit(hook.PhaseCheck, "update available: "+d.Version, nil)
+	available := "update available: " + d.Version
+	if len(walk) > 1 {
+		available += fmt.Sprintf(" (through %d releases; %s migrates only from %s or newer)",
+			len(walk), d.Version, d.Requirements.MinFromVersion)
+	}
+	u.emit(hook.PhaseCheck, available, nil)
 	return &Release{Descriptor: d, FromVersion: installed}, nil
 }
 
@@ -431,8 +442,8 @@ func (u *Updater) applicable(d *release.Descriptor, installed string) error {
 			return fmt.Errorf("%w: %w", ErrPolicy, err)
 		}
 		if c < 0 {
-			return fmt.Errorf("%w: release migrates only from %s or newer, this install is %s",
-				ErrPolicy, req, installed)
+			return fmt.Errorf("%w: %w: %s migrates only from %s or newer, this install is %s",
+				ErrPolicy, ErrMigrationFloor, d.Version, req, installed)
 		}
 	}
 	return nil

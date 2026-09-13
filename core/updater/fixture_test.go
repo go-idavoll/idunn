@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -47,6 +48,47 @@ type fakeTrust struct {
 
 	targets   map[string][]byte
 	targetErr map[string]error
+
+	// releases are the other releases the repository publishes, keyed by
+	// version. They are what a walk is made of: the byte-level history a
+	// patched update follows, and the stepping stones a migration floor
+	// demands.
+	releases map[string]*release.Descriptor
+}
+
+// publish adds a release to the repository this fake stands for, with the
+// payloads its descriptor names.
+func (f *fakeTrust) publish(d *release.Descriptor, payloads map[string][]byte) {
+	if f.releases == nil {
+		f.releases = map[string]*release.Descriptor{}
+	}
+	f.releases[d.Version] = d
+	for target, data := range payloads {
+		f.targets[target] = data
+	}
+}
+
+func (f *fakeTrust) Versions(string, string) []string {
+	out := make([]string, 0, len(f.releases)+1)
+	for v := range f.releases {
+		out = append(out, v)
+	}
+	if f.descriptor != nil && f.releases[f.descriptor.Version] == nil {
+		out = append(out, f.descriptor.Version)
+	}
+	slices.Sort(out)
+	return out
+}
+
+func (f *fakeTrust) ReleaseVersion(_, _, version string) (*release.Descriptor, error) {
+	f.asked = append(f.asked, "release/"+version)
+	if d, ok := f.releases[version]; ok {
+		return d, nil
+	}
+	if f.descriptor != nil && f.descriptor.Version == version {
+		return f.descriptor, nil
+	}
+	return nil, errors.New("no such release: " + version)
 }
 
 func (f *fakeTrust) Refresh() error {

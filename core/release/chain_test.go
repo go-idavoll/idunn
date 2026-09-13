@@ -149,6 +149,83 @@ func TestChainRefusesWhatItCannotWalk(t *testing.T) {
 	}
 }
 
+// Between is the same walk without its starting point, which is what stepping
+// through releases for their migrations needs: the release a machine is on may
+// have been garbage collected from the repository long ago, and that has no
+// bearing on which releases can be installed on top of it.
+func TestBetweenLeavesOutTheStartingPoint(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		available []string
+		after, to string
+		want      []string
+	}{
+		{
+			name:      "the releases on top of one that is still published",
+			available: []string{"1.0.0", "1.1.0", "1.2.0"},
+			after:     "1.0.0", to: "1.2.0",
+			want: []string{"1.1.0", "1.2.0"},
+		},
+		{
+			name:      "a starting point the repository no longer publishes",
+			available: []string{"1.1.0", "1.2.0"},
+			after:     "1.0.0", to: "1.2.0",
+			want: []string{"1.1.0", "1.2.0"},
+		},
+		{
+			name:      "one release ahead",
+			available: []string{"1.1.0"},
+			after:     "1.0.0", to: "1.1.0",
+			want: []string{"1.1.0"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := release.Between(tc.available, tc.after, tc.to)
+			if err != nil {
+				t.Fatalf("Between: %v", err)
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("Between = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBetweenRefusesWhatItCannotWalk(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		available []string
+		after, to string
+	}{
+		{
+			name:      "backwards",
+			available: []string{"1.0.0", "1.1.0"},
+			after:     "1.1.0", to: "1.0.0",
+		},
+		{
+			name:      "to itself",
+			available: []string{"1.0.0"},
+			after:     "1.0.0", to: "1.0.0",
+		},
+		{
+			name:      "a target that is not published",
+			available: []string{"1.1.0"},
+			after:     "1.0.0", to: "1.2.0",
+		},
+		{
+			name:      "two releases of the same precedence on the way",
+			available: []string{"1.1.0+a", "1.1.0+b", "1.2.0"},
+			after:     "1.0.0", to: "1.2.0",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got, err := release.Between(tc.available, tc.after, tc.to); err == nil {
+				t.Fatalf("Between returned %v for a walk it cannot make", got)
+			}
+		})
+	}
+}
+
 // The path a descriptor lives at states which release it describes, and that is
 // where the list of published versions comes from. Reading it back must accept
 // exactly the paths DescriptorPath produces for this platform, and nothing that

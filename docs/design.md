@@ -184,7 +184,10 @@ type FileRef struct {
 
 type Requirements struct {
     // MinFromVersion blocks downgrade/skip-migration; complements TUF rollback
-    // protection with an app-level floor for migration validity.
+    // protection with an app-level floor for migration validity. An install
+    // below the floor is not refused outright where the repository publishes
+    // releases that bridge it: those are installed in order, each with its own
+    // migration, which is what the floor was asking for (§6.4).
     MinFromVersion string `json:"min_from_version"`
     // MinClientVersion stops an outdated client from mishandling a newer layout.
     MinClientVersion string `json:"min_client_version"`
@@ -496,6 +499,18 @@ files are individual, content-addressed targets. Two stages:
   assets ⇒ **zero** network traffic.
 - The new `versions/x/` is nonetheless complete and self-contained (a prerequisite for
   blue/green + instant rollback).
+
+**Walking, not jumping.** A full target is self-contained, so any client can fetch any
+release directly. A patch is not: it turns one exact set of bytes into another, so a
+client that skipped releases follows the ones it missed. `release.Chain` orders that
+walk out of the descriptors the repository already publishes — a descriptor's target
+path states its version, so nothing new has to be signed for it — and every hop's output
+is checked against *that* release's signed target hash before it becomes the base of the
+next, which makes a chain exactly as trustworthy as a direct download. The bytes are
+walked; the release is not: one blue/green swap installs the version being updated to.
+The exception is a migration floor (`Requirements.MinFromVersion`), which is precisely a
+statement that the releases in between must really be installed — there the walk becomes
+one installation per release.
 
 **Stage 2 — intra-file binary delta (optional, large binaries):**
 - For a changed file, instead of the full target, fetch a **patch target**

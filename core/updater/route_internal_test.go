@@ -28,12 +28,24 @@ import (
 // and, per destination, the payload it shipped there.
 type history struct {
 	releases map[string]map[string]string
-	failing  map[string]bool
-	asked    []string
+
+	// floors and channels are what a migration walk is planned against: the
+	// version each release refuses to migrate from below, and the channel it
+	// belongs to.
+	floors   map[string]string
+	channels map[string]string
+
+	failing map[string]bool
+	asked   []string
 }
 
 func newHistory(releases map[string]map[string]string) *history {
-	return &history{releases: releases, failing: map[string]bool{}}
+	return &history{
+		releases: releases,
+		floors:   map[string]string{},
+		channels: map[string]string{},
+		failing:  map[string]bool{},
+	}
 }
 
 func (h *history) Refresh() error { return nil }
@@ -66,7 +78,12 @@ func (h *history) ReleaseVersion(goos, goarch, version string) (*release.Descrip
 	if !ok {
 		return nil, errors.New("no such release")
 	}
-	return descriptorOf(goos, goarch, version, files), nil
+	d := descriptorOf(goos, goarch, version, files)
+	d.Requirements.MinFromVersion = h.floors[version]
+	if ch := h.channels[version]; ch != "" {
+		d.Channel = ch
+	}
+	return d, nil
 }
 
 func descriptorOf(goos, goarch, version string, files map[string]string) *release.Descriptor {

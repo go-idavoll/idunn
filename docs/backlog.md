@@ -176,10 +176,19 @@ file it rebuilds — and it re-reads its base out of the repository and checks i
 the hash it is published under first, so a locally rotted payload cannot become a patch
 that fails on every client. `delta:` in pack.yaml configures both bounds.
 
-Open: the migration case — a `MinFromVersion` floor is the one thing that forces the
-intermediate releases to be *installed* rather than only walked through for their bytes,
-and today `core/updater` refuses such an update outright — and the `patch-poison`
-corpus case.
+Also done: the migration case. A `MinFromVersion` floor is the one refusal a path can
+answer — unlike a downgrade or a client too old for the layout, it says only that this
+install is too far back to arrive in one step. Where the repository publishes releases
+that bridge the gap, `CheckForUpdate` offers the release and `Apply` installs the
+releases in between in order, each a complete update with its own transaction, its own
+migration hooks and its own commit; the walk it takes is the shortest the floors allow,
+never passes through another channel, and is planned with the same `applicable()` the
+apply enforces, so the planner cannot pick a step the apply then refuses. A step that
+fails leaves the install on the last release that committed — a published release, not a
+half-state — and says so.
+
+Open: the `patch-poison` corpus case, which needs a repository fixture that publishes a
+patch target (`test/redteam/harness` builds one release today).
 
 ### IDN-15 — Descriptor-level validity window (§6.3 `EnforceExpiry`)
 Schema 1 descriptors carry no validity window, so `Policy.EnforceExpiry` currently

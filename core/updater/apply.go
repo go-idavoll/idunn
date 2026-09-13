@@ -33,10 +33,125 @@ import (
 // Observer events and an opt-in Reporter Outcome. For system-wide installs it
 // routes the privileged apply through the configured Elevator. On any failure it
 // rolls back files and calls Migrator.Rollback. Safe to call again after a crash.
+//
+// Usually that is one installation. It becomes several when the release refuses
+// to migrate from the version installed here (Requirements.MinFromVersion) and
+// the repository publishes releases in between that bridge the gap: those are
+// then installed in order, each a complete update of its own — its own
+// transaction, its own migration hooks, its own commit. A release that skipped
+// a migration is exactly what the floor exists to prevent, and walking to it is
+// the only way to honour that and still arrive.
+//
+// Each step is a real installation, so a failure part-way leaves the install on
+// the last release that committed — a published release, not a half-state — and
+// says so. A step that defers to the next restart stops the walk there; the
+// remaining releases follow when the deferred one has been applied.
 func (u *Updater) Apply(ctx context.Context, r *Release) error {
 	if r == nil || r.Descriptor == nil {
 		return fmt.Errorf("%w: no release to apply", ErrConfig)
 	}
+
+	installed, err := u.installedVersion()
+	if err != nil {
+		return err
+	}
+	walk, err := u.steps(r.Descriptor, installed)
+	if err != nil {
+		return err
+	}
+
+	from := r.FromVersion
+	for i, step := range walk {
+		if err := u.applyRelease(ctx, &Release{Descriptor: step, FromVersion: from}); err != nil {
+			if i == 0 {
+				return err
+			}
+			return fmt.Errorf("%w (on the way to %s, this install is now %s)", err, r.Descriptor.Version, from)
+		}
+		from = step.Version
+	}
+	return nil
+}
+
+// steps is the releases that have to be installed to reach d, in order.
+//
+// It is one release — d itself — unless d refuses to migrate from what is
+// installed. That refusal is the only one a path can answer: a downgrade or a
+// client too old for the layout says this machine may not have the release at
+// all, while a migration floor says only that it is too far back to arrive in
+// one step.
+//
+// The walk it produces is the shortest one the repository supports, and every
+// release on it is checked by the same applicable() the apply path enforces —
+// so a step this planner picks cannot be one the apply then refuses. Releases
+// of another channel are not stepping stones: a stable install does not pass
+// through a beta to get anywhere.
+func (u *Updater) steps(d *release.Descriptor, installed string) ([]*release.Descriptor, error) {
+	err := u.applicable(d, installed)
+	if err == nil {
+		return []*release.Descriptor{d}, nil
+	}
+	if !errors.Is(err, ErrMigrationFloor) {
+		return nil, err
+	}
+
+	hist, ok := u.trust.(History)
+	if !ok {
+		return nil, err
+	}
+	// Between rather than Chain: stepping through releases for their migrations
+	// does not need the installed release to still be published, only the ones
+	// on top of it.
+	walk, walkErr := release.Between(hist.Versions(d.OS, d.Arch), installed, d.Version)
+	if walkErr != nil {
+		return nil, err
+	}
+
+	// The far end of the walk is in hand already; the rest has to be resolved.
+	candidates := make([]*release.Descriptor, 0, len(walk))
+	for _, v := range walk[:len(walk)-1] {
+		step, sErr := hist.ReleaseVersion(d.OS, d.Arch, v)
+		if sErr != nil || step.Channel != d.Channel {
+			continue
+		}
+		candidates = append(candidates, step)
+	}
+	candidates = append(candidates, d)
+
+	var out []*release.Descriptor
+	for at := installed; at != d.Version; {
+		next := furthestReachable(u, candidates, at)
+		if next == nil {
+			return nil, fmt.Errorf("%w; and no published release bridges the gap", err)
+		}
+		out = append(out, next)
+		at = next.Version
+		if len(out) > maxWalk {
+			return nil, fmt.Errorf("%w; and the published path to it is longer than %d releases", err, maxWalk)
+		}
+	}
+	return out, nil
+}
+
+// furthestReachable picks the newest candidate that may be installed on top of
+// at — the fewest installations that still honour every floor on the way.
+func furthestReachable(u *Updater, candidates []*release.Descriptor, at string) *release.Descriptor {
+	var pick *release.Descriptor
+	for _, c := range candidates {
+		newer, err := release.Newer(c.Version, at)
+		if err != nil || !newer {
+			continue
+		}
+		if u.applicable(c, at) == nil {
+			pick = c // candidates are in ascending order, so the last wins
+		}
+	}
+	return pick
+}
+
+// applyRelease installs one release: the transaction, its rollback, the
+// application lock, and the outcome report.
+func (u *Updater) applyRelease(ctx context.Context, r *Release) error {
 
 	// The application lock, if one was taken, is held until everything is
 	// finished — including the rollback. Migrator.Rollback touches the same

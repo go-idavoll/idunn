@@ -16,6 +16,7 @@ package release
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 )
 
@@ -52,12 +53,42 @@ import (
 // the versions that are eligible. Length is the caller's too — twenty hops of
 // patches may well cost more than one download.
 func Chain(available []string, from, to string) ([]string, error) {
-	up, err := Compare(from, to)
+	walk, err := Between(available, from, to)
+	if err != nil {
+		return nil, err
+	}
+	// The release the walk starts from is the one whose bytes the first patch
+	// is applied to, so it has to be published too — a version the repository
+	// has garbage collected is exactly the case where a client fetches full
+	// targets instead.
+	if !slices.Contains(available, from) {
+		return nil, fmt.Errorf("%w: no published chain from %s to %s", ErrInvalid, from, to)
+	}
+	return append([]string{from}, walk...), nil
+}
+
+// Between returns the published releases after one version up to and including
+// another, oldest first.
+//
+// It is the walk without its starting point, which is the difference between
+// the two things a path is needed for. Reconstructing bytes hop by hop has to
+// begin at the exact release the bytes on disk came from (Chain). Stepping
+// through releases because a migration floor demands it does not: what those
+// releases migrate is the host's own state, and the only thing that matters is
+// that each one is installed on top of the one before it. A client whose own
+// release the repository no longer publishes can still be walked forwards.
+//
+// The rules are otherwise Chain's: entries that are not versions this project
+// accepts are ignored, two releases of equal precedence under different
+// spellings are refused as an order nobody could predict, and `to` must be
+// published.
+func Between(available []string, after, to string) ([]string, error) {
+	up, err := Compare(after, to)
 	if err != nil {
 		return nil, err
 	}
 	if up >= 0 {
-		return nil, fmt.Errorf("%w: %s to %s is not an upgrade; a chain only walks forwards", ErrInvalid, from, to)
+		return nil, fmt.Errorf("%w: %s to %s is not an upgrade; a walk only goes forwards", ErrInvalid, after, to)
 	}
 
 	seen := make(map[string]bool, len(available))
@@ -69,7 +100,7 @@ func Chain(available []string, from, to string) ([]string, error) {
 			continue
 		}
 		seen[v] = true
-		lo, err := Compare(v, from)
+		lo, err := Compare(v, after)
 		if err != nil {
 			return nil, err
 		}
@@ -77,7 +108,7 @@ func Chain(available []string, from, to string) ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		if lo >= 0 && hi <= 0 {
+		if lo > 0 && hi <= 0 {
 			walk = append(walk, v)
 		}
 	}
@@ -104,8 +135,8 @@ func Chain(available []string, from, to string) ([]string, error) {
 		}
 	}
 
-	if len(walk) < 2 || walk[0] != from || walk[len(walk)-1] != to {
-		return nil, fmt.Errorf("%w: no published chain from %s to %s", ErrInvalid, from, to)
+	if len(walk) == 0 || walk[len(walk)-1] != to {
+		return nil, fmt.Errorf("%w: %s is not published, so nothing leads to it", ErrInvalid, to)
 	}
 	return walk, nil
 }

@@ -41,6 +41,13 @@ var (
 	// too old for the layout, a migration floor this install is below.
 	ErrPolicy = errors.New("update policy")
 
+	// ErrMigrationFloor marks the one refusal in ErrPolicy that a path can
+	// answer: the release will not migrate from the version installed here.
+	// Unlike a downgrade or a client too old for the layout, it says nothing
+	// about this machine being wrong — only that it is too far back to arrive
+	// in one step, which is what the releases in between are for.
+	ErrMigrationFloor = errors.New("migration floor")
+
 	// ErrBusy is a host application that would not stop writing in time.
 	ErrBusy = errors.New("application busy")
 
