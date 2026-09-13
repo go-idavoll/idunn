@@ -449,7 +449,16 @@ func wireElevation(o *installer.Options, c config) (int, error) {
 		return exitPrivileges, fmt.Errorf("%s needs privileges, and this build embeds no trust anchor to "+
 			"re-verify with once elevated; re-run with those privileges instead", c.root)
 	}
+	// Where the prompt is not built yet, newInteractive always answers with
+	// ErrNotImplemented, so staticcheck is right that this comparison is always
+	// true and that what follows it is unreachable — on that platform. On
+	// Windows the same call returns a working elevator, and this file is
+	// compiled for both. Restructuring to satisfy the analysis on one of them
+	// would mean writing as if the other did not exist.
+	//
+	//nolint:staticcheck // SA4023: true per platform, not per program.
 	el, err := elevate.NewInteractive(elevate.InteractiveOptions{})
+	//nolint:staticcheck // SA4023: as above.
 	if err != nil {
 		if errors.Is(err, elevate.ErrNotImplemented) {
 			return exitPrivileges, fmt.Errorf("%s needs privileges and this platform has no prompt yet (%w); "+
