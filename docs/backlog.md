@@ -168,11 +168,18 @@ against that release's signed hash, and answers every failure — no patch publi
 poisoned patch, a missing base, a route that costs more than the file — with the
 download it was trying to avoid.
 
-Open: patch targets emitted by the packer against the last N versions (the delegated
-role `v<major>` needs `patches/v<major>/*` in its path patterns, plus a size policy and
-golden tests), the migration case (a `MinFromVersion` floor is the one thing that forces
-the intermediate releases to be *installed* rather than only walked through, and today
-it is refused outright in `core/updater`), and the `patch-poison` corpus case.
+Also done: the publishing side. A publish emits a patch from each of the last N
+releases of a platform to the file it now ships, under the path both sides derive from
+the two content hashes, in the release line's own delegated role. It skips what is not
+worth carrying — an unchanged file, a rewritten one, a patch above `max_ratio` of the
+file it rebuilds — and it re-reads its base out of the repository and checks it against
+the hash it is published under first, so a locally rotted payload cannot become a patch
+that fails on every client. `delta:` in pack.yaml configures both bounds.
+
+Open: the migration case — a `MinFromVersion` floor is the one thing that forces the
+intermediate releases to be *installed* rather than only walked through for their bytes,
+and today `core/updater` refuses such an update outright — and the `patch-poison`
+corpus case.
 
 ### IDN-15 — Descriptor-level validity window (§6.3 `EnforceExpiry`)
 Schema 1 descriptors carry no validity window, so `Policy.EnforceExpiry` currently

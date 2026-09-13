@@ -226,6 +226,63 @@ func (f *fixture) seedRelease() {
 	f.writeConfig(defaultConfig)
 }
 
+// client points the real client at the published repository over HTTP and
+// refreshes it, returning the client and its local metadata directory.
+//
+// It uses core/trust unchanged: a repository only this package can read would
+// prove nothing.
+func (f *fixture) client(now time.Time) (*trust.Client, string, error) {
+	f.t.Helper()
+	mux := http.NewServeMux()
+	mux.Handle("/metadata/", http.StripPrefix("/metadata/",
+		http.FileServer(http.Dir(filepath.Join(f.repo, MetadataDir)))))
+	mux.Handle("/targets/", http.StripPrefix("/targets/",
+		http.FileServer(http.Dir(filepath.Join(f.repo, TargetsDir)))))
+	srv := httptest.NewServer(mux)
+	f.t.Cleanup(srv.Close)
+
+	work := f.t.TempDir()
+	c, err := trust.New(trust.Options{
+		Root:        f.rootBytes(),
+		MetadataURL: srv.URL + "/metadata/",
+		TargetsURL:  srv.URL + "/targets/",
+		LocalDir:    work,
+		Now:         func() time.Time { return now },
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	c.UnsafeSetRefTime(now)
+	if err := c.Refresh(); err != nil {
+		return nil, "", err
+	}
+	return c, work, nil
+}
+
+// corruptTarget rewrites a published target file with bytes that do not match
+// the hash it is published under — bit rot in the publisher's own tree.
+func (f *fixture) corruptTarget(t *testing.T, target string, sum [sha256.Size]byte) {
+	t.Helper()
+	name := filepath.Join(f.repo, TargetsDir, filepath.FromSlash(hashPrefixedPath(target, sum)))
+	raw, err := os.ReadFile(name)
+	if err != nil {
+		t.Fatalf("reading %s: %v", name, err)
+	}
+	raw[len(raw)/2] ^= 0xff
+	if err := os.WriteFile(name, raw, 0o644); err != nil {
+		t.Fatalf("writing %s: %v", name, err)
+	}
+}
+
+// removeTarget deletes a published target file, as retention would.
+func (f *fixture) removeTarget(t *testing.T, target string, sum [sha256.Size]byte) {
+	t.Helper()
+	name := filepath.Join(f.repo, TargetsDir, filepath.FromSlash(hashPrefixedPath(target, sum)))
+	if err := os.Remove(name); err != nil {
+		t.Fatalf("removing %s: %v", name, err)
+	}
+}
+
 // resolution is what a client saw when it resolved the published repository.
 type resolution struct {
 	descriptor *release.Descriptor
@@ -243,27 +300,8 @@ type resolution struct {
 // resolves it end to end.
 func (f *fixture) resolve(channel, goos, goarch string, now time.Time) (*resolution, error) {
 	f.t.Helper()
-	mux := http.NewServeMux()
-	mux.Handle("/metadata/", http.StripPrefix("/metadata/",
-		http.FileServer(http.Dir(filepath.Join(f.repo, MetadataDir)))))
-	mux.Handle("/targets/", http.StripPrefix("/targets/",
-		http.FileServer(http.Dir(filepath.Join(f.repo, TargetsDir)))))
-	srv := httptest.NewServer(mux)
-	defer srv.Close()
-
-	work := f.t.TempDir()
-	c, err := trust.New(trust.Options{
-		Root:        f.rootBytes(),
-		MetadataURL: srv.URL + "/metadata/",
-		TargetsURL:  srv.URL + "/targets/",
-		LocalDir:    work,
-		Now:         func() time.Time { return now },
-	})
+	c, work, err := f.client(now)
 	if err != nil {
-		return nil, err
-	}
-	c.UnsafeSetRefTime(now)
-	if err := c.Refresh(); err != nil {
 		return nil, err
 	}
 	d, err := c.LatestRelease(channel, goos, goarch)

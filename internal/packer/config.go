@@ -33,6 +33,11 @@ import (
 // and keeps a pathological document from being parsed at all.
 const MaxConfigLen = 1 << 20 // 1 MiB
 
+// MaxPatchAgainst bounds delta.patch_against. Every extra release is another
+// patch to generate per changed file, and a publish that takes an hour because
+// of a typo in a number is its own kind of outage.
+const MaxPatchAgainst = 16
+
 // nameRe bounds the app name. The descriptor only demands "not empty", but the
 // name ends up in operator-facing output and in no path, so a conservative
 // character set costs nothing here.
@@ -66,6 +71,10 @@ type Config struct {
 	// Rollout in [0,1] drives staged rollout on the client. Optional.
 	Rollout float64 `yaml:"rollout"`
 
+	// Delta configures the binary patches this publish emits beside the full
+	// payloads. Absent means the defaults.
+	Delta Delta `yaml:"delta"`
+
 	// Targets lists one block per platform. The field is named after the TUF
 	// concept it produces, matching docs/design.md §9.
 	Targets []Platform `yaml:"targets"`
@@ -73,6 +82,48 @@ type Config struct {
 	// dir is the directory pack.yaml was read from. Relative src paths resolve
 	// against it, so a publish does not depend on the working directory.
 	dir string
+}
+
+// Delta configures intra-file binary patches (docs/design.md §6.4 stage 2).
+//
+// Patches are additive: they are extra targets nobody has to use, a client that
+// knows nothing about them updates exactly as before, and a client that does
+// checks the result against the signed target hash and falls back to the full
+// download if it does not match. So the settings here are about cost — publish
+// time, repository size — and never about trust.
+type Delta struct {
+	// PatchAgainst is how many previously published releases of a platform to
+	// emit patches from. It bounds both the publish time and how far behind a
+	// client can be and still patch in one hop; a client further behind walks
+	// the releases in between instead. Nil selects the default; 0 publishes no
+	// patches at all.
+	PatchAgainst *int `yaml:"patch_against"`
+
+	// MaxRatio is the largest a patch may be, as a fraction of the file it
+	// reconstructs, before it is not worth publishing. Zero selects the
+	// default.
+	MaxRatio float64 `yaml:"max_ratio"`
+}
+
+// The defaults if pack.yaml says nothing. Three releases is roughly a quarter's
+// worth of monthly updates in one hop, and a patch over half the size of the
+// file it rebuilds saves too little to be worth the repository space — the
+// client weighs it against the full target and would often skip it anyway.
+const (
+	DefaultPatchAgainst = 3
+	DefaultMaxRatio     = 0.5
+)
+
+// settings resolves the configured values against the defaults.
+func (d Delta) settings() (against int, ratio float64) {
+	against, ratio = DefaultPatchAgainst, DefaultMaxRatio
+	if d.PatchAgainst != nil {
+		against = *d.PatchAgainst
+	}
+	if d.MaxRatio > 0 {
+		ratio = d.MaxRatio
+	}
+	return against, ratio
 }
 
 // Requirements are the app-level floors written into the descriptor.
@@ -171,6 +222,12 @@ func (c *Config) validate() error {
 	}
 	if c.Rollout < 0 || c.Rollout > 1 {
 		return fmt.Errorf("%w: rollout %v outside [0,1]", ErrConfig, c.Rollout)
+	}
+	if c.Delta.PatchAgainst != nil && (*c.Delta.PatchAgainst < 0 || *c.Delta.PatchAgainst > MaxPatchAgainst) {
+		return fmt.Errorf("%w: delta.patch_against %d outside [0,%d]", ErrConfig, *c.Delta.PatchAgainst, MaxPatchAgainst)
+	}
+	if c.Delta.MaxRatio < 0 || c.Delta.MaxRatio > 1 {
+		return fmt.Errorf("%w: delta.max_ratio %v outside [0,1]", ErrConfig, c.Delta.MaxRatio)
 	}
 	for _, r := range []struct{ name, val string }{
 		{"requirements.min_from_version", c.Requirements.MinFromVersion},
