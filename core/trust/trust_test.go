@@ -481,6 +481,89 @@ func TestTargetIsServedFromTheCacheOnTheSecondRead(t *testing.T) {
 	}
 }
 
+// --- reuse surface -------------------------------------------------------
+
+// The signed length is what lets staging dismiss a local reuse candidate before
+// reading it. It must come from the signed metadata, so it is available without
+// the target ever being fetched.
+func TestTargetLengthComesFromSignedMetadata(t *testing.T) {
+	f := refreshed(t, nil)
+	d, err := f.client.LatestRelease(testChannel, testOS, testArch)
+	if err != nil {
+		t.Fatalf("LatestRelease: %v", err)
+	}
+	target := d.Files[0].Target
+
+	got, err := f.client.TargetLength(target)
+	if err != nil {
+		t.Fatalf("TargetLength: %v", err)
+	}
+	data, err := f.client.Target(target)
+	if err != nil {
+		t.Fatalf("Target: %v", err)
+	}
+	if got != int64(len(data)) {
+		t.Fatalf("TargetLength = %d, want %d", got, len(data))
+	}
+}
+
+func TestTargetLengthOfAnUnknownTargetIsRefused(t *testing.T) {
+	f := refreshed(t, nil)
+
+	if _, err := f.client.TargetLength("targets/nothing-here"); !errors.Is(err, trust.ErrTrust) {
+		t.Fatalf("err = %v, want ErrTrust", err)
+	}
+}
+
+// VerifyTarget is the door bytes from outside go-tuf come through — a file
+// reused from an installed version today, the result of a delta patch later. It
+// must accept exactly the signed content and nothing adjacent to it.
+func TestVerifyTargetAcceptsOnlyTheSignedBytes(t *testing.T) {
+	f := refreshed(t, nil)
+	d, err := f.client.LatestRelease(testChannel, testOS, testArch)
+	if err != nil {
+		t.Fatalf("LatestRelease: %v", err)
+	}
+	target := d.Files[0].Target
+	signed, err := f.client.Target(target)
+	if err != nil {
+		t.Fatalf("Target: %v", err)
+	}
+	if len(signed) == 0 {
+		t.Fatal("the fixture payload is empty; the tampering below would be vacuous")
+	}
+
+	if err := f.client.VerifyTarget(target, signed); err != nil {
+		t.Fatalf("VerifyTarget rejected the signed bytes: %v", err)
+	}
+
+	flipped := append([]byte(nil), signed...)
+	flipped[len(flipped)-1] ^= 0x01
+	for name, data := range map[string][]byte{
+		"one bit flipped": flipped,
+		"truncated":       signed[:len(signed)-1],
+		"one byte added":  append(append([]byte(nil), signed...), 0x00),
+		"empty":           {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := f.client.VerifyTarget(target, data); !errors.Is(err, trust.ErrTrust) {
+				t.Fatalf("err = %v, want ErrTrust", err)
+			}
+		})
+	}
+}
+
+// There is no signed hash to compare against for a target the repository never
+// published, so there is no verdict to give: an unknown target is refused, never
+// waved through for want of an expectation.
+func TestVerifyTargetOfAnUnknownTargetIsRefused(t *testing.T) {
+	f := refreshed(t, nil)
+
+	if err := f.client.VerifyTarget("targets/nothing-here", []byte("anything")); !errors.Is(err, trust.ErrTrust) {
+		t.Fatalf("err = %v, want ErrTrust", err)
+	}
+}
+
 // --- materialization -----------------------------------------------------
 
 func TestMaterializeTargetWritesVerifiedBytes(t *testing.T) {

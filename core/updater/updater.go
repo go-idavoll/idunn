@@ -53,8 +53,12 @@ type Resolver interface {
 	// LatestRelease resolves the channel pointer to a verified descriptor.
 	LatestRelease(channel, goos, goarch string) (*release.Descriptor, error)
 
-	// Target returns the verified bytes of one target.
-	Target(targetPath string) ([]byte, error)
+	// Materializer is the target surface staging consumes: the verified bytes
+	// of a target, its signed length, and the verdict on bytes that came from
+	// somewhere else. It is embedded rather than restated so the two interfaces
+	// cannot drift apart — the Stager this Resolver is handed to needs exactly
+	// these methods.
+	stage.Materializer
 }
 
 // AppLock is the exclusive lock a running host application holds, and the ground

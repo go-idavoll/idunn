@@ -15,6 +15,7 @@
 package updater_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -70,6 +71,29 @@ func (f *fakeTrust) Target(path string) ([]byte, error) {
 		return nil, errors.New("no such target: " + path)
 	}
 	return data, nil
+}
+
+// TargetLength and VerifyTarget model the trust client's reuse surface: a length
+// the staging path may pre-filter on, and the one verdict on bytes it did not get
+// from Target. The real check is a hash comparison inside go-tuf; comparing the
+// bytes themselves is the same answer, stricter, and needs no fixture hashes.
+func (f *fakeTrust) TargetLength(path string) (int64, error) {
+	data, ok := f.targets[path]
+	if !ok {
+		return 0, errors.New("no such target: " + path)
+	}
+	return int64(len(data)), nil
+}
+
+func (f *fakeTrust) VerifyTarget(path string, data []byte) error {
+	want, ok := f.targets[path]
+	if !ok {
+		return errors.New("no such target: " + path)
+	}
+	if !bytes.Equal(want, data) {
+		return errors.New("target does not match: " + path)
+	}
+	return nil
 }
 
 // hooks records every call the host would see, so a test can assert what ran and

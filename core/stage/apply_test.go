@@ -15,6 +15,7 @@
 package stage_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io/fs"
@@ -35,11 +36,15 @@ const root = "/opt/app"
 type targets struct {
 	files map[string][]byte
 	fail  map[string]error
-	asked []string
+	// lenErr makes TargetLength fail for a target whose bytes are otherwise
+	// available: a trust client that cannot answer the cheap question must
+	// cost the update its reuse, not its success.
+	lenErr map[string]error
+	asked  []string
 }
 
 func newTargets(files map[string][]byte) *targets {
-	return &targets{files: files, fail: map[string]error{}}
+	return &targets{files: files, fail: map[string]error{}, lenErr: map[string]error{}}
 }
 
 func (t *targets) Target(path string) ([]byte, error) {
@@ -52,6 +57,32 @@ func (t *targets) Target(path string) ([]byte, error) {
 		return nil, errors.New("no such target: " + path)
 	}
 	return data, nil
+}
+
+// TargetLength and VerifyTarget are what makes reuse from an installed version
+// possible without staging ever holding a signed hash: it asks for a size to
+// pre-filter on and hands back candidate bytes for a verdict. Byte equality
+// stands in for go-tuf's hash comparison — same answer, no fixture hashes.
+func (t *targets) TargetLength(path string) (int64, error) {
+	if err := t.lenErr[path]; err != nil {
+		return 0, err
+	}
+	data, ok := t.files[path]
+	if !ok {
+		return 0, errors.New("no such target: " + path)
+	}
+	return int64(len(data)), nil
+}
+
+func (t *targets) VerifyTarget(path string, data []byte) error {
+	want, ok := t.files[path]
+	if !ok {
+		return errors.New("no such target: " + path)
+	}
+	if !bytes.Equal(want, data) {
+		return errors.New("target does not match: " + path)
+	}
+	return nil
 }
 
 func newRoot(t *testing.T) *fsx.Mem {

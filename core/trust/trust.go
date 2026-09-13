@@ -209,6 +209,41 @@ func (c *Client) Target(targetPath string) ([]byte, error) {
 	return c.target(targetPath)
 }
 
+// TargetLength returns the signed length of a target without fetching it.
+//
+// It is a pre-filter, never a verdict: staging uses it to dismiss a local reuse
+// candidate whose size cannot possibly match before it reads the file at all —
+// which for a several-hundred-megabyte payload is the difference between one
+// stat and one full read. A length is not an authentication; whatever survives
+// this still goes through VerifyTarget.
+func (c *Client) TargetLength(targetPath string) (int64, error) {
+	info, err := c.up.GetTargetInfo(targetPath)
+	if err != nil {
+		return 0, fmt.Errorf("%w: target %q: %w", ErrTrust, targetPath, err)
+	}
+	return info.Length, nil
+}
+
+// VerifyTarget reports whether data are exactly the bytes signed for targetPath.
+//
+// It exists so bytes that did not come out of go-tuf's own download path — a
+// file reused from an already-installed version, later the result of a delta
+// patch — are admitted by the *same* check that guards a download, performed by
+// the same code go-tuf uses on a cached target (AGENTS.md §1.2, §1.5). Callers
+// get one verdict and no material to assemble a check of their own: nothing
+// outside this package ever sees a signed hash, so nothing outside it can
+// compare against one leniently.
+func (c *Client) VerifyTarget(targetPath string, data []byte) error {
+	info, err := c.up.GetTargetInfo(targetPath)
+	if err != nil {
+		return fmt.Errorf("%w: target %q: %w", ErrTrust, targetPath, err)
+	}
+	if err := info.VerifyLengthHashes(data); err != nil {
+		return fmt.Errorf("%w: target %q: %w", ErrTrust, targetPath, err)
+	}
+	return nil
+}
+
 // ReleaseVersion resolves one explicitly named version, bypassing the channel
 // pointer.
 //

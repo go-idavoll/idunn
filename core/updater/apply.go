@@ -15,7 +15,6 @@
 package updater
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -271,13 +270,20 @@ func (u *Updater) swap(ctx context.Context, d *release.Descriptor, versionDir st
 // between then and now — a truncated write that reported success, a local
 // tamper in the window before the swap (§11.3 T9). It is off by default because
 // it costs a full re-read of the release.
+//
+// It asks the trust layer for a verdict on what it read rather than for the
+// target itself, so verifying costs no network. That is not a convenience: since
+// staging reuses unchanged files from the previous version (§6.4 stage 1), the
+// bytes of an unchanged payload may never have been downloaded at all, and a
+// verify that fetched them would spend the traffic the reuse just saved — on a
+// release whose bulk is a browser runtime, all of it.
 func (u *Updater) verifyInstalled(ctx context.Context, d *release.Descriptor, versionDir string) error {
 	for i := range d.Files {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		f := &d.Files[i]
-		want, err := u.trust.Target(f.Target)
+		want, err := u.trust.TargetLength(f.Target)
 		if err != nil {
 			return err
 		}
@@ -285,11 +291,11 @@ func (u *Updater) verifyInstalled(ctx context.Context, d *release.Descriptor, ve
 		if err != nil {
 			return err
 		}
-		got, err := fsx.ReadFile(u.fs, fsx.Join(versionDir, dst), int64(len(want)))
+		got, err := fsx.ReadFile(u.fs, fsx.Join(versionDir, dst), max(want, 1))
 		if err != nil {
 			return fmt.Errorf("%w: %w", ErrVerify, err)
 		}
-		if !bytes.Equal(got, want) {
+		if err := u.trust.VerifyTarget(f.Target, got); err != nil {
 			// No paths, no contents: this string can reach a Reporter.
 			return fmt.Errorf("%w: an installed file does not match its verified target", ErrVerify)
 		}

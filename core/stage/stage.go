@@ -57,7 +57,20 @@ const MinRetain = 2
 // system: trust decides what may be trusted, this package decides only where the
 // bytes go.
 type Materializer interface {
+	// Target returns the verified bytes of one target, fetching it if the
+	// go-tuf cache does not already hold it.
 	Target(targetPath string) ([]byte, error)
+
+	// TargetLength returns the signed length of a target without fetching it,
+	// so a local reuse candidate of the wrong size can be dismissed before it
+	// is read.
+	TargetLength(targetPath string) (int64, error)
+
+	// VerifyTarget reports whether data are exactly the signed bytes of a
+	// target. Bytes that did not come from Target — reused from an installed
+	// version, later reconstructed from a patch — are admitted only by this,
+	// so staging never holds a signed hash and never compares one itself.
+	VerifyTarget(targetPath string, data []byte) error
 }
 
 // Stager writes verified files into a staging directory and swaps them in.
@@ -124,11 +137,15 @@ func (s *Stager) Stage(ctx context.Context, d *release.Descriptor) (string, erro
 		return "", fmt.Errorf("%w: create staging: %w", ErrStage, err)
 	}
 
+	// Which installed versions may donate unchanged files. Computed once: the
+	// listing is the same for every file, and a release is thousands of them.
+	sources := s.reuseSources(live, d.Version)
+
 	for i := range d.Files {
 		if err := ctx.Err(); err != nil {
 			return "", fmt.Errorf("%w: %w", ErrStage, err)
 		}
-		if err := s.stageFile(stageDir, &d.Files[i]); err != nil {
+		if err := s.stageFile(stageDir, &d.Files[i], sources); err != nil {
 			// Leave the staging tree where it is; the transaction's rollback
 			// and the next recovery both remove it, and removing it here would
 			// destroy the evidence of what went wrong.
@@ -164,8 +181,10 @@ func (s *Stager) Stage(ctx context.Context, d *release.Descriptor) (string, erro
 	return versionDir, nil
 }
 
-// stageFile writes one payload file into the staging tree.
-func (s *Stager) stageFile(stageDir string, f *release.FileRef) error {
+// stageFile writes one payload file into the staging tree, taking its bytes from
+// an installed version when one holds exactly the signed content and from the
+// trust layer otherwise.
+func (s *Stager) stageFile(stageDir string, f *release.FileRef, sources []string) error {
 	dst, err := SanitizeDst(f.Dst)
 	if err != nil {
 		return fmt.Errorf("%w: %s: %w", ErrStage, f.Target, err)
@@ -184,14 +203,19 @@ func (s *Stager) stageFile(stageDir string, f *release.FileRef) error {
 		return err
 	}
 
-	// TODO(stage): reuse identical files already present in `current` or a
-	// retained version by content hash (delta stage 1's second half,
-	// docs/design.md §6.4). It needs the signed hash from the trust layer, so
-	// that reuse can be verified rather than assumed; until it exists, the
-	// go-tuf cache is what keeps unchanged files off the network.
-	data, err := s.Trust.Target(f.Target)
-	if err != nil {
-		return err
+	// An unchanged file is taken from a version already on disk (delta stage 1,
+	// docs/design.md §6.4) — verified against the signed target, so what is
+	// reused is the content, never the trust. Everything else is fetched.
+	//
+	// TODO(stage): reuse still copies the bytes. Reflink/CoW, else hardlink,
+	// would make an unchanged payload free rather than cheap; both need an fsx
+	// operation that does not exist yet.
+	data := s.reuse(f, dst, sources)
+	if data == nil {
+		var err error
+		if data, err = s.Trust.Target(f.Target); err != nil {
+			return err
+		}
 	}
 	if err := fsx.WriteFileAtomic(s.FS, full, data, mode(f)); err != nil {
 		return fmt.Errorf("%w: %w", ErrStage, err)

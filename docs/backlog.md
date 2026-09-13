@@ -92,12 +92,21 @@ only `expires`, which lies in the future by construction and would refuse every 
 clock as a lower bound; what is recorded is the local clock at the moment metadata
 verified, which is the evidence that actually exists.
 
-### IDN-10 — Local reuse of already-installed files (§6.4 stage 1, second half)
-`stage.stageFile` always takes bytes from the trust layer. Unchanged files present in
-`current/` or a retained version should be reused by verified content hash
-(reflink/CoW, else hardlink, else copy) — re-hashed, never adopted on name alone.
-Needs the signed hash surfaced from `core/trust`, which the `Materializer` interface
-does not expose yet.
+### IDN-10 — Local reuse of already-installed files (§6.4 stage 1, second half) — **partly done**
+`stage.stageFile` now looks for the file it is about to write in the live version and
+then in the retained ones, newest first, and stages the local bytes when
+`trust.VerifyTarget` says they are the signed content. Nothing is adopted on name
+alone: the candidate is size-filtered against the signed length, read, and verified,
+and every way of failing that — tampered, bit-rotted, unreadable, swapped between the
+stat and the read — falls back to fetching the target, never to a weaker check. The
+`Materializer` interface carries the two methods this needs (`TargetLength`,
+`VerifyTarget`), so staging still never holds a signed hash of its own.
+
+What is left of the design text: the reuse is a plain copy, not reflink/CoW or a
+hardlink, which needs an fsx operation that does not exist; and the lookup is keyed on
+the destination a file lands at rather than on a content-hash index over the installed
+tree, so a file that moved between releases is fetched. Both are efficiency, not
+correctness — and the verified-base half that IDN-14 depends on is in place.
 
 ### IDN-11 — Test coverage for `core/trust` and `core/fetch` — **done**
 Both had no unit test at all. `core/trust` now has direct tests of the layer the

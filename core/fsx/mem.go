@@ -48,14 +48,17 @@ type Mem struct {
 	mu    sync.Mutex
 	nodes map[string]*memNode
 
-	// Fail, if non-nil, is consulted before every mutating operation and can
-	// return an error to make it fail. This is how the property tests inject a
-	// crash at an exact transaction boundary and assert that what remains on
-	// disk is still either the old state or the new one (AGENTS.md §4).
+	// Fail, if non-nil, is consulted before every mutating operation, and
+	// before an Open, and can return an error to make it fail. This is how the
+	// property tests inject a crash at an exact transaction boundary and assert
+	// that what remains on disk is still either the old state or the new one
+	// (AGENTS.md §4). Open is in the list because a file that cannot be read is
+	// its own case: the reuse path in core/stage must answer it with a fetch,
+	// not with a failed update.
 	//
-	// It is called with the operation name ("create", "rename", "remove",
-	// "removeall", "mkdirall", "symlink", "write", "sync") and the affected
-	// name, already in canonical slash form.
+	// It is called with the operation name ("open", "create", "rename",
+	// "remove", "removeall", "mkdirall", "symlink", "write", "sync") and the
+	// affected name, already in canonical slash form.
 	Fail func(op, name string) error
 }
 
@@ -221,6 +224,10 @@ func (m *Mem) fail(op, name string) error {
 
 // Open returns the file at name, following a final symlink.
 func (m *Mem) Open(name string) (fs.File, error) {
+	if err := m.fail("open", canon(name)); err != nil {
+		return nil, err
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
