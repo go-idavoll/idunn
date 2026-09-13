@@ -14,7 +14,10 @@
 
 package release
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Pointer is the channel pointer target
 // `channels/<channel>/<os>-<arch>/latest.json`. It names the currently valid
@@ -47,4 +50,26 @@ func PointerPath(channel, goos, goarch string) string {
 // DescriptorPath returns the TUF target path of a release descriptor.
 func DescriptorPath(goos, goarch, version string) string {
 	return fmt.Sprintf("releases/%s-%s/%s.json", goos, goarch, version)
+}
+
+// VersionOfDescriptorPath reads a version back out of a descriptor target path,
+// reporting false for anything that is not one for this platform.
+//
+// It is how a client learns which releases exist without a new document to sign:
+// the signed targets metadata already lists every descriptor the repository
+// publishes, and this is the inverse of the function that put them there. The
+// path is the claim — a descriptor that disagrees with the path it lives at is
+// refused when it is resolved (see Client.ReleaseVersion) — so reading a version
+// out of one is a lookup, never a trust decision.
+func VersionOfDescriptorPath(targetPath, goos, goarch string) (string, bool) {
+	prefix := fmt.Sprintf("releases/%s-%s/", goos, goarch)
+	if !strings.HasPrefix(targetPath, prefix) {
+		return "", false
+	}
+	rest := strings.TrimPrefix(targetPath, prefix)
+	version, ok := strings.CutSuffix(rest, ".json")
+	if !ok || !ValidVersion(version) {
+		return "", false
+	}
+	return version, true
 }

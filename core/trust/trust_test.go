@@ -564,6 +564,98 @@ func TestVerifyTargetOfAnUnknownTargetIsRefused(t *testing.T) {
 	}
 }
 
+// --- the published releases ----------------------------------------------
+
+// publishing returns a fixture whose repository also publishes descriptors for
+// the given versions. They are the real thing — same shape, own version, at the
+// path that states it — because what is under test is that the client can learn
+// which releases exist without a new document to sign for it.
+func publishing(t *testing.T, versions ...string) *fixture {
+	t.Helper()
+	return refreshed(t, func(b *harness.Build) error {
+		for _, v := range versions {
+			d := *b.Descriptor
+			d.Version = v
+			raw, err := json.MarshalIndent(&d, "", "  ")
+			if err != nil {
+				return err
+			}
+			b.Payloads[release.DescriptorPath(b.Opts.OS, b.Opts.Arch, v)] = raw
+		}
+		return nil
+	})
+}
+
+// A client that skipped releases has to walk the ones it missed, and the walk
+// needs to know they exist. That knowledge is already signed: every descriptor
+// is a target, and its path states its version.
+func TestVersionsListsThePublishedReleases(t *testing.T) {
+	f := publishing(t, "1.0.0", "1.1.0", "1.1.0-rc.1")
+
+	got := f.client.Versions(testOS, testArch)
+	want := []string{"1.0.0", "1.1.0-rc.1", "1.1.0", testVersion}
+	if len(got) != len(want) {
+		t.Fatalf("Versions = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("Versions = %v, want %v (oldest first)", got, want)
+		}
+	}
+}
+
+// The platform is part of the path, so another one's releases are not this
+// one's — an arm64 client must never chain through amd64 descriptors.
+func TestVersionsAreScopedToThePlatform(t *testing.T) {
+	f := publishing(t, "1.0.0")
+
+	if got := f.client.Versions(testOS, "arm64"); len(got) != 0 {
+		t.Fatalf("Versions for another arch = %v, want none", got)
+	}
+	if got := f.client.Versions("windows", testArch); len(got) != 0 {
+		t.Fatalf("Versions for another OS = %v, want none", got)
+	}
+}
+
+// Payloads and channel pointers are targets too. Only descriptors say which
+// releases exist, and only they may be counted.
+func TestVersionsCountsOnlyDescriptors(t *testing.T) {
+	f := publishing(t)
+
+	got := f.client.Versions(testOS, testArch)
+	if len(got) != 1 || got[0] != testVersion {
+		t.Fatalf("Versions = %v, want just the one published release", got)
+	}
+}
+
+// What the two pieces are for: the versions the repository publishes, turned
+// into the walk a patched update follows.
+func TestVersionsFeedAChain(t *testing.T) {
+	f := publishing(t, "1.0.0", "1.1.0")
+
+	walk, err := release.Chain(f.client.Versions(testOS, testArch), "1.0.0", testVersion)
+	if err != nil {
+		t.Fatalf("Chain: %v", err)
+	}
+	want := []string{"1.0.0", "1.1.0", testVersion}
+	for i := range want {
+		if i >= len(walk) || walk[i] != want[i] {
+			t.Fatalf("Chain = %v, want %v", walk, want)
+		}
+	}
+}
+
+// A repository the client has no metadata for yet cannot be walked. It must say
+// so by listing nothing, so the caller falls back to full targets instead of
+// walking a chain it invented.
+func TestVersionsBeforeRefreshAreEmpty(t *testing.T) {
+	f := newFixture(t, nil)
+
+	if got := f.client.Versions(testOS, testArch); len(got) != 0 {
+		t.Fatalf("Versions before Refresh = %v, want none", got)
+	}
+}
+
 // --- materialization -----------------------------------------------------
 
 func TestMaterializeTargetWritesVerifiedBytes(t *testing.T) {

@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/theupdateframework/go-tuf/v2/metadata"
@@ -274,6 +275,56 @@ func (c *Client) ReleaseVersion(goos, goarch, version string) (*release.Descript
 			ErrResolve, goos, goarch, version, d.OS, d.Arch, d.Version)
 	}
 	return d, nil
+}
+
+// Versions lists the releases the repository publishes for a platform, oldest
+// first, as the signed targets metadata already knows them.
+//
+// A patch turns one exact set of bytes into another, so a client that skipped
+// releases has to walk the ones it missed (release.Chain). Walking needs to know
+// which releases exist — and that is not a new thing to publish and sign: every
+// descriptor is a target, the targets metadata lists the path of every target in
+// a role, and the path of a descriptor states the version it describes. This
+// reads that list. It adds no trust decision: what a version here entitles
+// anyone to is still decided when its descriptor is resolved and its bytes are
+// verified.
+//
+// It reports what the client currently has metadata for. Delegated roles are
+// loaded lazily — resolving a release of a line is what pulls that line's role
+// in — so a caller that wants the full picture resolves the two ends it knows
+// (the channel head, its own installed version) before asking. A line whose role
+// was never loaded is silently absent, which costs a chain and never invents
+// one.
+func (c *Client) Versions(goos, goarch string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, role := range c.up.GetTrustedMetadataSet().Targets {
+		if role == nil {
+			continue
+		}
+		for targetPath := range role.Signed.Targets {
+			v, ok := release.VersionOfDescriptorPath(targetPath, goos, goarch)
+			if !ok || seen[v] {
+				continue
+			}
+			seen[v] = true
+			out = append(out, v)
+		}
+	}
+
+	// Map iteration is unordered and this feeds a walk, so the order is
+	// established here rather than left to whoever consumes it.
+	sort.SliceStable(out, func(i, j int) bool {
+		cmp, err := release.Compare(out[i], out[j])
+		if err != nil {
+			// Unreachable: every entry passed ValidVersion above. Ordering
+			// equal keeps the sort total instead of panicking on a version
+			// that cannot be compared.
+			return false
+		}
+		return cmp < 0
+	})
+	return out
 }
 
 // MaterializeTarget places the verified bytes of a TUF target at dst, reusing the

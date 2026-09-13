@@ -150,10 +150,20 @@ delta — the other candidate the design named — was measured first: usable be
 of base, 43% of the target at 64 MiB and 63% at 96 MiB with the Go implementations
 available, so it was dropped.
 
+Also done: the walk. A full target is self-contained, so reaching the head is one step;
+a patch turns one exact set of bytes into another, so a client that skipped releases
+cannot jump and has to follow what it missed. `release.Chain` produces that walk and
+refuses everything it cannot answer unambiguously, and `trust.Versions` says which
+releases exist — read out of the signed targets metadata, where every descriptor's path
+already states its version, so no new document is published or signed for it.
+
 Open: patch targets emitted by the packer against the last N versions, how the client
 discovers them (the design says a descriptor `custom` field, which schema 1 has no room
-for — a path derived by convention from the two hashes needs no schema change), the
-fetch-and-fall-back path in `stage.stageFile`, and the `patch-poison` corpus case.
+for — a path derived by convention from the two content hashes needs no schema change),
+the fetch-and-fall-back path in `stage.stageFile` walking the chain hop by hop, the
+migration case (a `MinFromVersion` floor is the one thing that forces the intermediate
+releases to be *installed* rather than only walked through, and today it is refused
+outright in `core/updater`), and the `patch-poison` corpus case.
 
 ### IDN-15 — Descriptor-level validity window (§6.3 `EnforceExpiry`)
 Schema 1 descriptors carry no validity window, so `Policy.EnforceExpiry` currently
