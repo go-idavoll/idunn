@@ -20,15 +20,19 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
+	"math/rand"
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/sigstore/sigstore/pkg/signature"
 	"github.com/theupdateframework/go-tuf/v2/metadata"
 
 	"github.com/go-idavoll/idunn/core/release"
+	"github.com/go-idavoll/idunn/internal/delta"
 )
 
 // BuildOptions describes the repository to build. The zero value is not useful;
@@ -45,6 +49,14 @@ type BuildOptions struct {
 	OS      string
 	Arch    string
 	Version string
+
+	// Previous, when set, publishes a second, older release beside this one and
+	// the delta patches from its payloads to this one's — the repository shape a
+	// patched update needs to exist at all (docs/design.md §6.4 stage 2). The
+	// payloads of such a build are sizeable and mostly shared, because a patch
+	// larger than the file it rebuilds is one no client would take, and a case
+	// the client sidesteps proves nothing.
+	Previous string
 
 	// Mutator is the attack applied to this build; nil builds the known-good
 	// baseline.
@@ -81,6 +93,23 @@ type Build struct {
 	DescriptorRaw []byte
 	PointerRaw    []byte
 
+	// PreviousDescriptor and PreviousRaw are the older release of a delta build
+	// (BuildOptions.Previous), the one a client is installed on before it
+	// updates.
+	PreviousDescriptor *release.Descriptor
+	PreviousRaw        []byte
+
+	// Patches maps an install destination to the target path of the patch that
+	// turns the previous release's file into this one's. It is how a mutator
+	// finds the patch to attack.
+	Patches map[string]string
+
+	// AttackerPayload is what a mutator wants the client to end up with. The
+	// delta cases assert it never lands anywhere on disk — a patch is only ever
+	// a cheaper way to obtain bytes that are checked against their signed hash,
+	// so the attack fails by the client fetching the real target instead.
+	AttackerPayload []byte
+
 	Root      *metadata.Metadata[metadata.RootType]
 	Targets   *metadata.Metadata[metadata.TargetsType]
 	Snapshot  *metadata.Metadata[metadata.SnapshotType]
@@ -105,6 +134,34 @@ func (b *Build) DescriptorTarget() string {
 // PointerTarget is the target path of this build's channel pointer.
 func (b *Build) PointerTarget() string {
 	return release.PointerPath(b.Opts.Channel, b.Opts.OS, b.Opts.Arch)
+}
+
+// PreviousDescriptorTarget is the target path of the older release's descriptor.
+func (b *Build) PreviousDescriptorTarget() string {
+	return release.DescriptorPath(b.Opts.OS, b.Opts.Arch, b.Opts.Previous)
+}
+
+// PayloadTarget is the target path of the file this release installs at dst.
+func (b *Build) PayloadTarget(dst string) string {
+	return targetOf(b.Descriptor, dst)
+}
+
+// PreviousPayloadTarget is the target path of the file the older release
+// installed at dst — the base a patch starts from.
+func (b *Build) PreviousPayloadTarget(dst string) string {
+	return targetOf(b.PreviousDescriptor, dst)
+}
+
+func targetOf(d *release.Descriptor, dst string) string {
+	if d == nil {
+		return ""
+	}
+	for i := range d.Files {
+		if d.Files[i].Dst == dst {
+			return d.Files[i].Target
+		}
+	}
+	return ""
 }
 
 // BuildRepo writes a complete TUF repository to dir and returns the build state.
@@ -135,6 +192,9 @@ func BuildRepo(dir string, opts BuildOptions) (*Build, error) {
 	}
 	b.Payloads[b.DescriptorTarget()] = b.DescriptorRaw
 	b.Payloads[b.PointerTarget()] = b.PointerRaw
+	if b.PreviousDescriptor != nil {
+		b.Payloads[b.PreviousDescriptorTarget()] = b.PreviousRaw
+	}
 
 	if err := b.buildMetadata(); err != nil {
 		return nil, err
@@ -163,30 +223,44 @@ func BuildRepo(dir string, opts BuildOptions) (*Build, error) {
 	return b, nil
 }
 
-// payloadPath is where a release's payload files live as TUF targets.
-func (b *Build) payloadPath(name string) string {
-	return path.Join("payloads", b.Opts.Version, name)
+// The two files every release in the harness installs, in the order a
+// descriptor lists them.
+var buildFiles = []struct {
+	dst  string
+	mode uint32
+	kind release.FileKind
+}{
+	{"bin/app", 0o755, release.KindExe},
+	{"lib/lib.so", 0o644, release.KindLib},
 }
 
-func (b *Build) buildContent() error {
-	appTarget := b.payloadPath("app")
-	libTarget := b.payloadPath("lib.so")
-	b.Payloads[appTarget] = []byte("idunn test payload: app " + b.Opts.Version + "\n")
-	b.Payloads[libTarget] = []byte("idunn test payload: lib " + b.Opts.Version + "\n")
+// deltaSize is how large the payloads of a delta build are. Large enough that a
+// patch between two of them is worth taking — a client compares the patch
+// against the full target and downloads whichever is smaller — and small enough
+// that the corpus stays quick.
+const deltaSize = 24 << 10
 
-	b.Descriptor = &release.Descriptor{
-		SchemaVersion: release.SchemaVersion,
-		LayoutSchema:  release.LayoutSchema,
-		Name:          b.Opts.Name,
-		Version:       b.Opts.Version,
-		Channel:       b.Opts.Channel,
-		OS:            b.Opts.OS,
-		Arch:          b.Opts.Arch,
-		Files: []release.FileRef{
-			{Target: appTarget, Dst: "bin/app", Mode: 0o755, Kind: release.KindExe},
-			{Target: libTarget, Dst: "lib/lib.so", Mode: 0o644, Kind: release.KindLib},
-		},
+func (b *Build) buildContent() error {
+	current := map[string][]byte{}
+	for _, f := range buildFiles {
+		current[f.dst] = []byte("idunn test payload: " + path.Base(f.dst) + " " + b.Opts.Version + "\n")
 	}
+
+	if b.Opts.Previous != "" {
+		// A delta build: two releases whose payloads mostly agree, so that the
+		// patches between them are small enough for a client to prefer.
+		previous := map[string][]byte{}
+		for _, f := range buildFiles {
+			previous[f.dst] = pseudoRandom(f.dst+"@"+b.Opts.Previous, deltaSize)
+			current[f.dst] = rebuilt(previous[f.dst], f.dst+"@"+b.Opts.Version)
+		}
+		b.PreviousDescriptor = b.describe(b.Opts.Previous, previous)
+		if err := b.addPatches(previous, current); err != nil {
+			return err
+		}
+	}
+
+	b.Descriptor = b.describe(b.Opts.Version, current)
 	b.Pointer = &release.Pointer{
 		SchemaVersion: release.SchemaVersion,
 		Channel:       b.Opts.Channel,
@@ -198,6 +272,86 @@ func (b *Build) buildContent() error {
 	return b.reencode()
 }
 
+// describe registers a release's payloads as content-addressed targets — the
+// layout the packer produces and the client reads back — and returns the
+// descriptor that names them.
+func (b *Build) describe(version string, files map[string][]byte) *release.Descriptor {
+	d := &release.Descriptor{
+		SchemaVersion: release.SchemaVersion,
+		LayoutSchema:  release.LayoutSchema,
+		Name:          b.Opts.Name,
+		Version:       version,
+		Channel:       b.Opts.Channel,
+		OS:            b.Opts.OS,
+		Arch:          b.Opts.Arch,
+	}
+	major, _, _ := strings.Cut(version, ".")
+	for _, f := range buildFiles {
+		data, ok := files[f.dst]
+		if !ok {
+			continue
+		}
+		sum := sha256.Sum256(data)
+		target := release.PayloadPath(major, sum[:])
+		b.Payloads[target] = data
+		d.Files = append(d.Files, release.FileRef{
+			Target: target, Dst: f.dst, Mode: f.mode, Kind: f.kind,
+		})
+	}
+	return d
+}
+
+// addPatches publishes the delta patch for every file that changed between the
+// two releases, at the path both the packer and the client derive from the two
+// content hashes.
+func (b *Build) addPatches(previous, current map[string][]byte) error {
+	b.Patches = map[string]string{}
+	for _, f := range buildFiles {
+		from, to := previous[f.dst], current[f.dst]
+		if from == nil || to == nil {
+			continue
+		}
+		fromSum, toSum := sha256.Sum256(from), sha256.Sum256(to)
+		prevMajor, _, _ := strings.Cut(b.Opts.Previous, ".")
+		major, _, _ := strings.Cut(b.Opts.Version, ".")
+		target, ok := release.PatchPath(
+			release.PayloadPath(prevMajor, fromSum[:]),
+			release.PayloadPath(major, toSum[:]),
+		)
+		if !ok {
+			return fmt.Errorf("harness: no patch path for %s", f.dst)
+		}
+		patch, err := delta.Diff(from, to)
+		if err != nil {
+			return fmt.Errorf("harness: building the patch for %s: %w", f.dst, err)
+		}
+		b.Payloads[target] = patch
+		b.Patches[f.dst] = target
+	}
+	return nil
+}
+
+// pseudoRandom is incompressible content that is the same on every run: a
+// fixture has to be reproducible, and a payload that compresses away would make
+// a patch look better than it is.
+func pseudoRandom(seed string, n int) []byte {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(seed))
+	out := make([]byte, n)
+	//nolint:gosec // G404: a fixture needs a repeatable sequence, not entropy.
+	rand.New(rand.NewSource(int64(h.Sum64()))).Read(out)
+	return out
+}
+
+// rebuilt is that content after a release: one stretch rewritten, as a recompile
+// would.
+func rebuilt(base []byte, seed string) []byte {
+	out := append([]byte(nil), base...)
+	changed := pseudoRandom(seed, len(out)/16)
+	copy(out[len(out)/2:], changed)
+	return out
+}
+
 // reencode refreshes the published bytes from the structs. Mutators that change a
 // struct call this; mutators that publish deliberately broken bytes do not.
 func (b *Build) reencode() error {
@@ -207,6 +361,11 @@ func (b *Build) reencode() error {
 	}
 	if b.PointerRaw, err = json.MarshalIndent(b.Pointer, "", "  "); err != nil {
 		return fmt.Errorf("harness: encoding pointer: %w", err)
+	}
+	if b.PreviousDescriptor != nil {
+		if b.PreviousRaw, err = json.MarshalIndent(b.PreviousDescriptor, "", "  "); err != nil {
+			return fmt.Errorf("harness: encoding the previous descriptor: %w", err)
+		}
 	}
 	return nil
 }

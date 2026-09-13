@@ -15,8 +15,11 @@
 package updater_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -46,6 +49,70 @@ type fakeTrust struct {
 
 	targets   map[string][]byte
 	targetErr map[string]error
+
+	// releases are the other releases the repository publishes, keyed by
+	// version. They are what a walk is made of: the byte-level history a
+	// patched update follows, and the stepping stones a migration floor
+	// demands.
+	releases map[string]*release.Descriptor
+
+	// openLines are the release lines whose delegated role has been loaded.
+	openLines map[string]bool
+}
+
+// publish adds a release to the repository this fake stands for, with the
+// payloads its descriptor names.
+func (f *fakeTrust) publish(d *release.Descriptor, payloads map[string][]byte) {
+	if f.releases == nil {
+		f.releases = map[string]*release.Descriptor{}
+	}
+	f.releases[d.Version] = d
+	for target, data := range payloads {
+		f.targets[target] = data
+	}
+}
+
+// OpenLine and the bookkeeping around it model how a real client comes to know
+// which releases exist: a delegated role per release line, loaded only when
+// something in it is resolved. A fake that simply knew every release would hide
+// the case where a walk has to reach into a line the client never touched.
+func (f *fakeTrust) OpenLine(_, _, major string) {
+	if f.openLines == nil {
+		f.openLines = map[string]bool{}
+	}
+	f.openLines[major] = true
+}
+
+func (f *fakeTrust) lineOpen(version string) bool {
+	major, _, _ := strings.Cut(version, ".")
+	return f.openLines[major]
+}
+
+func (f *fakeTrust) Versions(string, string) []string {
+	out := make([]string, 0, len(f.releases)+1)
+	for v := range f.releases {
+		if f.lineOpen(v) {
+			out = append(out, v)
+		}
+	}
+	if f.descriptor != nil && f.releases[f.descriptor.Version] == nil && f.lineOpen(f.descriptor.Version) {
+		out = append(out, f.descriptor.Version)
+	}
+	slices.Sort(out)
+	return out
+}
+
+func (f *fakeTrust) ReleaseVersion(goos, goarch, version string) (*release.Descriptor, error) {
+	f.asked = append(f.asked, "release/"+version)
+	// Resolving a release loads its line, here as in go-tuf.
+	f.OpenLine(goos, goarch, version[:strings.Index(version+".", ".")])
+	if d, ok := f.releases[version]; ok {
+		return d, nil
+	}
+	if f.descriptor != nil && f.descriptor.Version == version {
+		return f.descriptor, nil
+	}
+	return nil, errors.New("no such release: " + version)
 }
 
 func (f *fakeTrust) Refresh() error {
@@ -57,6 +124,9 @@ func (f *fakeTrust) LatestRelease(ch, goos, goarch string) (*release.Descriptor,
 	f.asked = append(f.asked, ch+"/"+goos+"-"+goarch)
 	if f.latestErr != nil {
 		return nil, f.latestErr
+	}
+	if f.descriptor != nil {
+		f.OpenLine(goos, goarch, f.descriptor.Version[:strings.Index(f.descriptor.Version+".", ".")])
 	}
 	return f.descriptor, nil
 }
@@ -70,6 +140,29 @@ func (f *fakeTrust) Target(path string) ([]byte, error) {
 		return nil, errors.New("no such target: " + path)
 	}
 	return data, nil
+}
+
+// TargetLength and VerifyTarget model the trust client's reuse surface: a length
+// the staging path may pre-filter on, and the one verdict on bytes it did not get
+// from Target. The real check is a hash comparison inside go-tuf; comparing the
+// bytes themselves is the same answer, stricter, and needs no fixture hashes.
+func (f *fakeTrust) TargetLength(path string) (int64, error) {
+	data, ok := f.targets[path]
+	if !ok {
+		return 0, errors.New("no such target: " + path)
+	}
+	return int64(len(data)), nil
+}
+
+func (f *fakeTrust) VerifyTarget(path string, data []byte) error {
+	want, ok := f.targets[path]
+	if !ok {
+		return errors.New("no such target: " + path)
+	}
+	if !bytes.Equal(want, data) {
+		return errors.New("target does not match: " + path)
+	}
+	return nil
 }
 
 // hooks records every call the host would see, so a test can assert what ran and

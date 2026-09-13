@@ -158,7 +158,11 @@ func Publish(o Options) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	return writeRelease(o, cfg, st, keys, blobs, []string{pointerRole, contentRole})
+	patches, err := buildPatches(cfg, st, contentRole, blobs)
+	if err != nil {
+		return nil, err
+	}
+	return writeRelease(o, cfg, st, keys, append(blobs, patches...), []string{pointerRole, contentRole})
 }
 
 // checkRoot refuses a repository this packer cannot publish into correctly.

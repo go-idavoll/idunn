@@ -158,3 +158,27 @@ func TestCompareSortsVersionDirectories(t *testing.T) {
 		}
 	}
 }
+
+// The major is a unit of the repository, not only of the version number: a
+// release line is a delegated role of its own, and asking for one takes the
+// number this returns.
+func TestMajor(t *testing.T) {
+	for v, want := range map[string]uint64{
+		"1.2.3":                    1,
+		"0.1.0":                    0,
+		"10.0.0":                   10,
+		"2.0.0-rc.1":               2,
+		"3.1.4+build.5":            3,
+		"18446744073709551615.0.0": 18446744073709551615,
+	} {
+		got, ok := release.Major(v)
+		if !ok || got != want {
+			t.Errorf("Major(%q) = (%d, %v), want %d", v, got, ok, want)
+		}
+	}
+	for _, v := range []string{"", "1", "1.2", "v1.2.3", "latest", "1.2.3.4"} {
+		if got, ok := release.Major(v); ok {
+			t.Errorf("Major(%q) = %d, want it refused", v, got)
+		}
+	}
+}

@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/theupdateframework/go-tuf/v2/metadata"
@@ -209,6 +210,41 @@ func (c *Client) Target(targetPath string) ([]byte, error) {
 	return c.target(targetPath)
 }
 
+// TargetLength returns the signed length of a target without fetching it.
+//
+// It is a pre-filter, never a verdict: staging uses it to dismiss a local reuse
+// candidate whose size cannot possibly match before it reads the file at all —
+// which for a several-hundred-megabyte payload is the difference between one
+// stat and one full read. A length is not an authentication; whatever survives
+// this still goes through VerifyTarget.
+func (c *Client) TargetLength(targetPath string) (int64, error) {
+	info, err := c.up.GetTargetInfo(targetPath)
+	if err != nil {
+		return 0, fmt.Errorf("%w: target %q: %w", ErrTrust, targetPath, err)
+	}
+	return info.Length, nil
+}
+
+// VerifyTarget reports whether data are exactly the bytes signed for targetPath.
+//
+// It exists so bytes that did not come out of go-tuf's own download path — a
+// file reused from an already-installed version, later the result of a delta
+// patch — are admitted by the *same* check that guards a download, performed by
+// the same code go-tuf uses on a cached target (AGENTS.md §1.2, §1.5). Callers
+// get one verdict and no material to assemble a check of their own: nothing
+// outside this package ever sees a signed hash, so nothing outside it can
+// compare against one leniently.
+func (c *Client) VerifyTarget(targetPath string, data []byte) error {
+	info, err := c.up.GetTargetInfo(targetPath)
+	if err != nil {
+		return fmt.Errorf("%w: target %q: %w", ErrTrust, targetPath, err)
+	}
+	if err := info.VerifyLengthHashes(data); err != nil {
+		return fmt.Errorf("%w: target %q: %w", ErrTrust, targetPath, err)
+	}
+	return nil
+}
+
 // ReleaseVersion resolves one explicitly named version, bypassing the channel
 // pointer.
 //
@@ -239,6 +275,78 @@ func (c *Client) ReleaseVersion(goos, goarch, version string) (*release.Descript
 			ErrResolve, goos, goarch, version, d.OS, d.Arch, d.Version)
 	}
 	return d, nil
+}
+
+// Versions lists the releases the repository publishes for a platform, oldest
+// first, as the signed targets metadata already knows them.
+//
+// A patch turns one exact set of bytes into another, so a client that skipped
+// releases has to walk the ones it missed (release.Chain). Walking needs to know
+// which releases exist — and that is not a new thing to publish and sign: every
+// descriptor is a target, the targets metadata lists the path of every target in
+// a role, and the path of a descriptor states the version it describes. This
+// reads that list. It adds no trust decision: what a version here entitles
+// anyone to is still decided when its descriptor is resolved and its bytes are
+// verified.
+//
+// It reports what the client currently has metadata for. Delegated roles are
+// loaded lazily — resolving a release of a line is what pulls that line's role
+// in — so a caller that wants the full picture resolves the two ends it knows
+// (the channel head, its own installed version) before asking. A line whose role
+// was never loaded is silently absent, which costs a chain and never invents
+// one.
+func (c *Client) Versions(goos, goarch string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, role := range c.up.GetTrustedMetadataSet().Targets {
+		if role == nil {
+			continue
+		}
+		for targetPath := range role.Signed.Targets {
+			v, ok := release.VersionOfDescriptorPath(targetPath, goos, goarch)
+			if !ok || seen[v] {
+				continue
+			}
+			seen[v] = true
+			out = append(out, v)
+		}
+	}
+
+	// Map iteration is unordered and this feeds a walk, so the order is
+	// established here rather than left to whoever consumes it.
+	sort.SliceStable(out, func(i, j int) bool {
+		cmp, err := release.Compare(out[i], out[j])
+		if err != nil {
+			// Unreachable: every entry passed ValidVersion above. Ordering
+			// equal keeps the sort total instead of panicking on a version
+			// that cannot be compared.
+			return false
+		}
+		return cmp < 0
+	})
+	return out
+}
+
+// OpenLine makes the descriptors of one release line visible to Versions.
+//
+// A TUF client loads delegated roles lazily: a role is pulled in, verified and
+// kept when a target it owns is resolved. That is the right behaviour for
+// fetching — a client following one release line never downloads another line's
+// metadata — and the wrong one for planning a walk, which needs the list of
+// releases *before* it resolves any of them. A client that has just resolved a
+// 2.0.0 head knows the 2.x line and nothing else, and would conclude that the
+// 1.x releases it has to walk through do not exist.
+//
+// So this asks for a target in the line and throws the answer away: what
+// matters is the role that gets loaded and verified on the way, not whether
+// that particular path exists. Nothing is trusted differently for having been
+// loaded this way — it is the same role, verified by the same delegation, and
+// every target in it is still checked when it is used.
+//
+// A line the repository does not publish loads nothing, which is not an error:
+// a walk through it simply finds no releases.
+func (c *Client) OpenLine(goos, goarch, major string) {
+	_, _ = c.up.GetTargetInfo(release.DescriptorPath(goos, goarch, major+".0.0"))
 }
 
 // MaterializeTarget places the verified bytes of a TUF target at dst, reusing the

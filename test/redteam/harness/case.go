@@ -60,6 +60,26 @@ const (
 	ClockRollback ClockAttack = "rollback"
 )
 
+// Expectation is what a case asserts about the client's behaviour.
+type Expectation string
+
+const (
+	// ExpectReject is the ordinary one: the client refuses, with an error of the
+	// declared class, and writes nothing.
+	ExpectReject Expectation = "reject"
+
+	// ExpectNoEffect is for an attack the client is not supposed to refuse —
+	// only to be unaffected by. A delta patch is untrusted input with a signed
+	// result: the client may fetch one, apply it, and throw the result away when
+	// it does not rebuild the file it was supposed to. So the assertion is not a
+	// refusal but something stricter: the update completes, every installed byte
+	// is the signed target, and nothing the attacker chose is anywhere on the
+	// machine. A case may only claim it where the client really did try the
+	// attacker's input — the runner checks that too, or the case would pass by
+	// never being exercised.
+	ExpectNoEffect Expectation = "no-effect"
+)
+
 // Case is one adversarial scenario, loaded from a case.yaml.
 type Case struct {
 	// Class is the attack family, taken from the directory layout.
@@ -69,11 +89,11 @@ type Case struct {
 	// Dir is the absolute path of the case directory.
 	Dir string `yaml:"-"`
 
-	Description string     `yaml:"description"`
-	Expect      string     `yaml:"expect"`
-	ErrorClass  ErrorClass `yaml:"error_class"`
-	Mutator     string     `yaml:"mutator"`
-	Notes       string     `yaml:"notes"`
+	Description string      `yaml:"description"`
+	Expect      Expectation `yaml:"expect"`
+	ErrorClass  ErrorClass  `yaml:"error_class"`
+	Mutator     string      `yaml:"mutator"`
+	Notes       string      `yaml:"notes"`
 
 	// Clock names an attack on the client's clock. A case that sets it needs no
 	// mutator: the repository is the honest baseline, and what is tampered with
@@ -141,15 +161,28 @@ func loadCase(dir string) (Case, error) {
 		return c, fmt.Errorf("harness: parsing %s/case.yaml: %w", dir, err)
 	}
 
-	// A corpus case that expects anything but "reject" would be a hole in the
-	// ratchet, so the loader refuses to represent one.
-	if c.Expect != "reject" {
-		return c, fmt.Errorf("harness: %s: expect must be \"reject\", got %q", dir, c.Expect)
-	}
-	switch c.ErrorClass {
-	case ClassVerify, ClassDescriptor, ClassResolve, ClassClock:
+	// Both expectations are hard assertions, and the loader refuses anything
+	// that is neither: a corpus case that expects less than one of these would
+	// be a hole in the ratchet.
+	switch c.Expect {
+	case ExpectReject:
+		switch c.ErrorClass {
+		case ClassVerify, ClassDescriptor, ClassResolve, ClassClock:
+		default:
+			return c, fmt.Errorf("harness: %s: unknown error_class %q", dir, c.ErrorClass)
+		}
+	case ExpectNoEffect:
+		if c.ErrorClass != "" {
+			return c, fmt.Errorf("harness: %s: expect %q describes an attack that is survived, not refused, so it takes no error_class",
+				dir, c.Expect)
+		}
+		m, ok := Mutators[c.Mutator]
+		if !ok || m.Previous == "" {
+			return c, fmt.Errorf("harness: %s: expect %q needs a mutator that publishes a previous release to attack across",
+				dir, c.Expect)
+		}
 	default:
-		return c, fmt.Errorf("harness: %s: unknown error_class %q", dir, c.ErrorClass)
+		return c, fmt.Errorf("harness: %s: expect must be %q or %q, got %q", dir, ExpectReject, ExpectNoEffect, c.Expect)
 	}
 	switch c.Clock {
 	case ClockNone, ClockRollback:

@@ -1,0 +1,25 @@
+# Copyright 2026 The idunn Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+class: patch-poison
+description: >
+  The published patch bytes disagree with the signed target metadata.
+expect: no-effect
+mutator: patch_tampered_after_signing
+notes: >
+  Unlike the other two, this one never reaches the patch reader: go-tuf refuses
+  the target before its bytes are handed over. It is here because the client must
+  answer that refusal by fetching the full payload rather than by failing the
+  update — a repository that corrupts a patch must not be able to stop an update
+  it is otherwise serving honestly.

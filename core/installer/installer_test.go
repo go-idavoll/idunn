@@ -15,6 +15,7 @@
 package installer_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -69,6 +70,27 @@ func (f *fakeTrust) Target(path string) ([]byte, error) {
 		return nil, errors.New("no such target: " + path)
 	}
 	return data, nil
+}
+
+// TargetLength and VerifyTarget are the reuse half of the trust surface; see the
+// note on the same pair in core/updater's fixture.
+func (f *fakeTrust) TargetLength(path string) (int64, error) {
+	data, ok := f.targets[path]
+	if !ok {
+		return 0, errors.New("no such target: " + path)
+	}
+	return int64(len(data)), nil
+}
+
+func (f *fakeTrust) VerifyTarget(path string, data []byte) error {
+	want, ok := f.targets[path]
+	if !ok {
+		return errors.New("no such target: " + path)
+	}
+	if !bytes.Equal(want, data) {
+		return errors.New("target does not match: " + path)
+	}
+	return nil
 }
 
 func descriptor(version string) *release.Descriptor {

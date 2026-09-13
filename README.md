@@ -93,6 +93,7 @@ github.com/go-idavoll/idunn          # core library (this repo)
   core/launch     # start-of-day: settle the journal, apply a deferred update
   core/timefloor  # monotonic known-good time floor (clock rollback defence)
   internal/safepath # the single validator for untrusted install-relative paths
+  internal/delta    # generates the binary patches core/stage applies
   internal/packer   # the publishing engine: pack.yaml -> signed TUF repository
   cmd/installer   # thin installer binary
   cmd/launcher    # the stable shim the install layout starts with
@@ -189,15 +190,15 @@ What exists today:
 |---|---|
 | Descriptor & channel-pointer ingest (`core/release`, `internal/safepath`) | implemented, fuzzed, adversarially tested |
 | TUF trust client and resolve (`core/trust`, `core/fetch`) | implemented, unit-tested and adversarially tested |
-| Adversarial corpus (`test/redteam`) | 22 cases, gates every PR |
-| Apply path: staging, journal, crash recovery, hooks, GC (`core/stage`, `core/txn`, `core/updater`, `core/installer`) | implemented, tested |
+| Adversarial corpus (`test/redteam`) | 25 cases, gates every PR |
+| Apply path: staging, journal, crash recovery, hooks, GC (`core/stage`, `core/txn`, `core/updater`, `core/installer`) | implemented, tested; a migration floor is walked through the releases in between rather than refused |
 | Elevation (`core/elevate`) | Windows `ElevationInteractive` implemented; privileged helper service and POSIX prompts fail closed |
 | Clock rollback defence (`core/timefloor`) | implemented: known-good time floor, checked before every refresh and apply |
-| Delta stage 1 (content-addressed reuse) | go-tuf cache reuse only; local relink from retained versions not implemented |
+| Delta stage 1 (content-addressed reuse) | go-tuf cache reuse plus verified local reuse from `current`/retained versions; the copy is not yet a reflink/hardlink |
 | Packer (`cmd/packer`, `internal/packer`) | publishes a delegated, reproducible TUF repository; retention not implemented |
 | Installer binary (`cmd/installer`) | implemented: embedded anchor, elevation decision, privileged `apply` verb |
 | Launcher (`cmd/launcher`, `core/launch`) and `BusyDeferToRestart` | implemented: a busy application defers, the launcher applies at the next start |
-| Delta stage 2 (binary patches) | not implemented |
+| Delta stage 2 (binary patches) | implemented end to end: patch format (`core/stage`, `internal/delta`), the release walk a skipped-releases client follows, staging that patches hop by hop and falls back to the full target, and a packer that publishes patch targets against the last N releases |
 
 The full section-by-section reconciliation against the design lives in
 [`docs/status.md`](docs/status.md); the open work is tracked in

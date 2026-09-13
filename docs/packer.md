@@ -47,6 +47,9 @@ requirements:
   min_from_version: 1.0.0
   min_client_version: 1.2.0
 rollout: 0.1                 # optional staged rollout (10%)
+delta:                       # optional; these are the defaults
+  patch_against: 3           # emit patches from the last 3 releases; 0 disables
+  max_ratio: 0.5             # only publish a patch under half the file's size
 targets:
   - os: windows
     arch: amd64
@@ -72,9 +75,18 @@ Every artifact below is a TUF target, and therefore signed.
 
 | Target path | Content | Written by |
 |---|---|---|
-| `payloads/v<major>/<sha256>` | one payload file, verbatim | §4 step 1 |
+| `payloads/v<major>/<sha256>` | one payload file, verbatim | `release.PayloadPath` |
+| `patches/v<major>/<old sha256>-<new sha256>` | binary patch between two payloads (§6.4 stage 2) | `release.PatchPath` |
 | `releases/<os>-<arch>/<version>.json` | `release.Descriptor` | `release.DescriptorPath` |
 | `channels/<channel>/<os>-<arch>/latest.json` | `release.Pointer` | `release.PointerPath` |
+
+A patch is named after the two content hashes and referenced by nothing: a client
+holding the old release and the new descriptor knows both hashes and can ask for the
+patch by name, and the signed metadata answers whether it exists. That is the whole
+discovery mechanism — no descriptor field, no schema bump, and a client that knows
+nothing about patches is unaffected. It is also why a broken or tampered patch costs
+only bandwidth: the client checks the reconstructed bytes against the signed target
+hash and falls back to the full payload.
 
 The two path helpers live in `core/release` precisely so that the packer and the
 client cannot drift apart: there is one place that knows the layout, and both sides
@@ -244,6 +256,7 @@ TUF workflow.
   1.v1.json            # release-line delegation: descriptors and payloads
 /targets/
   payloads/v1/<sha256>.<sha256>
+  patches/v1/<sha256>.<old sha256>-<new sha256>
   releases/windows-amd64/<sha256>.1.3.0.json
   channels/stable/windows-amd64/<sha256>.latest.json
 ```
@@ -275,11 +288,6 @@ scripts.
 
 ## 8. Beyond a first version
 
-- **Delta stage 2** (§6.4): optional patch targets against the last *N* versions,
-  referenced from the descriptor's `custom` field. Discovery is by convention and
-  needs no extra signature — the *result* is verified against the signed target hash,
-  so a broken or tampered patch only causes a fallback to the full target (backlog
-  IDN-14).
 - **Provenance / SLSA** alongside reproducible builds, as an additional supply-chain
   proof beside TUF (IDN-18).
 - **Retention** (§4 step 4, IDN-03): the one part of the flow above that is not
