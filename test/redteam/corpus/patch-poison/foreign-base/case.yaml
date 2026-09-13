@@ -1,0 +1,12 @@
+class: patch-poison
+description: >
+  A valid patch published under the path of a different pair of payloads, so
+  that applying it to the base the path names produces something else.
+expect: no-effect
+mutator: patch_foreign_base
+notes: >
+  The path a patch lives at is derived from two content hashes, and this case is
+  why that derivation is a convenience rather than a claim: the client asks for
+  "the patch from these bytes to those" and the repository may answer with
+  anything. It is mix-and-match inside the patch namespace, and it is answered
+  the same way as every other bad patch — by the signed hash of the result.

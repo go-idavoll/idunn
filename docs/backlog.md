@@ -133,7 +133,7 @@ Missing: OS-native proxy resolution incl. PAC (WinHTTP/WinINET, `SCDynamicStore`
 GSettings) behind a `ProxyResolver`; ranged/resumable downloads (`Options.Resume` is
 accepted and ignored today); proxy auth; mTLS client certificates.
 
-### IDN-14 — Delta stage 2: intra-file binary patches (§6.4) — **in progress**
+### IDN-14 — Delta stage 2: intra-file binary patches (§6.4) — **done**
 Done: the format and both halves of it. `stage.ApplyPatch` reads idunn's delta
 container — the bsdiff arrangement of control runs, byte-wise differences and
 literals, deflate-compressed — bounded by the signed target length, fuzzed by
@@ -187,8 +187,19 @@ apply enforces, so the planner cannot pick a step the apply then refuses. A step
 fails leaves the install on the last release that committed — a published release, not a
 half-state — and says so.
 
-Open: the `patch-poison` corpus case, which needs a repository fixture that publishes a
-patch target (`test/redteam/harness` builds one release today).
+Also done: the corpus cases. The harness publishes a previous release and the patches
+between it and the head — in the content-addressed layout the packer really produces —
+and drives the whole story: a machine installed on the older release, updated to the
+newer one against a repository whose patches are the attacker's. Three cases attack it:
+a properly signed patch that reconstructs bytes of the attacker's choosing, a valid
+patch published under the path of a different pair of payloads, and a patch whose
+published bytes disagree with the signed target. None expects a refusal — a patch is not
+trusted, so the client may try it and discard the result — and all three assert the
+stricter thing instead: the update arrives, every installed byte is the signed one, and
+nothing the attacker chose is anywhere on disk. `TestDeltaBaselineTakesThePatch` is the
+control that keeps them from passing on a client that ignores patches altogether.
+
+IDN-14 is **done**.
 
 ### IDN-15 — Descriptor-level validity window (§6.3 `EnforceExpiry`)
 Schema 1 descriptors carry no validity window, so `Policy.EnforceExpiry` currently

@@ -1,9 +1,11 @@
 # Adversarial testing (red-team)
 
 This tree is idunn's standing red-team. Its rule is simple: **every tampered TUF
-repository, package, or input here must be *rejected* by the client under test.** A
-mutation that gets *accepted* is a vulnerability and the highest-priority bug class in
-the project (see `AGENTS.md` §7).
+repository, package, or input here must be *rejected* by the client under test** — or,
+where the design's answer is not a refusal but a fallback, **must leave the client
+exactly as it would have been without the attack.** A mutation that changes what gets
+installed is a vulnerability and the highest-priority bug class in the project (see
+`AGENTS.md` §7).
 
 The finders of bugs are deterministic tools — the corpus, coverage-guided fuzzers,
 sanitizers, and differential checks against go-tuf. An optional LLM attacker only
@@ -27,7 +29,7 @@ test/redteam/
     path-traversal/          # descriptor Dst escapes the install root (.., abs, symlink)
     malformed-descriptor/    # unparseable / unknown-schema release descriptor
     downgrade/               # target version <= installed (app-level floor)
-    patch-poison/            # delta-stage-2 patch produces wrong output hash
+    patch-poison/            # delta patches: poisoned, foreign-base, tampered
     cache-poison/            # elevated-mode: user-writable cache swapped/symlinked
     _proposed/               # staging area for agent-generated candidates (git-ignored)
     README.md                # -> this file
@@ -50,10 +52,28 @@ test/redteam/
 ```
 
 Classes that exist as directories but hold no case yet — `rollback`, `freeze`,
-`downgrade`, `patch-poison`, `cache-poison` — need client-side prior state (a previously
-trusted metadata version, an installed version, a populated cache) or code that is not
-written yet (`stage.ApplyPatch`, `core/elevate`). They land as the harness grows; the
-corpus only ever grows.
+`downgrade`, `cache-poison` — need client-side prior state (a previously trusted
+metadata version, an installed version, a populated cache) or code that is not written
+yet (`core/elevate`). They land as the harness grows; the corpus only ever grows.
+
+## Two expectations, both hard
+
+Most cases declare `expect: reject`: the client refuses, with an error of the declared
+class, and writes nothing.
+
+The delta cases declare `expect: no-effect`, because a refusal is not what the design
+promises there. A patch is untrusted input whose *result* is checked against a signed
+hash, so the client is free to fetch one, apply it, and throw away what it produces.
+What must hold is stricter than a refusal: the update still arrives, every installed
+byte is the signed target, and nothing the attacker chose is anywhere on the machine.
+The runner also insists the client really did fetch the patch and really did fall back
+to the full payload — an attack the client never tried is not one it withstood.
+
+`expect: no-effect` needs a mutator that publishes a previous release (`Mutator.Previous`),
+because a patch has nothing to attack until a client is installed on the bytes it
+starts from. `TestDeltaBaselineTakesThePatch` is the control: on an honest repository
+the same client must patch both files and never fetch a full payload, or the whole
+class would pass on a client that quietly ignored every patch it was offered.
 
 ## How a case is built
 
