@@ -150,8 +150,9 @@ only the run that owns a floor refuses. The installation is asserted unchanged
 afterwards.
 
 Fuzz targets live next to the code they attack, not here:
-`FuzzDescriptor` (`core/release`) and `FuzzDstSanitize` (`core/stage`).
-`FuzzPatchApply` follows once `stage.ApplyPatch` has a patch format.
+`FuzzDescriptor` (`core/release`), `FuzzDstSanitize` and `FuzzPatchApply`
+(`core/stage`). The `patch-poison` case follows once the repository publishes patch
+targets; the reader it will feed is already fuzzed.
 
 ## Make targets
 

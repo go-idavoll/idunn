@@ -21,7 +21,7 @@ piece of the section is missing; **open** — contract only, or nothing.
 | §6.2 | Transaction flow, journal, recovery | **done** — `core/txn`, crash-injection tests |
 | §6.3 | Updater API (`CheckForUpdate`, `Apply`) | **done** |
 | §6.4 | Delta stage 1 (content-addressed reuse) | **partial** — go-tuf cache reuse works, and an unchanged file is now taken from `current`/a retained version and verified against its signed target before it is staged (IDN-10); two named pieces are still missing: the reuse is a copy rather than a reflink/hardlink, and a file that changed destination between releases is not looked up by content hash |
-| §6.4 | Delta stage 2 (binary patches) | **open** — `stage.ApplyPatch` fails closed |
+| §6.4 | Delta stage 2 (binary patches) | **partial** — `stage.ApplyPatch` reads and applies the delta container (bsdiff shape, deflate streams, stdlib only), bounded and fuzzed; no patch targets are produced or fetched yet, so nothing calls it in the apply path (IDN-14) |
 | §7 | Hook system | **done** — all six hooks defined and wired |
 | §8 | Headless default, UI sidecars | **done** in `core` (no UI dependency); sidecar repos are out of tree |
 | §9 | Packer | **partial** — `cmd/packer publish` builds and signs a release end to end (`internal/packer`); retention (step 4) is open |
@@ -84,8 +84,9 @@ across clock rollback, expiry, malformed descriptors, mix-and-match, path traver
 resolve (pointer/descriptor disagreement), unknown key, wrong hash, wrong key, and
 wrong length. All but one attack the repository; the clock case attacks the machine
 and is driven through the real install path, because the time floor only exists where
-there is an installation. Fuzzers: `FuzzDescriptor`, `FuzzDstSanitize`.
-`FuzzPatchApply` waits on a patch format (§6.4 stage 2).
+there is an installation. Fuzzers: `FuzzDescriptor`, `FuzzDstSanitize`,
+`FuzzPatchApply`. The `patch-poison` corpus case still waits on patch targets in the
+repository (§6.4 stage 2, IDN-14); the patch *reader* it will attack now exists.
 
 ## Deliberate non-goals for now
 

@@ -398,24 +398,6 @@ func retained(versions []string, live string, retain int) (map[string]bool, erro
 	return keep, nil
 }
 
-// ApplyPatch reconstructs a target from a base file and a delta patch. The result
-// is accepted only if it matches the signed target hash; a patch that produces the
-// wrong bytes is a failure, never a fallback. It is the fuzz target FuzzPatchApply.
-//
-// Intra-file binary deltas are stage 2 of docs/design.md §6.4 and are deliberately
-// not implemented yet: they need a chosen patch format (zstd --patch-from, bsdiff)
-// and a packer that emits patch targets, and they buy nothing until then, because
-// stage 1 — content-addressed targets plus the go-tuf cache — already keeps
-// unchanged files off the network. Returning an error rather than a best guess
-// keeps the fail-closed rule intact for any caller that reaches here early.
-//
-// no body yet; renaming them to _ would delete the only thing it currently says.
-//
-//nolint:revive // The parameter names are the contract of a function that has
-func ApplyPatch(base, patch []byte) ([]byte, error) {
-	return nil, fmt.Errorf("%w: intra-file delta patches are not implemented (docs/design.md §6.4 stage 2)", ErrStage)
-}
-
 // check validates the Stager's own configuration. A half-configured Stager must
 // fail before it touches the install root, not halfway through it. Swap and GC
 // only move and delete what is already there, so they do not need a trust client

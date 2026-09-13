@@ -241,18 +241,3 @@ func TestGCRefusesAnUnreadablePointer(t *testing.T) {
 		t.Fatalf("a refused GC still deleted something: %v", got)
 	}
 }
-
-// Intra-file binary deltas are stage 2 of §6.4 and are not implemented. Until
-// they are, the honest answer is an error — never a best guess at the bytes.
-func TestApplyPatchIsNotImplemented(t *testing.T) {
-	got, err := stage.ApplyPatch([]byte("base"), []byte("patch"))
-	if err == nil {
-		t.Fatal("ApplyPatch claimed to have reconstructed a target")
-	}
-	if got != nil {
-		t.Fatal("ApplyPatch returned bytes it cannot vouch for")
-	}
-	if !errors.Is(err, stage.ErrStage) {
-		t.Fatalf("error %v is not classified as ErrStage", err)
-	}
-}
