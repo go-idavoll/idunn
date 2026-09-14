@@ -46,17 +46,20 @@ could be changed by anyone else (the same judgement as an install root,
   "label": "com.acme.app.helper",
   "allowed_roots": ["/Library/Application Support/Acme"],
   "peer_requirement": "anchor apple generic and identifier \"com.acme.app\" and certificate leaf[subject.OU] = \"TEAMID1234\"",
-  "min_interval_seconds": 5
+  "min_interval_seconds": 5,
+  "macos_bundle_identifier": "com.acme.app"
 }
 ```
 
-- `label` — reverse-DNS, `[A-Za-z0-9.-]`, at most 64 bytes. It names the launchd job,
+- `label` — reverse-DNS, `[A-Za-z0-9.-]`, at most 62 bytes (so the macOS socket path stays within the kernel limit). It names the launchd job,
   the Windows service, the socket or pipe and the state directory.
 - `allowed_roots` — absolute install roots this helper maintains, per platform
   (a build carries the ones for the platform it is built for).
-- `peer_requirement` — macOS only, optional; ignored nowhere: set on another
-  platform it is refused.
-- `min_interval_seconds` — optional, default 5.
+- `peer_requirement` — macOS only, optional; set on another platform it is
+  refused at start rather than ignored.
+- `min_interval_seconds` — optional, 0 to 3600, default 5.
+- `macos_bundle_identifier` — macOS only: the app's `CFBundleIdentifier`, which
+  macOS shows as the daemon's owner under Login Items; required by `helper plist`.
 
 Unknown keys are refused.
 
@@ -70,7 +73,8 @@ Unknown keys are refused.
 ```
 
 POSIX takes `uids`, Windows takes `sids` (account SIDs only; groups are refused).
-Written with `helper allow`, never by hand in production.
+Written with `helper allow`, never by hand in production. A missing file means no
+caller but root or SYSTEM, and the helper restarts to pick up a change.
 
 ## 3. Paths
 
@@ -81,8 +85,20 @@ Written with `helper allow`, never by hand in production.
 | helper binary | `<App>.app/Contents/Library/HelperTools/<label>` | `/usr/libexec/<label>` | `%ProgramFiles%\<Product>\<label>.exe` |
 | registration | `<App>.app/Contents/Library/LaunchDaemons/<label>.plist` via `SMAppService` | systemd unit `<label>.service` | Windows service `<label>` |
 
-`elevate.DefaultHelperEndpoint(label)` returns the endpoint for the running
-platform, so the application and the helper agree without repeating the table.
+`elevate.DefaultHelperPaths(label)` returns the state dir and endpoint for the
+running platform, and `elevate.DefaultHelperEndpoint(label)` the endpoint alone, so
+the application and the helper agree without repeating the table. On Windows the
+Program Files folder comes from the shell's known-folder API, not from
+`%ProgramFiles%`, which a caller could set.
+
+The application side is then only:
+
+```go
+endpoint, err := elevate.DefaultHelperEndpoint("com.acme.app.helper")
+el, err := elevate.NewService(elevate.ServiceOptions{Endpoint: endpoint})
+opts.Elevator = el
+opts.Policy.Elevation = updater.ElevationService
+```
 
 ## 4. The `helper` verbs
 
@@ -104,8 +120,14 @@ code requirement on the command line.
 cp ceremony/1.root.json   cmd/helper/anchor/root.json
 cp release/repository.json cmd/helper/anchor/
 cp release/helper.json     cmd/helper/anchor/
-go build -trimpath -ldflags "-X main.version=1.3.0" -o dist/com.acme.app.helper ./cmd/helper
+go build -trimpath -ldflags "-X main.version=1.3.0 -X main.buildTime=$(git log -1 --format=%ct)" \
+  -o dist/com.acme.app.helper ./cmd/helper
+dist/com.acme.app.helper check   # on the target machine: exit 0 only if serve would start
 ```
+
+Under the Windows service control manager `helper serve` speaks the service
+protocol and logs to `<state dir>\helper.log`; under launchd and systemd it logs to
+stderr, which both collect.
 
 Then, per platform, `scripts/macos/`, `scripts/windows/` and `scripts/linux/` (see
 their READMEs).
