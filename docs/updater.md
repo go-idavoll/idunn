@@ -154,9 +154,11 @@ where its data lives.
   `QuiesceTimeout`.
 - Still busy ⇒ `Policy.OnBusy` decides:
   - `BusyAbort` — `ErrBusy`, retry later.
-  - `BusyDeferToRestart` — **today**: rolls back cleanly and returns `ErrDeferred`.
-    The design wants the staged tree kept and finished by the launcher at next start;
-    that needs a launcher and a resting journal state (backlog IDN-05, IDN-06).
+  - `BusyDeferToRestart` — keeps the staged tree in a resting `DEFERRED` journal
+    state and returns `ErrDeferred`; the launcher finishes it at the next start
+    (IDN-06). Recommended for a host whose running application updates itself, but
+    never the default: an unset `OnBusy` is `BusyAbort`, and `New` does not promote
+    it (IDN-21).
   - `BusyForce` — proceed without the proof of quiescence. Terminating processes is
     the host's business; the updater's part of "force" is to continue anyway. Opt-in,
     documented as a data-loss risk.

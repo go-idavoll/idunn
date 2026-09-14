@@ -436,9 +436,14 @@ helper leaves a staged update the unprivileged launcher cannot finish. Both need
 either a launcher that elevates for this (a prompt at start) or the service mode
 (IDN-07).
 
-### IDN-21 — Reconcile the `OnBusy` default with the design (§6.3, §14.3)
-`design.md` names `BusyDeferToRestart` the default and the recommended one; the code
-leaves the zero value `BusyAbort` in place, because Go's zero value must be the
-failing one and deferring does not work yet (IDN-06). Once it does, decide: either
-`New` promotes an unset `OnBusy` to `BusyDeferToRestart`, or the design text drops
-the claim. Today the two disagree.
+### IDN-21 — Reconcile the `OnBusy` default with the design (§6.3, §14.3) — **done**
+Decided the second way: the design text drops the claim, `New` promotes nothing, and
+`BusyAbort` stays the zero value. No API or behaviour change.
+
+Promoting an unset `OnBusy` to `BusyDeferToRestart` was the other option and is the
+worse one. Go cannot distinguish "left unset" from "deliberately chosen", so the
+promotion would turn a forgotten line of host configuration into a change of behaviour
+in the apply path — an update that quietly stays staged and lands at the next start, on
+a host that never asked for one. Deferral remains what §14.3 recommends to a host whose
+running application updates itself; a host that wants it says so.
+`TestUnsetOnBusyAbortsRatherThanDefers` (`core/updater`) pins the zero value.
