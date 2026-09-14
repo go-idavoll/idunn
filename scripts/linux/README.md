@@ -97,7 +97,7 @@ compiled-in `allowed_roots` before it does anything.
 
 `.github/workflows/helper-scripts.yml` runs shellcheck on these scripts,
 `systemd-analyze verify` on a rendered unit (failing on any unknown key), and on an
-ubuntu runner installs a real `cmd/helper` build with `--rw /opt/idunn-ci-root`,
+ubuntu runner installs a real `cmd/helper` build with `--rw /usr/local/idunn-ci-root` (not `/opt`: GitHub's runners ship `/opt` as `0777`, which `install.sh` and the helper both refuse),
 checks the service is active with its socket and `check` passes, allows a caller and
 restarts, checks the refusals, and uninstalls. It does not perform an update through
 the service: that needs a served repository and a client, and belongs to the e2e

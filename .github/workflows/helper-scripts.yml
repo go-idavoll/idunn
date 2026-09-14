@@ -324,7 +324,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
-      CI_ROOT: /opt/idunn-ci-root
+      CI_ROOT: /usr/local/idunn-ci-root
     steps:
       - uses: actions/checkout@v7
         with:
@@ -407,17 +407,17 @@ jobs:
             esac
           }
           sudo install -d -o root -g root -m 0755 "$CI_ROOT"
-          sudo install -d -o root -g root -m 0777 /opt/idunn-ci-weak
-          sudo install -d -o root -g root -m 0755 /opt/idunn-ci-other
+          sudo install -d -o root -g root -m 0777 /usr/local/idunn-ci-weak
+          sudo install -d -o root -g root -m 0755 /usr/local/idunn-ci-other
 
           refused "must run as root" scripts/linux/install.sh --helper "$helper" --label "$LABEL" --rw "$CI_ROOT"
           refused "not reverse-DNS" sudo scripts/linux/install.sh --helper "$helper" --label org_idunn --rw "$CI_ROOT"
           refused "longer than 62 bytes" sudo scripts/linux/install.sh --helper "$helper" \
             --label "a.$(printf '%061d' 0 | tr 0 b)" --rw "$CI_ROOT"
           refused "system or per-user tree" sudo scripts/linux/install.sh --helper "$helper" --label "$LABEL" --rw /tmp/idunn-ci
-          refused "writable by other users" sudo scripts/linux/install.sh --helper "$helper" --label "$LABEL" --rw /opt/idunn-ci-weak
+          refused "writable by other users" sudo scripts/linux/install.sh --helper "$helper" --label "$LABEL" --rw /usr/local/idunn-ci-weak
           refused "does not equal the helper's allowed_roots" sudo scripts/linux/install.sh --helper "$helper" \
-            --label "$LABEL" --rw "$CI_ROOT" /opt/idunn-ci-other
+            --label "$LABEL" --rw "$CI_ROOT" /usr/local/idunn-ci-other
           refused "built for label" sudo scripts/linux/install.sh --helper "$helper" --label org.idunn.ci.other --rw "$CI_ROOT"
 
           for p in "/usr/libexec/$LABEL" "/etc/systemd/system/$LABEL.service" /usr/libexec/org.idunn.ci.other; do
@@ -426,7 +426,7 @@ jobs:
           if sudo find /usr/libexec /etc/systemd/system -maxdepth 1 -name '.org.idunn.ci.*' | grep .; then
             echo "a refused install left a temporary file behind"; exit 1
           fi
-          sudo rmdir /opt/idunn-ci-weak /opt/idunn-ci-other
+          sudo rmdir /usr/local/idunn-ci-weak /usr/local/idunn-ci-other
 
       - name: Install, exercise, uninstall the service
         run: |
