@@ -155,6 +155,9 @@ func TestNewRequiresItsInputs(t *testing.T) {
 		{"empty root", func(o *trust.Options) { o.Root = []byte{} }, "no embedded root metadata"},
 		{"no metadata URL", func(o *trust.Options) { o.MetadataURL = "" }, "no metadata URL"},
 		{"no local dir", func(o *trust.Options) { o.LocalDir = "" }, "no local directory"},
+		// A negative ceiling has no sensible reading: neither "no limit" nor
+		// "refuse everything" is what anyone meant, so it is not guessed at.
+		{"negative target ceiling", func(o *trust.Options) { o.MaxTargetBytes = -1 }, "MaxTargetBytes"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -802,5 +805,147 @@ func TestRefreshAgainstAnUnreachableRepositoryFails(t *testing.T) {
 	}
 	if err := c.Refresh(); !errors.Is(err, trust.ErrTrust) {
 		t.Fatalf("err = %v, want ErrTrust", err)
+	}
+}
+
+// --- the target ceiling (IDN-12) ------------------------------------------
+
+// withCeiling points a fresh client at the fixture's repository with the given
+// target ceiling, over localDir, and refreshes it.
+func (f *fixture) withCeiling(t *testing.T, maxTarget int64, localDir string) *trust.Client {
+	t.Helper()
+	c, err := trust.New(trust.Options{
+		Root:           f.build.RootBytes,
+		MetadataURL:    f.srv.MetadataURL(),
+		TargetsURL:     f.srv.TargetsURL(),
+		LocalDir:       localDir,
+		MaxTargetBytes: maxTarget,
+		Now:            func() time.Time { return f.refTime },
+	})
+	if err != nil {
+		t.Fatalf("trust.New: %v", err)
+	}
+	c.UnsafeSetRefTime(f.refTime)
+	if err := c.Refresh(); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	return c
+}
+
+// A target whose signed length is above the ceiling is refused before a byte of
+// it is requested.
+//
+// go-tuf hands a target over as one []byte, so the signed length is also the
+// allocation about to happen. A repository is untrusted input even when it is
+// correctly signed, and an unbounded allocation from it is an OOM kill with no
+// diagnosis. One byte under the target's length is the tightest ceiling that
+// must refuse, so an off-by-one in the comparison fails here.
+func TestATargetAboveTheCeilingIsRefusedBeforeItIsFetched(t *testing.T) {
+	f := newFixture(t, nil)
+	target := f.build.DescriptorTarget()
+	size := int64(len(f.build.DescriptorRaw))
+	work := t.TempDir()
+	c := f.withCeiling(t, size-1, work)
+
+	_, err := c.Target(target)
+	if !errors.Is(err, trust.ErrTrust) {
+		t.Fatalf("err = %v, want ErrTrust", err)
+	}
+	// The refusal has to say what to do about it, or an operator with a
+	// legitimately large release has an unexplained failure.
+	if !strings.Contains(err.Error(), "MaxTargetBytes") {
+		t.Errorf("the refusal does not name the option to raise: %v", err)
+	}
+	// A refusal that downloads first has saved nothing.
+	if f.srv.Fetched(target) {
+		t.Error("the target was requested before it was refused")
+	}
+	entries, err := os.ReadDir(filepath.Join(work, "targets"))
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("the refused target left %d files in the cache", len(entries))
+	}
+}
+
+// A ceiling exactly at the signed length is not above it: the guard cannot be
+// the reason an honest repository stops working. It is also what keeps the test
+// above from passing vacuously — the same fixture, fetched, is observed.
+func TestATargetAtTheCeilingIsFetched(t *testing.T) {
+	f := newFixture(t, nil)
+	target := f.build.DescriptorTarget()
+	size := int64(len(f.build.DescriptorRaw))
+	c := f.withCeiling(t, size, t.TempDir())
+
+	raw, err := c.Target(target)
+	if err != nil {
+		t.Fatalf("Target: %v", err)
+	}
+	if int64(len(raw)) != size {
+		t.Errorf("got %d bytes, want %d", len(raw), size)
+	}
+	if !f.srv.Fetched(target) {
+		t.Error("the target was not fetched, so the refusal test proves nothing")
+	}
+}
+
+// The go-tuf cache is a second way a target's bytes come in, and reading it is
+// the same allocation as downloading. A target cached by a client with room for
+// it is still refused by one without, over the same local directory.
+func TestACachedTargetAboveTheCeilingIsRefused(t *testing.T) {
+	f := refreshed(t, nil)
+	target := f.build.DescriptorTarget()
+	if _, err := f.client.Target(target); err != nil {
+		t.Fatalf("Target: %v", err)
+	}
+
+	c := f.withCeiling(t, int64(len(f.build.DescriptorRaw))-1, f.workDir)
+	if _, err := c.Target(target); !errors.Is(err, trust.ErrTrust) {
+		t.Fatalf("err = %v, want ErrTrust", err)
+	}
+}
+
+// Reuse and patching read beside go-tuf, and size those reads by TargetLength;
+// their bytes are admitted by VerifyTarget. Both answer from the same ceiling,
+// so neither path can be talked into an allocation a download would refuse —
+// not even with the exact signed bytes in hand.
+func TestTheReuseSurfaceRespectsTheCeiling(t *testing.T) {
+	f := newFixture(t, nil)
+	target := f.build.DescriptorTarget()
+	signed := f.build.DescriptorRaw
+	c := f.withCeiling(t, int64(len(signed))-1, t.TempDir())
+
+	if _, err := c.TargetLength(target); !errors.Is(err, trust.ErrTrust) {
+		t.Errorf("TargetLength: err = %v, want ErrTrust", err)
+	}
+	if err := c.VerifyTarget(target, signed); !errors.Is(err, trust.ErrTrust) {
+		t.Errorf("VerifyTarget: err = %v, want ErrTrust", err)
+	}
+	if f.srv.Fetched(target) {
+		t.Error("the target was requested")
+	}
+
+	// At the ceiling, both answer as they always did.
+	c = f.withCeiling(t, int64(len(signed)), t.TempDir())
+	if got, err := c.TargetLength(target); err != nil || got != int64(len(signed)) {
+		t.Errorf("TargetLength at the ceiling = %d, %v; want %d", got, err, len(signed))
+	}
+	if err := c.VerifyTarget(target, signed); err != nil {
+		t.Errorf("VerifyTarget at the ceiling: %v", err)
+	}
+}
+
+// Resolving a release goes through the same door: a channel pointer above the
+// ceiling is refused before it is requested, and nothing is resolved.
+func TestLatestReleaseRespectsTheCeiling(t *testing.T) {
+	f := newFixture(t, nil)
+	c := f.withCeiling(t, int64(len(f.build.PointerRaw))-1, t.TempDir())
+
+	if _, err := c.LatestRelease(testChannel, testOS, testArch); !errors.Is(err, trust.ErrTrust) {
+		t.Fatalf("err = %v, want ErrTrust", err)
+	}
+	if f.srv.Fetched(f.build.PointerTarget()) {
+		t.Error("the channel pointer was requested before it was refused")
 	}
 }

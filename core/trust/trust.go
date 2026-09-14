@@ -83,14 +83,38 @@ type Options struct {
 	// Now is the injected clock. Tests drive expiry and clock-skew cases through
 	// UnsafeSetRefTime rather than the real clock (AGENTS.md §4).
 	Now func() time.Time
+
+	// MaxTargetBytes is the largest signed length this client accepts for any
+	// one target. Zero selects DefaultMaxTargetBytes; a negative value is
+	// refused by New rather than guessed at.
+	//
+	// It exists because go-tuf hands a target over as one []byte (see Target),
+	// so the signed length is also the allocation this process is about to
+	// make — and the same length sizes the reads that reuse and patching do
+	// beside it. A repository is untrusted input even when it is correctly
+	// signed: a compromised publisher, or a mistake in a build pipeline, can put
+	// a length in targets metadata that no client can hold. Refusing it with a
+	// typed error is the fail-closed answer to what would otherwise be an OOM
+	// kill with no diagnosis (AGENTS.md §1.1).
+	//
+	// The ceiling can only refuse. Whatever it lets through is still verified by
+	// go-tuf exactly as before; it adds no check of its own on the bytes.
+	MaxTargetBytes int64
 }
+
+// DefaultMaxTargetBytes is the ceiling on one target when Options leaves
+// MaxTargetBytes unset. It is generous on purpose — a guard against the absurd,
+// not a policy about release size — and a host that ships larger payloads
+// raises it deliberately.
+const DefaultMaxTargetBytes = 2 << 30 // 2 GiB
 
 // Client is the narrow trust surface the rest of core sees. It exposes only
 // Refresh, LatestRelease and MaterializeTarget so no TUF detail leaks outward.
 type Client struct {
-	up  *tufupdater.Updater
-	cfg *tufconfig.UpdaterConfig
-	now func() time.Time
+	up        *tufupdater.Updater
+	cfg       *tufconfig.UpdaterConfig
+	now       func() time.Time
+	maxTarget int64
 }
 
 // New creates a Client from the embedded root metadata. It does not touch the
@@ -104,6 +128,13 @@ func New(o Options) (*Client, error) {
 	}
 	if o.LocalDir == "" {
 		return nil, fmt.Errorf("%w: no local directory", ErrTrust)
+	}
+	maxTarget := o.MaxTargetBytes
+	switch {
+	case maxTarget < 0:
+		return nil, fmt.Errorf("%w: MaxTargetBytes %d is negative", ErrTrust, maxTarget)
+	case maxTarget == 0:
+		maxTarget = DefaultMaxTargetBytes
 	}
 
 	cfg, err := tufconfig.New(o.MetadataURL, o.Root)
@@ -131,7 +162,7 @@ func New(o Options) (*Client, error) {
 	if now == nil {
 		now = time.Now
 	}
-	return &Client{up: up, cfg: cfg, now: now}, nil
+	return &Client{up: up, cfg: cfg, now: now, maxTarget: maxTarget}, nil
 }
 
 // Now returns the current time from the injected clock. Callers use this instead
@@ -203,9 +234,17 @@ func (c *Client) LatestRelease(channel, goos, goarch string) (*release.Descripto
 // put file placement inside the package that is supposed to answer only "which
 // bytes may I trust?".
 //
-// TODO(stage): large payload targets are held whole in memory here, because
-// go-tuf's DownloadTarget returns a byte slice. Streaming needs a fetcher that
-// exposes the response body; the verification story is unchanged either way.
+// A target is held whole in memory, and at go-tuf v2.4.2 that is structural
+// rather than a shortcut taken here: fetcher.Fetcher is
+//
+//	DownloadFile(urlPath string, maxLength int64, _ time.Duration) ([]byte, error)
+//
+// and Updater.DownloadTarget verifies with VerifyLengthHashes over the complete
+// slice. Streaming would need that contract to expose the response body, and
+// building a second download-and-verify path beside go-tuf to get it is exactly
+// what AGENTS.md §1.2 forbids. What is in this package's hands is the ceiling:
+// a target above Options.MaxTargetBytes is refused before it is requested. See
+// backlog IDN-12.
 func (c *Client) Target(targetPath string) ([]byte, error) {
 	return c.target(targetPath)
 }
@@ -217,10 +256,14 @@ func (c *Client) Target(targetPath string) ([]byte, error) {
 // which for a several-hundred-megabyte payload is the difference between one
 // stat and one full read. A length is not an authentication; whatever survives
 // this still goes through VerifyTarget.
+//
+// It is also the size every read beside go-tuf is bounded by — a reuse
+// candidate, a patch base, a patch's output — so a length above the ceiling is
+// refused here too, not handed out for someone to allocate.
 func (c *Client) TargetLength(targetPath string) (int64, error) {
-	info, err := c.up.GetTargetInfo(targetPath)
+	info, err := c.targetInfo(targetPath)
 	if err != nil {
-		return 0, fmt.Errorf("%w: target %q: %w", ErrTrust, targetPath, err)
+		return 0, err
 	}
 	return info.Length, nil
 }
@@ -235,9 +278,9 @@ func (c *Client) TargetLength(targetPath string) (int64, error) {
 // outside this package ever sees a signed hash, so nothing outside it can
 // compare against one leniently.
 func (c *Client) VerifyTarget(targetPath string, data []byte) error {
-	info, err := c.up.GetTargetInfo(targetPath)
+	info, err := c.targetInfo(targetPath)
 	if err != nil {
-		return fmt.Errorf("%w: target %q: %w", ErrTrust, targetPath, err)
+		return err
 	}
 	if err := info.VerifyLengthHashes(data); err != nil {
 		return fmt.Errorf("%w: target %q: %w", ErrTrust, targetPath, err)
@@ -391,9 +434,9 @@ func (c *Client) MaterializeTarget(targetPath, dst string) error {
 // go-tuf checks the signed hash and length in both paths; nothing here decides
 // whether bytes are acceptable.
 func (c *Client) target(targetPath string) ([]byte, error) {
-	info, err := c.up.GetTargetInfo(targetPath)
+	info, err := c.targetInfo(targetPath)
 	if err != nil {
-		return nil, fmt.Errorf("%w: target %q: %w", ErrTrust, targetPath, err)
+		return nil, err
 	}
 	if _, raw, err := c.up.FindCachedTarget(info, ""); err == nil && raw != nil {
 		return raw, nil
@@ -403,6 +446,28 @@ func (c *Client) target(targetPath string) ([]byte, error) {
 		return nil, fmt.Errorf("%w: download %q: %w", ErrTrust, targetPath, err)
 	}
 	return raw, nil
+}
+
+// targetInfo returns the signed description of one target, refusing a target
+// whose signed length is above the ceiling.
+//
+// Every way a target's bytes come into this process starts here — a download or
+// a cache read in target, and the reads that reuse and patching size by
+// TargetLength — so the ceiling is checked once, before any of them has
+// requested or read a byte. Refusing here costs a request that would have failed
+// anyway; refusing later costs the memory. The check narrows what go-tuf may be
+// asked for and nothing else: it never admits bytes, it only declines to fetch
+// them.
+func (c *Client) targetInfo(targetPath string) (*metadata.TargetFiles, error) {
+	info, err := c.up.GetTargetInfo(targetPath)
+	if err != nil {
+		return nil, fmt.Errorf("%w: target %q: %w", ErrTrust, targetPath, err)
+	}
+	if info.Length > c.maxTarget {
+		return nil, fmt.Errorf("%w: target %q is %d bytes, above the %d-byte ceiling (raise Options.MaxTargetBytes)",
+			ErrTrust, targetPath, info.Length, c.maxTarget)
+	}
+	return info, nil
 }
 
 // UnsafeSetRefTime pins the reference time used for expiry checks. TEST ONLY —

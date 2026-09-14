@@ -40,15 +40,30 @@ type targets struct {
 	// available: a trust client that cannot answer the cheap question must
 	// cost the update its reuse, not its success.
 	lenErr map[string]error
-	asked  []string
+	// ceiling, when positive, is the trust client's target ceiling
+	// (trust.Options.MaxTargetBytes): every method refuses a target longer
+	// than it, as the real client does before it fetches or reads anything.
+	ceiling int64
+	asked   []string
 }
 
 func newTargets(files map[string][]byte) *targets {
 	return &targets{files: files, fail: map[string]error{}, lenErr: map[string]error{}}
 }
 
+// aboveCeiling is the fake's version of the trust client's refusal.
+func (t *targets) aboveCeiling(path string) error {
+	if data, ok := t.files[path]; ok && t.ceiling > 0 && int64(len(data)) > t.ceiling {
+		return errors.New("target above the ceiling: " + path)
+	}
+	return nil
+}
+
 func (t *targets) Target(path string) ([]byte, error) {
 	t.asked = append(t.asked, path)
+	if err := t.aboveCeiling(path); err != nil {
+		return nil, err
+	}
 	if err := t.fail[path]; err != nil {
 		return nil, err
 	}
@@ -67,6 +82,9 @@ func (t *targets) TargetLength(path string) (int64, error) {
 	if err := t.lenErr[path]; err != nil {
 		return 0, err
 	}
+	if err := t.aboveCeiling(path); err != nil {
+		return 0, err
+	}
 	data, ok := t.files[path]
 	if !ok {
 		return 0, errors.New("no such target: " + path)
@@ -75,6 +93,9 @@ func (t *targets) TargetLength(path string) (int64, error) {
 }
 
 func (t *targets) VerifyTarget(path string, data []byte) error {
+	if err := t.aboveCeiling(path); err != nil {
+		return err
+	}
 	want, ok := t.files[path]
 	if !ok {
 		return errors.New("no such target: " + path)
