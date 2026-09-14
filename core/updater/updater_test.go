@@ -334,10 +334,12 @@ func TestApplyRoutesThroughTheElevator(t *testing.T) {
 	f.opts.Elevator = el
 	f.opts.Policy.Elevation = updater.ElevationService
 
-	// The elevated helper does the swap; here it only records the request, so
-	// the pointer stays where it was and the transaction rolls back. What is
-	// asserted is the delegation itself.
-	_ = f.run()
+	// The elevated helper runs the transaction; here it only records the
+	// request, so nothing is installed and the updater must say so rather than
+	// take the helper's exit status for an installed version.
+	if err := f.run(); !errors.Is(err, elevate.ErrHelper) {
+		t.Fatalf("Apply() through a helper that installed nothing = %v, want ErrHelper", err)
+	}
 	if el.calls != 1 {
 		t.Fatalf("the elevator was called %d times, want once", el.calls)
 	}

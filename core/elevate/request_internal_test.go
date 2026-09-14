@@ -59,6 +59,9 @@ func TestNewRequestAcceptsAWellFormedApply(t *testing.T) {
 		if req.Root != root || req.Channel != "stable" || req.Version != "1.4.2-rc.1+build.7" {
 			t.Fatalf("newRequest(%q) = %+v, want the inputs carried through", root, req)
 		}
+		if got, err := ParseRequest(req.Root, req.Channel, req.Version); err != nil || got != req {
+			t.Fatalf("ParseRequest(%+v) = %+v, %v, want the same request back", req, got, err)
+		}
 	}
 }
 
@@ -107,6 +110,11 @@ func TestNewRequestRejects(t *testing.T) {
 			t.Parallel()
 			if _, err := newRequest(tc.root, descriptor(tc.channel, tc.version)); !errors.Is(err, ErrRequest) {
 				t.Fatalf("newRequest(%q, %q, %q) = %v, want ErrRequest", tc.root, tc.channel, tc.version, err)
+			}
+			// The helper applies the same grammar to what it receives: a value
+			// the sender refuses is not one a hostile caller can hand it directly.
+			if _, err := ParseRequest(tc.root, tc.channel, tc.version); !errors.Is(err, ErrRequest) {
+				t.Fatalf("ParseRequest(%q, %q, %q) = %v, want ErrRequest", tc.root, tc.channel, tc.version, err)
 			}
 		})
 	}
@@ -178,5 +186,21 @@ func TestCheckHelperPathRejects(t *testing.T) {
 				t.Fatalf("checkHelperPath(%q) = %v, want ErrRequest", tc.path, err)
 			}
 		})
+	}
+}
+
+// The helper's cache lives in the install root's own metadata directory — never in
+// a directory an unprivileged user can write (§14.8, T23).
+func TestPrivilegedCacheDirIsInsideTheRoot(t *testing.T) {
+	t.Parallel()
+
+	root := filepath.Join(string(filepath.Separator)+"opt", "demo")
+	got := PrivilegedCacheDir(root)
+	rel, err := filepath.Rel(root, got)
+	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+		t.Fatalf("PrivilegedCacheDir(%q) = %q, want a directory inside the root", root, got)
+	}
+	if rel != filepath.Join(".updater", "tuf") {
+		t.Fatalf("PrivilegedCacheDir(%q) = %q, want <root>/.updater/tuf", root, got)
 	}
 }

@@ -20,6 +20,7 @@ import (
 	"io/fs"
 	"net"
 
+	"github.com/go-idavoll/idunn/core/elevate"
 	"github.com/go-idavoll/idunn/core/stage"
 	"github.com/go-idavoll/idunn/core/timefloor"
 	"github.com/go-idavoll/idunn/core/trust"
@@ -92,6 +93,7 @@ const (
 	classDisk       = "disk"
 	classPermission = "permission"
 	classConfig     = "config"
+	classElevation  = "elevation"
 	classUnknown    = "unknown"
 )
 
@@ -114,7 +116,7 @@ func classify(err error) string {
 		return classClockSkew
 	case errors.As(err, &netErr):
 		return classNetwork
-	case errors.Is(err, ErrDeclined):
+	case errors.Is(err, ErrDeclined), errors.Is(err, elevate.ErrDeclined):
 		return classDeclined
 	case errors.Is(err, ErrDeferred), errors.Is(err, ErrBusy):
 		return classBusy
@@ -126,6 +128,9 @@ func classify(err error) string {
 		return classPolicy
 	case errors.Is(err, ErrConfig):
 		return classConfig
+	case errors.Is(err, elevate.ErrHelper), errors.Is(err, elevate.ErrRequest),
+		errors.Is(err, elevate.ErrNotImplemented):
+		return classElevation
 	case errors.Is(err, ErrVerify), errors.Is(err, trust.ErrTrust):
 		return classVerify
 	case errors.Is(err, trust.ErrResolve):

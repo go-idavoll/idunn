@@ -341,8 +341,15 @@ func (u *Updater) CheckForUpdate(ctx context.Context) (*Release, error) {
 	}
 	// The refresh succeeded, so this machine has been at this local time with a
 	// repository it trusts answering. That is the new floor.
-	if err := u.floor.Observe(u.now()); err != nil {
-		return nil, u.checkFailed(err)
+	//
+	// Not from a process that elevates to write the root: the floor lives in the
+	// root, and this process may not write there. That is not a check skipped —
+	// the floor was still enforced above — only a record left to the helper,
+	// whose own refresh raises it before any update it installs.
+	if u.policy.Elevation == ElevationNone {
+		if err := u.floor.Observe(u.now()); err != nil {
+			return nil, u.checkFailed(err)
+		}
 	}
 	d, err := u.trust.LatestRelease(u.channel, u.goos, u.goarch)
 	if err != nil {

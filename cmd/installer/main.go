@@ -60,6 +60,7 @@ const (
 	exitRefused    = 3 // an install exists that this installer must not touch.
 	exitDeclined   = 4 // the user dismissed the elevation prompt.
 	exitPrivileges = 5 // the install root needs privileges this process cannot get.
+	exitUnsafeRoot = 6 // the install root is not administrators-only; no elevation for it.
 )
 
 // defaultChannel is what an install follows when neither the build nor the flags
@@ -138,8 +139,9 @@ Exit codes:
   %d  refused: an install exists that this installer must not touch
   %d  the elevation prompt was declined
   %d  the install root needs privileges this process cannot obtain
+  %d  the install root is not administrators-only, so it is not elevated for
 
-`, defaultChannel, exitOK, exitError, exitUsage, exitRefused, exitDeclined, exitPrivileges)
+`, defaultChannel, exitOK, exitError, exitUsage, exitRefused, exitDeclined, exitPrivileges, exitUnsafeRoot)
 }
 
 // installVerb is the ordinary, unprivileged entry point.
@@ -225,11 +227,28 @@ func applyHelper(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	// The same grammar the sender enforced, enforced again: this process does
+	// not know who started it or with what. And the root has to be one nobody
+	// but an administrator controls, or writing it as one hands that control
+	// to whoever does (IDN-22).
+	req, err := elevate.AcceptRequest(*root, *channel, *version)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "idunn installer: %v\n", err)
+		if errors.Is(err, elevate.ErrUnsafeRoot) {
+			return exitUnsafeRoot
+		}
+		return exitUsage
+	}
+
 	cfg, code := buildConfig(config{
-		root:    *root,
-		channel: *channel,
-		version: *version,
-		quiet:   true,
+		root:    req.Root,
+		channel: req.Channel,
+		version: req.Version,
+		// Never the invoking user's cache: a directory they can write, read and
+		// written by a process running as administrator, is the junction attack
+		// of §14.8 (T23).
+		cache: elevate.PrivilegedCacheDir(req.Root),
+		quiet: true,
 		// Already privileged: elevating again would be a loop, and there is
 		// nothing left to ask for.
 		elevate: false,
@@ -448,6 +467,13 @@ func wireElevation(o *installer.Options, c config) (int, error) {
 	if !a.hasRoot() || a.repo.MetadataURL == "" {
 		return exitPrivileges, fmt.Errorf("%s needs privileges, and this build embeds no trust anchor to "+
 			"re-verify with once elevated; re-run with those privileges instead", c.root)
+	}
+	// The helper will refuse a root that someone other than an administrator
+	// controls. Refusing it here as well spares the user a consent prompt for an
+	// install that cannot happen.
+	if err := elevate.CheckPrivilegedRoot(c.root); err != nil {
+		return exitUnsafeRoot, fmt.Errorf("%s needs privileges, and it is not a directory only administrators "+
+			"control, so it will not be written with them: %w", c.root, err)
 	}
 	// Where the prompt is not built yet, newInteractive always answers with
 	// ErrNotImplemented, so staticcheck is right that this comparison is always

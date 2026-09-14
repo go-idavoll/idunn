@@ -57,6 +57,9 @@ const (
 	StateName    = "state.json"
 	ClockName    = "clock.json"
 	StagingName  = "staging"
+
+	// TrustCacheName is the privileged helper's TUF cache (elevate.PrivilegedCacheDir).
+	TrustCacheName = "tuf"
 )
 
 // ErrLayout is the class of every rejection in this package: a root that is not

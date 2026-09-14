@@ -30,7 +30,7 @@ piece of the section is missing; **open** — contract only, or nothing.
 | §12 | Test concept | **partial** — see coverage below; no mutation testing, one fuzz target missing |
 | §13 | Cross-platform specifics | **partial** — layout, elevation and the launcher hand-over are per-OS; no `MoveFileEx` self-update of the launcher itself (IDN-17) |
 | §14.1 | GC / retention | **done** — `stage.GC`, soft-fails on locked dirs |
-| §14.2 | Elevation | **partial** — Windows `ElevationInteractive` done, and `cmd/installer apply` is the privileged helper it launches; `ElevationService` fails closed everywhere; POSIX interactive (`pkexec`, Authorization Services) not built |
+| §14.2 | Elevation | **partial** — Windows `ElevationInteractive` done for installs and updates: the unprivileged side writes nothing under the root, the helper (`cmd/installer apply`, or a host verb on `Updater.ApplyRequested`) re-resolves and runs the transaction; tested end to end through real UAC prompts (`elevated` e2e scenario). `ElevationService` fails closed everywhere; POSIX interactive (`pkexec`, Authorization Services) not built; the helper refuses a root anyone but an administrator controls (IDN-22); recovery and deferral in a system root are open (IDN-23) |
 | §14.3 | Quiesce, app lock, `OnBusy` | **done** — lock + coordinator + all three policies; `BusyDeferToRestart` keeps the staged tree in a resting `DEFERRED` journal state and the launcher finishes it at the next start. The design calls it the recommended default and the code leaves `BusyAbort` as the zero value (IDN-21) |
 | §14.4 | Enterprise proxy / CA | **partial** — system trust store + `ExtraCAs` + env proxy, now under test; no PAC/WPAD resolution, no ranged resume, no mTLS |
 | §14.5 | Telemetry + staged rollout | **done** — `Reporter` with a closed error-class vocabulary; local rollout bucketing |
@@ -54,7 +54,11 @@ Not yet enforced:
 
 - **T16, T23** (LPE via the helper, cache TOCTOU) — the helper service does not exist;
   `NewService` fails closed. The Windows interactive path enforces its half: three
-  validated scalars cross the boundary, nothing else.
+  validated scalars cross the boundary, nothing else; the helper validates them
+  again, resolves the channel head itself and refuses any other version, and keeps
+  its TUF cache inside the root rather than in the user's. It refuses a
+  caller-chosen root that anyone but an administrator could change — owner, ACL,
+  inheritable ACEs, reparse points, drive kind (IDN-22).
 - **T18** (enterprise DPI) — tolerated by design, but PAC and resumable downloads are
   missing, so the *availability* half is incomplete.
 
@@ -109,7 +113,11 @@ with 1.0.0 left untouched. Every step is attested — exit code, installed and r
 version, version directories, last journal record, staging — into a JSON report per
 job, merged into one matrix by the summary job. TUF paths are mapped onto flat asset
 names by `test/e2e/ghfetch`. `E2E_MODE=local` runs the same script against a local
-server.
+server. A fourth scenario, `elevated`, is Windows-only and interactive and therefore
+not in CI: it installs 1.0.0 into `%ProgramFiles%` and updates to 1.1.0 through
+real UAC prompts, checks that the check in between needs none, and refuses a
+user-owned root twice — before the prompt, and in the helper started elevated by a
+hostile caller.
 
 ## Deliberate non-goals for now
 

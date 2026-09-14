@@ -240,6 +240,34 @@ Left explicitly open in the design. Functional names are canonical in code today
 which is the recommended middle path; the decision is whether mythological names are
 adopted as branding. Closing it costs nothing and removes a recurring question.
 
+### IDN-22 — The elevated helper vets the install root it is asked to write (§14.2, T16) — **done**
+The root is one of the three scalars, and the caller chooses it. A helper running as
+administrator that writes into a directory a non-administrator can modify can be
+redirected by a junction planted between two of its operations. `elevate.AcceptRequest`
+is what a helper calls first: the request grammar, then `CheckPrivilegedRoot`, which
+refuses — before anything is written — a root that is a network path or on anything
+but a fixed local disk (a SUBST drive included); any path component that is a
+reparse point; an owner other than SYSTEM, Administrators or TrustedInstaller on the
+root, its ancestors, or what a helper writes in an existing root; an ancestor that
+grants anyone else delete, `FILE_DELETE_CHILD`, `WRITE_DAC` or `WRITE_OWNER`; and a
+root (or the directory it will be created in) that grants anyone else a right to
+create, delete or re-permission — including rights they would only inherit. Callers
+run the same check before the prompt. POSIX judges owner and mode bits the same way;
+POSIX ACLs are not read.
+
+A group other than those three — a domain group of operators — is refused too; the
+check cannot tell a trusted group from another. Contents of version directories below
+their top level are not examined: the helper never writes into an existing one and
+verifies every byte it reuses.
+
+### IDN-23 — Recovery and deferral for system-wide installs (§14.2, §14.3)
+An interrupted transaction in a root the launcher cannot write can only be recovered
+by the elevated helper, and today nothing starts one for that: the launcher reports
+the failed recovery and starts the application. Likewise `BusyDeferToRestart` in the
+helper leaves a staged update the unprivileged launcher cannot finish. Both need
+either a launcher that elevates for this (a prompt at start) or the service mode
+(IDN-07).
+
 ### IDN-21 — Reconcile the `OnBusy` default with the design (§6.3, §14.3)
 `design.md` names `BusyDeferToRestart` the default and the recommended one; the code
 leaves the zero value `BusyAbort` in place, because Go's zero value must be the
