@@ -66,3 +66,6 @@ Thumbs.db
 # the one file that must not be shippable by accident. See the README there and
 # TestThisTreeEmbedsNoAnchor, which fails if one is committed anyway.
 cmd/installer/anchor/*.json
+
+# The e2e test app's trust anchor, generated per run by test/e2e/run.sh.
+test/e2e/cmd/e2eapp/anchor/root.json

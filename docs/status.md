@@ -97,6 +97,14 @@ patches an honest repository rather than downloading it.
 
 Fuzzers: `FuzzDescriptor`, `FuzzDstSanitize`, `FuzzPatchApply`.
 
+The real-world update test (`test/e2e/run.sh`, workflow `E2E update` on every push to
+`main`, on Linux, Windows and macOS) is the one test with nothing in process: it
+publishes a host application with `cmd/packer` as the assets of a GitHub release in
+the sandbox repository `go-idavoll/idunn-e2e`, installs it from github.com, publishes
+the next version into the same release, and has the installed application update
+itself headlessly through `cmd/launcher`. TUF paths are mapped onto flat asset names
+by `test/e2e/ghfetch`. `E2E_MODE=local` runs the same script against a local server.
+
 ## Deliberate non-goals for now
 
 These are open in the design and stay open on purpose, not by oversight: TAP-4
