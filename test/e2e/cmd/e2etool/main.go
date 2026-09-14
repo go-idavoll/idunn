@@ -19,6 +19,8 @@
 //	flatten         copy a TUF repository tree to flat release asset names
 //	wait-asset      poll a URL until it serves the bytes of a local file
 //	serve           serve flat assets locally, for a run without GitHub
+//	report          turn one run's recorded cases into JSON and Markdown
+//	summary         merge the reports of every job into one matrix
 //
 // None of it is product code. The keys it generates live for one CI job and are
 // trusted by nothing but the client built in that job.
@@ -58,7 +60,7 @@ func main() {
 
 func run(args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("usage: e2etool init-repo|flatten|wait-asset|serve [flags]")
+		return errors.New("usage: e2etool init-repo|flatten|wait-asset|serve|report|summary [flags]")
 	}
 	switch args[0] {
 	case "init-repo":
@@ -69,6 +71,10 @@ func run(args []string, stdout io.Writer) error {
 		return waitAsset(args[1:])
 	case "serve":
 		return serve(args[1:])
+	case "report":
+		return report(args[1:], stdout)
+	case "summary":
+		return summary(args[1:], stdout)
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}

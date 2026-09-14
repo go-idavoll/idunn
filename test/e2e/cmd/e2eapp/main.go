@@ -20,6 +20,11 @@
 //	e2eapp version                 print the version this binary was built as
 //	e2eapp install --root <dir>    first install from the release
 //	e2eapp update  --root <dir>    check and apply an update, no prompts
+//	e2eapp status  --root <dir>    print the install state the test attests
+//
+// Exit codes: 0 ok, 1 error, 2 usage, 3 refused by update policy (a downgrade,
+// a migration floor, a client too old). A refusal is kept apart from an error
+// so a test that expects one cannot pass on a network failure.
 //
 // Build-time configuration, all through the linker:
 //
@@ -37,8 +42,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/go-idavoll/idunn/core/fetch"
@@ -46,7 +54,9 @@ import (
 	"github.com/go-idavoll/idunn/core/hook"
 	"github.com/go-idavoll/idunn/core/installer"
 	"github.com/go-idavoll/idunn/core/trust"
+	"github.com/go-idavoll/idunn/core/txn"
 	"github.com/go-idavoll/idunn/core/updater"
+	"github.com/go-idavoll/idunn/internal/layout"
 	"github.com/go-idavoll/idunn/test/e2e/ghfetch"
 )
 
@@ -70,7 +80,7 @@ func main() {
 
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: e2eapp version|install|update [--root dir]")
+		_, _ = fmt.Fprintln(stderr, "usage: e2eapp version|install|update|status [--root dir]")
 		return 2
 	}
 	var err error
@@ -81,27 +91,37 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = withRoot(args[1:], stdout, doInstall)
 	case "update":
 		err = withRoot(args[1:], stdout, doUpdate)
+	case "status":
+		err = status(args[1:], stdout)
 	default:
 		_, _ = fmt.Fprintf(stderr, "e2eapp: unknown command %q\n", args[0])
 		return 2
 	}
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "e2eapp: %v\n", err)
+		if errors.Is(err, updater.ErrPolicy) {
+			return 3
+		}
 		return 1
 	}
 	return 0
 }
 
-func withRoot(args []string, stdout io.Writer, verb func(context.Context, updater.Options, io.Writer) error) error {
+// rootFlag parses the one flag every stateful verb takes.
+func rootFlag(args []string) (string, error) {
 	fl := flag.NewFlagSet("e2eapp", flag.ContinueOnError)
 	root := fl.String("root", "", "install root (required)")
 	if err := fl.Parse(args); err != nil {
-		return err
+		return "", err
 	}
 	if *root == "" {
-		return errors.New("--root is required")
+		return "", errors.New("--root is required")
 	}
-	abs, err := filepath.Abs(*root)
+	return filepath.Abs(*root)
+}
+
+func withRoot(args []string, stdout io.Writer, verb func(context.Context, updater.Options, io.Writer) error) error {
+	abs, err := rootFlag(args)
 	if err != nil {
 		return err
 	}
@@ -210,4 +230,57 @@ func (p *progress) OnEvent(e hook.Event) {
 		return
 	}
 	_, _ = fmt.Fprintf(p.w, "  %-8s %s\n", e.Phase, e.Message)
+}
+
+// status prints the install state as key=value lines, without touching the
+// network: the version the pointer and the recorded state agree on, the version
+// directories that exist, whether a transaction is still open, and how much is
+// left in staging. It is what the test attests after every step.
+func status(args []string, stdout io.Writer) error {
+	root, err := rootFlag(args)
+	if err != nil {
+		return err
+	}
+	installed, err := installer.InstalledVersion(root)
+	if err != nil {
+		return err
+	}
+	versions, err := dirNames(filepath.Join(root, layout.VersionsName))
+	if err != nil {
+		return err
+	}
+	staging, err := dirNames(filepath.Join(root, layout.MetaName, layout.StagingName))
+	if err != nil {
+		return err
+	}
+	// The journal keeps its history after a commit, so what matters is the
+	// last record: COMMITTED means no transaction is left open.
+	j, err := txn.Open(fsx.OS(), root)
+	if err != nil {
+		return err
+	}
+	journal := "none"
+	if last, ok := j.Last(); ok {
+		journal = fmt.Sprintf("%s:%s->%s", last.State, last.FromVersion, last.ToVersion)
+	}
+	_, err = fmt.Fprintf(stdout, "installed=%s\nversions=%s\njournal=%s\nstaging=%d\n",
+		installed, strings.Join(versions, ","), journal, len(staging))
+	return err
+}
+
+// dirNames lists a directory sorted by name; a missing directory is empty.
+func dirNames(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	sort.Strings(names)
+	return names, nil
 }

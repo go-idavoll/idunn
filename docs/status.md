@@ -101,9 +101,15 @@ The real-world update test (`test/e2e/run.sh`, workflow `E2E update` on every pu
 `main`, on Linux, Windows and macOS) is the one test with nothing in process: it
 publishes a host application with `cmd/packer` as the assets of a GitHub release in
 the sandbox repository `go-idavoll/idunn-e2e`, installs it from github.com, publishes
-the next version into the same release, and has the installed application update
-itself headlessly through `cmd/launcher`. TUF paths are mapped onto flat asset names
-by `test/e2e/ghfetch`. `E2E_MODE=local` runs the same script against a local server.
+further releases into the same repository, and has the installed application update
+itself headlessly through `cmd/launcher`. Three scenarios: `minor` (1.0.0 → 1.1.0 →
+1.2.0), `major` (1.0.0 → 2.0.0 → 2.1.0), and `floor-gap`, where 1.2.0 requires
+`min_from_version` 1.1.0, which is never published, and the update must be refused
+with 1.0.0 left untouched. Every step is attested — exit code, installed and running
+version, version directories, last journal record, staging — into a JSON report per
+job, merged into one matrix by the summary job. TUF paths are mapped onto flat asset
+names by `test/e2e/ghfetch`. `E2E_MODE=local` runs the same script against a local
+server.
 
 ## Deliberate non-goals for now
 
