@@ -323,7 +323,9 @@ scripts.
 ## 8. Beyond a first version
 
 - **Provenance / SLSA** alongside reproducible builds, as an additional supply-chain
-  proof beside TUF (IDN-18).
+  proof beside TUF (IDN-18). The `cmd/packer` binary itself is now built reproducibly
+  in CI and attested on version tags; the repository it emits carries no provenance
+  of its own beyond TUF's signatures.
 - **End-of-life for a release line**: retention never touches a line other than
   the one being published, so retiring a whole major (its delegation included)
   is still a manual decision without tooling.

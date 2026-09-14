@@ -772,8 +772,10 @@ if targetsKey == "" || snapshotKey == "" || timestampKey == "" {
 
 Root signatures (key rotation) deliberately run **outside** the normal publish — via a
 separate, strictly controlled ceremony (offline, m-of-n), ideally with `tuf-on-ci`.
-Reproducible builds of the artifacts remain a goal: bit-identical binaries allow
-independent rebuilds and supply-chain verification.
+Reproducible builds of the artifacts are checked rather than aspired to: bit-identical
+binaries allow independent rebuilds and supply-chain verification, so CI builds every
+shipped command twice and fails if the bytes differ, and publishes the digests an
+independent rebuild compares against (`scripts/repro.sh`, IDN-18).
 
 ---
 
@@ -911,8 +913,9 @@ elevation, quiesce) — go-tuf is tested upstream and is not re-tested. Achievab
 - **Golden tests** on packer/artifact output ⇒ reproducible, bit-identical builds.
 - **Property/invariant tests:** "Apply is atomic" (crash injection at every journal
   boundary yields a valid state: old **or** new, never half).
-- **Mutation testing** (e.g. `go-mutesting`) as a quality measure of assertions —
-  coverage percentage alone says nothing about the strength of the tests.
+- **Mutation testing** as a quality measure of assertions — coverage percentage alone
+  says nothing about the strength of the tests. Built with gremlins and gated in CI
+  (`make mutate`, IDN-16).
 
 Honest note for the audit: 100% coverage ≠ security. The security guarantee rests on (a)
 this threat model, (b) fuzzing of the parsers, (c) reproducible builds, and (d) ideally
@@ -1258,7 +1261,9 @@ because an unprivileged user can tamper with the cache while the helper reads it
   target counts. **TAP-4 multi-repository consensus** for real package DAGs / multiple
   roots.
 - **Provenance/SLSA + reproducible builds** in CI as an additional supply-chain proof
-  (complements TUF, does not replace it).
+  (complements TUF, does not replace it). **Built (IDN-18):** every pull request is
+  gated on two builds of the shipped commands producing the same bytes, and version
+  tags get a build-provenance attestation of that same build.
 - **Time hardening** (Sec. 14.7): `clock_skew` classification + user guidance as a minimum;
   authenticated time (Roughtime/NTS) as opt-in for controlled fleets.
 - **Delta updates:** file-level delta (content-addressed) falls out of the TUF targets

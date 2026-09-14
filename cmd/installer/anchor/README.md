@@ -57,3 +57,8 @@ against (`docs/design.md` §11.3 T14). It is a linker variable rather than a fla
 on purpose: an operator who could claim any client version could talk an
 installer past the floor that exists to stop it from mishandling a newer layout.
 A build that leaves it unset refuses any release that demands a minimum.
+
+A shipped installer should be reproducible (AGENTS.md §1.7): add `-trimpath`, and
+derive any `main.buildTime` from the commit rather than the clock — for example
+`-X main.buildTime=$(git log -1 --format=%ct)` — or two builds of the same commit
+differ. idunn's own check is `scripts/repro.sh`.

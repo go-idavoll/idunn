@@ -27,7 +27,7 @@ piece of the section is missing; **open** — contract only, or nothing.
 | §9 | Packer | **done** — `cmd/packer publish` builds and signs a release end to end (`internal/packer`), including retention (step 4, IDN-03) |
 | §10 | TUF repository layout | **done** — the packer produces it, the client resolves it, a golden test pins the emitted bytes |
 | §11 | Security concept | **done** as a document; per-threat coverage below |
-| §12 | Test concept | **partial** — see coverage below; no mutation testing, one fuzz target missing |
+| §12 | Test concept | **partial** — see coverage below; mutation testing gated in CI (IDN-16, [score](#mutation-score)); one fuzz target missing |
 | §13 | Cross-platform specifics | **partial** — layout, elevation and the launcher hand-over are per-OS; no `MoveFileEx` self-update of the launcher itself (IDN-17) |
 | §14.1 | GC / retention | **done** — `stage.GC`, soft-fails on locked dirs |
 | §14.2 | Elevation | **partial** — Windows `ElevationInteractive` done for installs and updates: the unprivileged side writes nothing under the root, the helper (`cmd/installer apply`, or a host verb on `Updater.ApplyRequested`) re-resolves and runs the transaction; tested end to end through real UAC prompts (`elevated` e2e scenario). `ElevationService` fails closed everywhere; POSIX interactive (`pkexec`, Authorization Services) not built; the helper refuses a root anyone but an administrator controls (IDN-22); recovery and deferral in a system root are open (IDN-23) |
@@ -138,6 +138,42 @@ failing host migration that unwinds, `Rollback` hook included; the installer's
 downgrade preflight; a same-length tampered payload, refused for the hash with the
 bytes attested as served whole (so a 404 or truncation cannot pass it); and
 retention windows of three and two.
+
+## Supply chain
+
+| Property | State |
+|---|---|
+| Reproducible packer output | pinned by `internal/packer`'s golden test (IDN-01) |
+| Reproducible binaries | `scripts/repro.sh`: `cmd/installer`, `cmd/launcher`, `cmd/packer` for linux/windows/darwin × amd64/arm64, built twice from two directories with two empty caches, gated in CI (`reproducible builds`), digests and Go version in the job summary (IDN-18) |
+| Build provenance | `Release provenance` workflow on `v*` tags, `actions/attest-build-provenance`; binaries kept as a workflow artifact, no GitHub release is published yet (IDN-18, partly done) |
+| Trust anchor | embedded `root.json`, never fetched |
+
+## Mutation score
+
+`make mutate` (gremlins v0.6.0, configured by `.gremlins.yaml`) over the lifecycle packages,
+run as the `Mutation` workflow (IDN-16). *Efficacy* is the share of covered mutants the
+suite kills; *mutant coverage* is the share of mutants any test reaches at all. Measured
+on the tree that closed IDN-16 (Windows, Go 1.25):
+
+| Package | Killed | Lived | Not covered | Efficacy | Mutant coverage |
+|---|---|---|---|---|---|
+| `core/txn` | 74 | 1 | 2 | 98.7% | 97.4% |
+| `core/updater` | 150 | 17 | 5 | 89.8% | 97.1% |
+| `core/stage` | 142 | 29 | 9 | 83.0% | 95.0% |
+| `core/launch` | 18 | 4 | 0 | 81.8% | 100% |
+
+CI gates at 75% on both (`.gremlins.yaml`), which catches a regression without failing on the weather;
+the numbers above are what to raise it towards, per package. `core/launch` is the
+closest to the line: it has few mutants, so a single new survivor moves it by about
+four points.
+
+A surviving mutant is a test gap, never a reason to weaken an assertion — a change that
+raises this score by deleting a check is the reward-hacking AGENTS.md §6 asks reviewers
+to look for. The one survivor in `core/txn` is argued rather than fixed: the record
+ceiling in `Append` cannot be reached, because a `BEGIN` resets the history and the
+transition table bounds a transaction at six records. It stays as defence against a
+future table that loops. The survivors in `core/stage` cluster in `patch.go` (the delta
+reader's bounds and arithmetic).
 
 ## Deliberate non-goals for now
 

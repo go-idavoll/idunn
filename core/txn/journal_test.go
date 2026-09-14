@@ -15,6 +15,7 @@
 package txn_test
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -296,4 +297,81 @@ func TestPhaseIsRecorded(t *testing.T) {
 	if last, _ := open(t, m).Last(); last.Phase != hook.PhaseApply {
 		t.Fatalf("phase %q survived as %q", hook.PhaseApply, last.Phase)
 	}
+}
+
+// The record ceiling is a boundary, and a boundary is where an off-by-one lives.
+// Exactly MaxRecords is a journal Open must accept; one more is not.
+//
+// This test exists because mutation testing (IDN-16) found that `>` and `>=`
+// were interchangeable in parse as far as the suite could tell: the only test
+// of the ceiling was an oversize file, which the length bound refuses before
+// the record count is ever looked at. Coverage said the line ran; nothing said
+// it ran at the point where it decides anything.
+func TestOpenAcceptsExactlyTheRecordCeilingAndRefusesOneMore(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		records int
+		accept  bool
+	}{
+		{"one below the ceiling", txn.MaxRecords - 1, true},
+		{"exactly the ceiling", txn.MaxRecords, true},
+		{"one above the ceiling", txn.MaxRecords + 1, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newRoot(t)
+			if err := m.MkdirAll(layout.Meta(root), 0o700); err != nil {
+				t.Fatalf("MkdirAll: %v", err)
+			}
+			if err := fsx.WriteFileAtomic(m, layout.Journal(root), journalWith(t, tc.records), 0o600); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+
+			j, err := txn.Open(m, root)
+			switch {
+			case tc.accept && err != nil:
+				t.Fatalf("a journal of %d records was refused: %v", tc.records, err)
+			case tc.accept && len(j.Records()) != tc.records:
+				t.Fatalf("a journal of %d records opened with %d", tc.records, len(j.Records()))
+			case !tc.accept && err == nil:
+				t.Fatalf("a journal of %d records was accepted", tc.records)
+			case !tc.accept && !errors.Is(err, txn.ErrJournal):
+				t.Fatalf("a journal of %d records was refused outside the journal class: %v", tc.records, err)
+			}
+		})
+	}
+}
+
+// journalWith renders a journal document holding n records whose every
+// transition is one the table permits, so Open can refuse it only for its
+// length.
+//
+// The history has to be legal, or Open would refuse it for the wrong reason and
+// the boundary would never be reached. Append never stores more than one
+// transaction, because a BEGIN resets the history; parse checks a stored
+// history pairwise, though, so a file repeating BEGIN -> ROLLED_BACK -> BEGIN
+// (the shortest cycle the table allows) is legal at any length, and that is
+// how the ceiling is reached.
+func journalWith(t *testing.T, n int) []byte {
+	t.Helper()
+	records := make([]txn.Record, 0, n)
+	for i := range n {
+		state := txn.StateBegin
+		if i%2 == 1 {
+			state = txn.StateRolledBack
+		}
+		records = append(records, rec(state, "1.2.0", "1.3.0"))
+	}
+	raw, err := json.Marshal(struct {
+		SchemaVersion int          `json:"schema_version"`
+		Records       []txn.Record `json:"records"`
+	}{SchemaVersion: txn.JournalSchema, Records: records})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Under the file bound, or the refusal would come from the length check
+	// and the record ceiling would go untested again.
+	if len(raw) > txn.MaxJournalLen {
+		t.Fatalf("a %d-record journal is %d bytes, above the file bound", n, len(raw))
+	}
+	return raw
 }

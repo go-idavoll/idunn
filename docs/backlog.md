@@ -426,9 +426,42 @@ nothing was lost: a real go-tuf client, a signed repository a month past its tim
 window, the most permissive `Policy`, and a refusal classified as expiry with nothing
 written — beside a control that the same setup inside the window offers the release.
 
-### IDN-16 — Mutation testing (§12, AGENTS.md §4)
-`go-mutesting` (or equivalent) as the quality bar for assertions. Coverage is high;
-nothing currently measures whether the tests would fail if the code were wrong.
+### IDN-16 — Mutation testing (§12, AGENTS.md §4) — **done**
+`make mutate` runs [gremlins](https://github.com/go-gremlins/gremlins) (pinned in the
+Makefile as `GREMLINS_VERSION`, installed with `make mutate-tools`) over the lifecycle
+packages `core/txn`, `core/stage`, `core/updater` and `core/launch`, and fails below a
+threshold on efficacy and on mutant coverage. The `Mutation` workflow runs it as one job
+per package on every pull request and push that touches `core/`, `internal/`, the module
+files or the Makefile, and weekly on `main`. `make mutate-survivors` prints the list
+worth reading.
+
+The thresholds (75% on both, in `.gremlins.yaml`) sit below every score recorded in
+[`status.md`](status.md#mutation-score). They exist to catch a regression, not to be
+exactly met, and raising them as gaps close is the intended ratchet. A `TIMED OUT`
+mutant counts toward neither score, so a slow runner cannot turn the job red by itself.
+
+Two practical notes. First, the thresholds cannot be command-line flags: gremlins
+v0.6.0 binds `--threshold-efficacy` and `--threshold-mcover` as float flags that its
+configuration layer hands back as strings, so given on the command line they are
+silently ignored and a run far below them exits 0. Read from the config file they are
+numbers and do gate (a run against an unreachable 99% exits 10). Re-check that whenever
+the pinned version changes. Second, gremlins derives a per-mutant test timeout from the
+baseline run, and its default is too tight for suites that do filesystem work: without
+a `timeout-coefficient` every mutant is reported `TIMED OUT` and every score as 0%,
+which reads as a catastrophe and is a misconfiguration.
+
+It paid for itself on the first run. The record ceiling in `core/txn`'s `parse` was
+covered but not *pinned*: `>` and `>=` were interchangeable as far as the suite could
+tell, because the only test of it was an oversize file that the length bound refuses
+first. `TestOpenAcceptsExactlyTheRecordCeilingAndRefusesOneMore` holds it now. The one
+survivor left in that package is argued rather than fixed: the same ceiling in `Append`
+cannot be reached, because a `BEGIN` resets the history and the transition table bounds
+a transaction at six records. It stays as defence against a future table that loops —
+deleting a check to raise the score is the reward-hacking AGENTS.md §6 warns about.
+
+Open: the survivors in `core/stage` cluster in `patch.go` (the delta reader's bounds and
+arithmetic) and `route.go`; `core/launch` has four. Each is a test gap to close, with a
+test, before the threshold for that package is raised.
 
 ### IDN-17 — Windows launcher self-replacement (§13)
 Updating the launcher binary itself: rename-self plus
@@ -437,9 +470,43 @@ unblocked: the launcher exists and, on Windows, is the parent process for the li
 of the application — which is exactly what makes replacing it there need a mechanism of
 its own.
 
-### IDN-18 — Reproducible builds and provenance in CI (§9, §15)
-Bit-identical artifacts and SLSA provenance as supply-chain proof beside TUF. Partly
-enforced for packer output by IDN-01; this is the CI half.
+### IDN-18 — Reproducible builds and provenance in CI (§9, §15) — **partly done**
+`scripts/repro.sh` (`make repro`) builds `cmd/installer`, `cmd/launcher` and
+`cmd/packer` for linux, windows and darwin on amd64 and arm64 twice and fails unless
+every binary is byte-identical. The passes are made to differ in what must not matter —
+pass b builds a copy of the tree in another directory, and each pass has its own empty
+`GOCACHE`, without which the second build is a cache hit that compares equal by
+construction — and the flags pin what would otherwise leak in: `-trimpath` (no build or
+module-cache path), `-buildvcs=false` (the bytes depend on the source, not on `.git`),
+`-ldflags=-buildid=`, `CGO_ENABLED=0`, and a scrubbed `GOFLAGS`/`GOAMD64`. Without
+`-trimpath` the two directories do produce different bytes, so the check is not vacuous.
+CI's `reproducible builds` job runs it on every pull request and push and writes the
+digests and the exact `go version` into the job summary.
+
+Two passes on one runner catch what breaks reproducibility in practice — an embedded
+path, a wall-clock stamp, a map iterated into output. They cannot catch a difference
+between two machines or toolchains; publishing the digests and the Go version is what
+makes an independent rebuild possible, not a substitute for one.
+
+Provenance: the `Release provenance` workflow runs on `v*` tags. Its build job runs the
+same script with `contents: read`; a separate attest job, the only one holding
+`id-token: write` and `attestations: write`, checks out nothing, verifies the binaries
+it downloaded against the digests the build job handed over as a job output, and signs
+them with `actions/attest-build-provenance` (SHA-pinned). Check a binary with
+`gh attestation verify <file> --repo go-idavoll/idunn`.
+
+Still open, and why this is *partly*:
+
+- The workflow attests binaries and keeps them as a workflow artifact; it does not
+  create a GitHub release. Where released binaries are published (and whether that
+  job gets `contents: write`) is a maintainer decision.
+- The release build stamps no `main.clientVersion` or `main.buildTime` into
+  `cmd/installer`. A host's installer that sets them stays reproducible only if the
+  values are derived from the commit (tag, `SOURCE_DATE_EPOCH`), never from `date`.
+- No second, independent rebuild (another runner or OS) compares digests yet.
+
+The packer's half — byte-identical repository output from the same inputs and
+reference time — was closed by IDN-01 and is pinned by a golden test.
 
 ### IDN-19 — UI sidecars (§8)
 `idunn-bubbletea` and `idunn-web` are named in the README and do not exist. Out of

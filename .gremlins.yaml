@@ -1,0 +1,34 @@
+# Copyright 2026 The idunn Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Mutation testing gate (IDN-16), read by `make mutate` via --config.
+#
+# The thresholds live here and NOT on the command line on purpose: gremlins
+# v0.6.0 binds --threshold-efficacy / --threshold-mcover as float flags that
+# viper hands back as strings, so on the command line they are silently not
+# enforced -- a run far below them still exits 0. Values read from this file
+# are numbers and do gate (exit 10 / 11). Re-check that with a deliberately
+# unreachable threshold whenever GREMLINS_VERSION changes.
+#
+# The thresholds sit below every score in docs/status.md#mutation-score, so the
+# gate catches a regression rather than the weather. Raise them as gaps close;
+# never lower them to make a run pass (AGENTS.md §5, §6).
+unleash:
+  # gremlins derives a per-mutant test timeout from the baseline run; its
+  # default is too tight for suites that do filesystem work and reports every
+  # mutant TIMED OUT and every score 0%.
+  timeout-coefficient: 20
+  threshold:
+    efficacy: 75
+    mutant-coverage: 75

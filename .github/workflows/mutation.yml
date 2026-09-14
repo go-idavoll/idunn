@@ -1,0 +1,98 @@
+# Copyright 2026 The idunn Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Mutation
+
+# Mutation testing asks what coverage cannot: not "did this line run?" but
+# "would the suite notice if it were wrong?" (AGENTS.md §4, IDN-16).
+#
+# Gated so it neither flakes nor stalls a pull request:
+#
+#   * it runs only when the code it measures, or its own configuration, changes;
+#     a docs-only PR does not wait for it;
+#   * one job per package, in parallel, each with a hard timeout;
+#   * the thresholds (.gremlins.yaml) sit below the scores recorded in
+#     docs/status.md, and a TIMED OUT mutant counts toward neither score, so
+#     a slow runner cannot turn the job red on its own;
+#   * weekly on main as well, so drift in a package nobody touched still shows.
+#
+# A surviving mutant is a test gap. It is never a reason to weaken an
+# assertion, and a change that raises the score by deleting a check is the
+# reward-hacking AGENTS.md §6 asks reviewers to look for.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'core/**'
+      - 'internal/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Makefile'
+      - '.gremlins.yaml'
+      - '.github/workflows/mutation.yml'
+  pull_request:
+    paths:
+      - 'core/**'
+      - 'internal/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Makefile'
+      - '.gremlins.yaml'
+      - '.github/workflows/mutation.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '41 4 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mutation-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: stable
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  mutate:
+    name: mutation (${{ matrix.pkg }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        pkg: [core/txn, core/stage, core/updater, core/launch]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+
+      # Pinned by version in the Makefile (GREMLINS_VERSION); `go install`
+      # verifies the module against sum.golang.org, so the version names
+      # exactly one set of bytes.
+      - name: Install gremlins
+        run: make mutate-tools
+
+      - name: Mutate
+        run: make mutate MUTATE_PKGS=./${{ matrix.pkg }}
