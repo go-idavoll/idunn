@@ -119,7 +119,8 @@ jobs:
             "label": "$LABEL",
             "allowed_roots": ["/Library/Application Support/IdunnCI"],
             "peer_requirement": "identifier \"$BUNDLE_ID\"",
-            "min_interval_seconds": 5
+            "min_interval_seconds": 5,
+            "macos_bundle_identifier": "$BUNDLE_ID"
           }
           EOF
           cat cmd/helper/anchor/helper.json
