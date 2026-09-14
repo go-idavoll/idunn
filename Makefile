@@ -1,5 +1,5 @@
 .PHONY: all build test cover vet fmt lint license license-fix vuln tidy \
-	redteam redteam-corpus redteam-fuzz redteam-agent test-keys baseline clean
+	e2e-local redteam redteam-corpus redteam-fuzz redteam-agent test-keys baseline clean
 
 GO              ?= go
 REDTEAM_FUZZTIME ?= 60s
@@ -52,6 +52,12 @@ vuln:
 
 tidy:
 	$(GO) mod tidy
+
+## local end-to-end scenarios: real binaries, a repository on 127.0.0.1
+## (test/e2e/local/README.md; on Windows set GOTMPDIR to a directory that may run
+## freshly built programs)
+e2e-local:
+	$(GO) test -tags=e2e ./test/e2e/local/...
 
 ## run the full adversarial suite (corpus + fuzzers)
 redteam: redteam-corpus redteam-fuzz
