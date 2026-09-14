@@ -200,20 +200,42 @@ cat -- "$helper" >"$tmp_target"
 chown root:root "$tmp_target"
 chmod 0755 "$tmp_target"
 
-note "$tmp_target check"
-if ! check_out="$("$tmp_target" check 2>&1)"; then
-  printf '%s\n' "$check_out" >&2
-  die "the helper's own check failed; nothing was installed"
+note "$tmp_target check --json"
+check_rc=0
+check_json="$("$tmp_target" check --json 2>/dev/null)" || check_rc=$?
+printf '%s\n' "$check_json"
+
+# The report is JSON (schema 1). It is read with jq or python3, whichever this
+# machine has; a shell cannot parse JSON reliably, and guessing is not an option
+# in a script that runs as root.
+json_query() {
+  if command -v jq >/dev/null 2>&1; then
+    printf '%s' "$check_json" | jq -r "$1"
+  elif command -v python3 >/dev/null 2>&1; then
+    printf '%s' "$check_json" | python3 -c "$2"
+  else
+    die "reading the helper's check report needs jq or python3; install one of them"
+  fi
+}
+schema="$(json_query '.schema' 'import json,sys; print(json.load(sys.stdin)["schema"])')" ||
+  die "the helper's check did not print a report (exit $check_rc); nothing was installed"
+[ "$schema" = "1" ] || die "the helper's check reports schema '$schema'; this script understands schema 1"
+if [ "$check_rc" -ne 0 ]; then
+  json_query '[.error, (.roots[] | select(.ok|not) | "\(.path): \(.error)"), (.state // {} | select(.ok == false) | "state dir: \(.error)"), (.callers // {} | .error // empty)] | map(select(. != null and . != "")) | .[]' \
+    'import json,sys
+r=json.load(sys.stdin)
+for m in [r.get("error")]+[x["path"]+": "+x.get("error","") for x in r.get("roots",[]) if not x["ok"]]+([("state dir: "+r["state"].get("error",""))] if r.get("state") and not r["state"]["ok"] else [])+[(r.get("callers") or {}).get("error")]:
+  m and print(m)' >&2 || true
+  die "the helper's own check refused (exit $check_rc); nothing was installed"
 fi
-printf '%s\n' "$check_out"
 
 # The label and roots the helper was built with must be the ones given here: a
 # different label would put the socket where the application does not look, and
 # a root missing from ReadWritePaths= would be read-only to the service.
-got_label="$(printf '%s\n' "$check_out" | sed -n 's/^label: *//p')"
+got_label="$(json_query '.label' 'import json,sys; print(json.load(sys.stdin)["label"])')"
 [ "$got_label" = "$label" ] || die "the helper was built for label '$got_label', not '$label'"
-got_roots="$(printf '%s\n' "$check_out" | sed -n 's/^root: *//p' | sed 's/ — .*$//' | sort -u)"
-[ -n "$got_roots" ] || die "cannot read the helper's allowed roots from its check output"
+got_roots="$(json_query '.roots[].path' 'import json,sys; [print(x["path"]) for x in json.load(sys.stdin)["roots"]]' | sort -u)"
+[ -n "$got_roots" ] || die "the helper's check report lists no allowed roots"
 if [ "$got_roots" != "$(sorted_roots)" ]; then
   die "--rw ($(sorted_roots | tr '\n' ' ')) does not equal the helper's allowed_roots ($(printf '%s' "$got_roots" | tr '\n' ' '))"
 fi

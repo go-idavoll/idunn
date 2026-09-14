@@ -137,7 +137,7 @@ fi
 echo "== helper self-check (informational)"
 "$helper" version || warn "'$label version' failed"
 rc=0
-"$helper" check || rc=$?
+"$helper" check --json || rc=$?
 if [ "$rc" -eq 0 ]; then
   note "'$label check' exit 0: serve would start with this machine's state dir"
 else

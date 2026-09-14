@@ -25,7 +25,7 @@
 //	helper serve                     run the helper (as root / SYSTEM)
 //	helper allow --uid N | --sid S   let a local account ask (administrator)
 //	helper deny  --uid N | --sid S   stop letting it ask (administrator)
-//	helper check                     validate the build and this machine
+//	helper check [--json]            validate the build and this machine
 //	helper plist                     print the macOS LaunchDaemon plist
 //	helper version                   print the version
 package main
@@ -104,7 +104,7 @@ Usage:
   helper serve
   helper allow --uid <uid> | --sid <sid>
   helper deny  --uid <uid> | --sid <sid>
-  helper check
+  helper check [--json]
   helper plist
   helper version
 
@@ -131,49 +131,6 @@ func noArgs(name string, args []string, stderr io.Writer) bool {
 		return false
 	}
 	return true
-}
-
-// checkVerb validates the build and this machine and prints what serve would
-// use. It needs no privileges: every file it reads is readable by anyone.
-func checkVerb(args []string, stdout, stderr io.Writer) int {
-	if !noArgs("check", args, stderr) {
-		return exitUsage
-	}
-	b, err := loadBuild(buildFS)
-	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "helper check: %v\n", err)
-		return exitRefuse
-	}
-	paths, err := pathsFor(b.helper.Label)
-	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "helper check: %v\n", err)
-		return exitRefuse
-	}
-	_, _ = fmt.Fprintf(stdout, "version:   %s\nlabel:     %s\nchannel:   %s\nmetadata:  %s\nstate dir: %s\nendpoint:  %s\n",
-		versionString(), b.helper.Label, channelOf(b), b.anchor.Repo.MetadataURL, paths.StateDir, paths.Endpoint)
-	code := exitOK
-	for _, root := range b.helper.AllowedRoots {
-		verdict := "ok"
-		if err := elevate.CheckPrivilegedRoot(root); err != nil {
-			verdict, code = err.Error(), exitRefuse
-		}
-		_, _ = fmt.Fprintf(stdout, "root:      %s — %s\n", root, verdict)
-	}
-	if err := elevate.CheckPrivilegedRoot(paths.StateDir); err != nil {
-		_, _ = fmt.Fprintf(stdout, "state:     %v\n", err)
-		return exitRefuse
-	}
-	c, exists, err := readCallers(paths.StateDir)
-	switch {
-	case err != nil:
-		_, _ = fmt.Fprintf(stdout, "callers:   %v\n", err)
-		return exitRefuse
-	case !exists:
-		_, _ = fmt.Fprintln(stdout, "callers:   none (only root / SYSTEM may ask; add one with `helper allow`)")
-	default:
-		_, _ = fmt.Fprintf(stdout, "callers:   uids %v sids %v\n", c.UIDs, c.SIDs)
-	}
-	return code
 }
 
 // callersVerb adds or removes one caller. It must run with administrator

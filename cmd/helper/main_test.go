@@ -16,6 +16,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -316,5 +317,52 @@ func TestParseBuildTime(t *testing.T) {
 	}
 	if _, err := parseBuildTime("yesterday"); !errors.Is(err, ErrConfig) {
 		t.Fatalf("garbage = %v, want ErrConfig", err)
+	}
+}
+
+// `helper check --json` is what install scripts parse, so its shape is a contract:
+// schema, the verdict, and each judgement in its own field.
+func TestCheckJSON(t *testing.T) {
+	var out, errw bytes.Buffer
+	if code := run([]string{"check", "--json"}, &out, &errw); code != exitRefuse {
+		t.Fatalf("check --json without a build = %d, want %d", code, exitRefuse)
+	}
+	var r checkReport
+	if err := json.Unmarshal(out.Bytes(), &r); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, &out)
+	}
+	if r.Schema != checkSchema || r.OK || r.Error == "" || r.Roots == nil {
+		t.Fatalf("report without a build = %+v", r)
+	}
+
+	if runtime.GOOS != "windows" && os.Geteuid() == 0 {
+		t.Skip("as root, a temporary directory is root-owned")
+	}
+	withBuild(t, completeBuild(t, helperJSON(t, "")))
+	state := filepath.Join(t.TempDir(), "state")
+	saved := pathsFor
+	pathsFor = func(string) (elevate.HelperPaths, error) {
+		return elevate.HelperPaths{StateDir: state, Endpoint: "endpoint-for-test"}, nil
+	}
+	t.Cleanup(func() { pathsFor = saved })
+
+	out.Reset()
+	if code := run([]string{"check", "--json"}, &out, &errw); code != exitRefuse {
+		t.Fatalf("check --json with a user-owned state dir = %d, want %d\n%s", code, exitRefuse, &out)
+	}
+	r = checkReport{}
+	if err := json.Unmarshal(out.Bytes(), &r); err != nil {
+		t.Fatal(err)
+	}
+	if r.OK || r.Label != "com.acme.app.helper" || r.Channel != "beta" || r.StateDir != state ||
+		r.Endpoint != "endpoint-for-test" || len(r.Roots) != 1 || r.Roots[0].Path != absRoot("acme") {
+		t.Fatalf("report = %+v", r)
+	}
+	if r.State == nil || r.State.OK || r.State.Error == "" {
+		t.Fatalf("a user-owned state dir was not reported as refused: %+v", r.State)
+	}
+
+	if code := run([]string{"check", "--json", "--root", "/x"}, &out, &errw); code != exitUsage {
+		t.Fatalf("check with an unknown flag = %d, want %d", code, exitUsage)
 	}
 }

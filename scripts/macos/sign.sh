@@ -107,10 +107,9 @@ check_entitlements() {
   plutil -lint "$file" >/dev/null || die "entitlements '$file' does not lint"
   # get-task-allow lets any process of the same user attach a debugger;
   # notarization rejects it anyway.
-  for key in com.apple.security.get-task-allow; do
-    val="$(plist_get "$file" "$key" || true)"
-    [ "$val" != true ] || die "$role entitlements '$file' set $key"
-  done
+  key=com.apple.security.get-task-allow
+  val="$(plist_get "$file" "$key" || true)"
+  [ "$val" != true ] || die "$role entitlements '$file' set $key"
   # For a process that runs as root, each of these re-opens a door the hardened
   # runtime closes: code injection through DYLD_* or unsigned libraries,
   # writable-executable memory, attaching to other processes.

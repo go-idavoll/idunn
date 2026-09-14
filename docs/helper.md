@@ -107,12 +107,38 @@ opts.Policy.Elevation = updater.ElevationService
 | `helper serve` | root / SYSTEM (launchd, systemd, SCM) | starts `elevate.NewHelper` with `updater.RequestApplier`; under the Windows SCM it speaks the service protocol |
 | `helper allow --uid N` / `--sid S` | administrator | adds a caller to `callers.json`, creating the state dir with administrator-only permissions |
 | `helper deny --uid N` / `--sid S` | administrator | removes a caller |
-| `helper check` | anyone | validates the embedded configuration and the state dir, prints the effective configuration; exit 0 only if `serve` would start |
+| `helper check [--json]` | anyone | validates the embedded configuration and the state dir, prints the effective configuration; exit 0 only if `serve` would start. `--json` prints the report below for install scripts |
 | `helper plist` | anyone | prints the LaunchDaemon plist for this build (`elevate.DaemonPlist`), for the bundle step |
 | `helper version` | anyone | prints the version this helper was built as |
 
 No verb accepts a trust anchor, a repository URL, an install root or a caller
 code requirement on the command line.
+
+### `helper check --json` (schema 1)
+
+```json
+{
+  "schema": 1,
+  "ok": false,
+  "error": "",
+  "version": "1.3.0",
+  "label": "com.acme.app.helper",
+  "channel": "stable",
+  "metadata_url": "https://updates.example.com/metadata/",
+  "state_dir": "/etc/com.acme.app.helper",
+  "endpoint": "/run/com.acme.app.helper/helper.sock",
+  "roots": [{ "path": "/opt/acme", "ok": true }],
+  "state": { "path": "/etc/com.acme.app.helper", "ok": true },
+  "callers": { "present": true, "uids": [1000], "sids": [] }
+}
+```
+
+`ok` is true exactly when the exit code is 0. `error` is set, and everything after
+`version` absent, when the build itself is unusable. A refused root, state dir or
+caller list carries its own `error`. Fields are only ever added within a schema;
+removing or renaming one raises `schema`, and the install scripts refuse a schema
+they do not know. `scripts/linux/install.sh` reads it with `jq` or `python3`,
+`scripts/windows/install-service.ps1` with `ConvertFrom-Json`.
 
 ## 5. Build, sign, ship
 
@@ -138,3 +164,12 @@ stderr, which both collect.
 
 Then, per platform, `scripts/macos/`, `scripts/windows/` and `scripts/linux/` (see
 their READMEs).
+
+## 6. Replacing the helper itself
+
+Today a new helper is installed by uninstalling the old one and installing the new
+one, with administrator rights, as a separate step from updating the application —
+the install scripts refuse an existing installation. Updating the application
+never replaces the helper that performs the update. Doing that in place — the helper
+as part of a release, swapped by an elevation of its own during or after the update —
+is backlog IDN-30.

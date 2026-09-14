@@ -131,23 +131,6 @@ function Invoke-Native {
     }
 }
 
-function Get-CheckField {
-    <#
-    .SYNOPSIS
-        One "name:   value" line of `helper check` output.
-    #>
-    [CmdletBinding()]
-    [OutputType([string])]
-    param(
-        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Output,
-        [Parameter(Mandatory)][string]$Name
-    )
-    $prefix = '^{0}:\s+' -f [regex]::Escape($Name)
-    $line = @($Output | Where-Object { $_ -match $prefix }) | Select-Object -First 1
-    if (-not $line) { throw "helper check printed no '${Name}:' line" }
-    return ($line -replace $prefix, '').TrimEnd()
-}
-
 function Get-DaclSummary {
     <#
     .SYNOPSIS
@@ -224,28 +207,39 @@ if (Get-Service -Name $Label -ErrorAction SilentlyContinue) {
     throw "a service named '$Label' already exists; run uninstall-service.ps1 -Label $Label first"
 }
 
-Write-Step "$helper check"
+Write-Step "$helper check --json"
 $ErrorActionPreference = 'Continue'
-$checkOut = @(& $helper check 2>&1 | ForEach-Object { "$_" })
+$checkJson = (& $helper check --json 2>$null | Out-String)
 $checkExit = $LASTEXITCODE
 $ErrorActionPreference = 'Stop'
-$checkOut | ForEach-Object { Write-Information $_ -InformationAction Continue }
-if ($checkExit -ne 0) {
-    throw "'$helper check' failed with exit code $checkExit; nothing was registered"
+Write-Information $checkJson -InformationAction Continue
+try {
+    $check = $checkJson | ConvertFrom-Json
+} catch {
+    throw "'$helper check --json' did not print a report (exit code $checkExit); nothing was registered"
+}
+if ($check.schema -ne 1) {
+    throw "'$helper check --json' reports schema $($check.schema); this script understands schema 1"
+}
+if ($checkExit -ne 0 -or -not $check.ok) {
+    $why = @($check.error) + @($check.roots | Where-Object { -not $_.ok } | ForEach-Object { "$($_.path): $($_.error)" })
+    if ($check.state -and -not $check.state.ok) { $why += "state dir: $($check.state.error)" }
+    if ($check.callers -and $check.callers.error) { $why += "callers: $($check.callers.error)" }
+    throw "'$helper check' refused (exit code $checkExit): $((@($why) | Where-Object { $_ }) -join '; '); nothing was registered"
 }
 
 # The helper derives its service name, pipe and state directory from the label it
 # was built with; a service registered under another name would never start
 # (the SCM dispatcher names the service) and the application would not find it.
-$builtLabel = Get-CheckField -Output $checkOut -Name 'label'
+$builtLabel = [string]$check.label
 if ($builtLabel -cne $Label) {
     throw "the helper was built for label '$builtLabel', not '$Label'"
 }
-$builtState = Get-CheckField -Output $checkOut -Name 'state dir'
+$builtState = [string]$check.state_dir
 if ($builtState -ne (Join-Path $programFiles $Label)) {
     throw "the helper's state directory is '$builtState', expected '$(Join-Path $programFiles $Label)'"
 }
-$builtEndpoint = Get-CheckField -Output $checkOut -Name 'endpoint'
+$builtEndpoint = [string]$check.endpoint
 if ($builtEndpoint -cne "\\.\pipe\$Label") {
     throw "the helper's endpoint is '$builtEndpoint', expected '\\.\pipe\$Label'"
 }
