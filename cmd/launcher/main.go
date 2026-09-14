@@ -40,6 +40,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
+	"time"
 
 	"github.com/go-idavoll/idunn/core/fsx"
 	"github.com/go-idavoll/idunn/core/hook"
@@ -71,6 +73,31 @@ var appBinary = "app"
 // its exit code (Windows).
 type execFn func(path string, args []string) (int, error)
 
+// supervises is whether this launcher stays the application's parent — on
+// Windows, where execApp runs the application as a child — and so can act on
+// launch.RelaunchExitCode. On POSIX the launcher is gone once the application
+// runs, and an application relaunches through launch.Relaunch instead.
+var supervises = runtime.GOOS == "windows"
+
+// Relaunch limits (IDN-29). An application that exits with RelaunchExitCode is
+// started again; one that does so again and again without running for a while is
+// not, so a relaunch that cannot make progress ends instead of spinning.
+const (
+	maxQuickRelaunches = 3
+	quickRun           = 30 * time.Second
+
+	// afterPIDTimeout bounds how long a relaunched launcher waits for the
+	// instance that relaunched it to exit.
+	afterPIDTimeout = 60 * time.Second
+)
+
+// now is the clock the relaunch limit is measured on, and afterPIDTimeoutFor the
+// wait for a previous instance; both are variables for the tests.
+var (
+	now                = time.Now
+	afterPIDTimeoutFor = func() time.Duration { return afterPIDTimeout }
+)
+
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, execApp))
 }
@@ -83,6 +110,7 @@ func run(args []string, stdout, stderr io.Writer, exec execFn) int {
 		app    = fs.String("app", appBinary, "install-relative path of the application to start")
 		retain = fs.Int("retain", 0, "version directories to keep after applying a deferred update")
 		quiet  = fs.Bool("quiet", false, "suppress progress output")
+		after  = fs.Int("after-pid", 0, "wait for this process to exit first (set by launch.Relaunch)")
 	)
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
@@ -108,6 +136,48 @@ func run(args []string, stdout, stderr io.Writer, exec execFn) int {
 		o.Observe = &progress{w: stdout}
 	}
 
+	// Started by launch.Relaunch beside the instance that asked for it: nothing
+	// is applied, and nothing is started, while that instance is still up. A
+	// migration running under a live application is the thing deferring exists
+	// to prevent, and a second instance is not what anyone asked for.
+	if *after != 0 {
+		if err := launch.WaitForExit(context.Background(), *after, afterPIDTimeoutFor()); err != nil {
+			_, _ = fmt.Fprintf(stderr, "idunn launcher: %v\n", err)
+			return exitError
+		}
+	}
+
+	quick := 0
+	for {
+		code, err := startOnce(o, installRoot, rel, fs.Args(), stderr, exec)
+		if err != nil || !supervises || code != launch.RelaunchExitCode {
+			return code
+		}
+		// The application asked to be started again (IDN-29). A run long enough
+		// to have done something resets the count; a run that did not is a
+		// relaunch that cannot make progress, and that ends here.
+		if now().Sub(lastStart) >= quickRun {
+			quick = 0
+		}
+		quick++
+		if quick > maxQuickRelaunches {
+			_, _ = fmt.Fprintf(stderr, "idunn launcher: the application asked to be relaunched %d times within %s each; not again\n",
+				maxQuickRelaunches, quickRun)
+			return exitError
+		}
+		if !*quiet {
+			_, _ = fmt.Fprintln(stdout, "launch   relaunching the application")
+		}
+	}
+}
+
+// lastStart is when startOnce last handed over to the application.
+var lastStart time.Time
+
+// startOnce settles the install root and runs the application once, returning
+// its exit code. An error means the application was not started, and the code
+// is the launcher's own.
+func startOnce(o launch.Options, installRoot, rel string, args []string, stderr io.Writer, exec execFn) (int, error) {
 	// A start that could not finish a deferred update is not a start that
 	// fails: the installation that is live is complete and runnable, and
 	// refusing to launch an application because an update it did not ask for
@@ -116,17 +186,20 @@ func run(args []string, stdout, stderr io.Writer, exec execFn) int {
 		_, _ = fmt.Fprintf(stderr, "idunn launcher: the pending update was not applied: %v\n", err)
 	}
 
+	// Resolved again on every start: after a relaunch, `current` may name a
+	// newer version than the one that asked for it.
 	bin, err := appPath(o.FS, installRoot, rel)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "idunn launcher: %v\n", err)
-		return exitError
+		return exitError, err
 	}
-	code, err := exec(bin, fs.Args())
+	lastStart = now()
+	code, err := exec(bin, args)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "idunn launcher: starting the application: %v\n", err)
-		return exitError
+		return exitError, err
 	}
-	return code
+	return code, nil
 }
 
 // resolveRoot picks the install root: the flag, or the directory this binary

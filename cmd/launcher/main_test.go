@@ -19,8 +19,10 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-idavoll/idunn/core/fsx"
 	"github.com/go-idavoll/idunn/core/launch"
@@ -148,10 +150,146 @@ func TestArgumentsAreForwarded(t *testing.T) {
 func TestTheApplicationsExitCodeIsPassedThrough(t *testing.T) {
 	root := install(t, []string{"1.2.0"}, "1.2.0")
 	var out bytes.Buffer
-	s := &started{code: 42}
+	// Any code but launch.RelaunchExitCode, which is the one code a supervising
+	// launcher acts on rather than passes through (IDN-29).
+	s := &started{code: 17}
 
-	if code := run([]string{"--root", root, "--quiet"}, &out, &out, s.exec); code != 42 {
-		t.Fatalf("run = %d, want the application's 42", code)
+	if code := run([]string{"--root", root, "--quiet"}, &out, &out, s.exec); code != 17 {
+		t.Fatalf("run = %d, want the application's 17", code)
+	}
+}
+
+// sequence is an application whose successive runs exit with the given codes.
+type sequence struct {
+	codes []int
+	runs  int
+	bins  []string
+}
+
+func (q *sequence) exec(path string, _ []string) (int, error) {
+	q.bins = append(q.bins, path)
+	code := q.codes[len(q.codes)-1]
+	if q.runs < len(q.codes) {
+		code = q.codes[q.runs]
+	}
+	q.runs++
+	return code, nil
+}
+
+func supervising(t *testing.T, on bool) {
+	t.Helper()
+	saved := supervises
+	supervises = on
+	t.Cleanup(func() { supervises = saved })
+}
+
+// An application that exits with RelaunchExitCode under a supervising launcher is
+// started again — after the launcher has finished the update it deferred, so the
+// second run is the new version (IDN-29).
+func TestRelaunchFinishesTheDeferredUpdateAndStartsTheNewVersion(t *testing.T) {
+	supervising(t, true)
+	root := install(t, []string{"1.2.0", "1.3.0"}, "1.2.0")
+	var out bytes.Buffer
+	q := &sequence{codes: []int{launch.RelaunchExitCode, 0}}
+
+	// The first run defers 1.3.0 and asks to be relaunched.
+	first := true
+	exec := func(path string, args []string) (int, error) {
+		if first {
+			first = false
+			deferUpdate(t, root, "1.2.0", "1.3.0")
+		}
+		return q.exec(path, args)
+	}
+	if code := run([]string{"--root", root, "--quiet"}, &out, &out, exec); code != 0 {
+		t.Fatalf("run = %d, want 0\n%s", code, &out)
+	}
+	if q.runs != 2 {
+		t.Fatalf("the application ran %d times, want 2", q.runs)
+	}
+	if !strings.Contains(filepath.ToSlash(q.bins[1]), "versions/1.3.0/") {
+		t.Fatalf("the relaunch started %s, want the 1.3.0 binary", q.bins[1])
+	}
+	if got, _ := layout.PointerTarget(fsx.OS(), root); got != "1.3.0" {
+		t.Fatalf("current = %q, want 1.3.0", got)
+	}
+}
+
+// A launcher that does not stay the parent (POSIX) passes the code through: it is
+// not there to act on it, and an application there relaunches with
+// launch.Relaunch instead.
+func TestRelaunchCodeIsPassedThroughWhenNotSupervising(t *testing.T) {
+	supervising(t, false)
+	root := install(t, []string{"1.2.0"}, "1.2.0")
+	var out bytes.Buffer
+	q := &sequence{codes: []int{launch.RelaunchExitCode}}
+	if code := run([]string{"--root", root, "--quiet"}, &out, &out, q.exec); code != launch.RelaunchExitCode || q.runs != 1 {
+		t.Fatalf("run = %d after %d runs, want %d after 1", code, q.runs, launch.RelaunchExitCode)
+	}
+}
+
+// An application that asks to be relaunched over and over without running for a
+// while is not relaunched forever.
+func TestQuickRelaunchesAreBounded(t *testing.T) {
+	supervising(t, true)
+	root := install(t, []string{"1.2.0"}, "1.2.0")
+	var out bytes.Buffer
+	q := &sequence{codes: []int{launch.RelaunchExitCode}}
+	if code := run([]string{"--root", root, "--quiet"}, &out, &out, q.exec); code != exitError {
+		t.Fatalf("run = %d, want %d", code, exitError)
+	}
+	if q.runs != maxQuickRelaunches+1 {
+		t.Fatalf("the application ran %d times, want %d", q.runs, maxQuickRelaunches+1)
+	}
+	if !strings.Contains(out.String(), "relaunched") {
+		t.Errorf("the refusal does not say why: %q", out.String())
+	}
+}
+
+// A run that lasted resets the count: an application updated twice in a long
+// session is relaunched both times.
+func TestALongRunResetsTheRelaunchCount(t *testing.T) {
+	supervising(t, true)
+	root := install(t, []string{"1.2.0"}, "1.2.0")
+	clock := time.Unix(1_700_000_000, 0)
+	saved := now
+	now = func() time.Time { return clock }
+	t.Cleanup(func() { now = saved })
+
+	var out bytes.Buffer
+	codes := []int{launch.RelaunchExitCode, launch.RelaunchExitCode, launch.RelaunchExitCode, launch.RelaunchExitCode, launch.RelaunchExitCode, 0}
+	q := &sequence{codes: codes}
+	exec := func(path string, args []string) (int, error) {
+		clock = clock.Add(time.Hour) // every run lasts an hour.
+		return q.exec(path, args)
+	}
+	if code := run([]string{"--root", root, "--quiet"}, &out, &out, exec); code != 0 || q.runs != len(codes) {
+		t.Fatalf("run = %d after %d runs, want 0 after %d\n%s", code, q.runs, len(codes), &out)
+	}
+}
+
+// Started by launch.Relaunch beside a previous instance, the launcher waits for
+// that instance, and neither applies nor starts anything while it is still up.
+func TestAfterPIDWaitsAndRefusesWhileTheInstanceRuns(t *testing.T) {
+	root := install(t, []string{"1.2.0", "1.3.0"}, "1.2.0")
+	deferUpdate(t, root, "1.2.0", "1.3.0")
+	var out bytes.Buffer
+	s := &started{}
+
+	// This test process is the "previous instance": it is certainly still up.
+	savedTimeout := afterPIDTimeoutFor
+	afterPIDTimeoutFor = func() time.Duration { return 300 * time.Millisecond }
+	t.Cleanup(func() { afterPIDTimeoutFor = savedTimeout })
+
+	args := []string{"--root", root, "--quiet", "--after-pid", strconv.Itoa(os.Getpid())}
+	if code := run(args, &out, &out, s.exec); code != exitError {
+		t.Fatalf("run = %d, want %d\n%s", code, exitError, &out)
+	}
+	if s.path != "" {
+		t.Fatal("the application was started while the previous instance was still running")
+	}
+	if got, _ := layout.PointerTarget(fsx.OS(), root); got != "1.2.0" {
+		t.Fatalf("current = %q; the deferred update was applied under a live instance", got)
 	}
 }
 

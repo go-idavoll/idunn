@@ -17,10 +17,13 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+
+	"github.com/go-idavoll/idunn/core/launch"
 )
 
 // execApp starts the application and waits for it.
@@ -38,8 +41,13 @@ func execApp(path string, args []string) (int, error) {
 	// The path is the pointer's target joined with a validated, install-relative
 	// name (see appPath), not caller-supplied input.
 	//nolint:gosec // G204: the binary to start is the whole purpose of this program.
-	cmd := exec.Command(path, args...)
+	// Background: the application runs for as long as it runs, and the launcher
+	// waits for it; there is nothing to cancel it on.
+	cmd := exec.CommandContext(context.Background(), path, args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	// Tells the application that this launcher stays its parent and will act on
+	// launch.RelaunchExitCode (IDN-29).
+	cmd.Env = append(os.Environ(), launch.SupervisedEnv+"=1")
 
 	if err := cmd.Run(); err != nil {
 		var exitErr *exec.ExitError

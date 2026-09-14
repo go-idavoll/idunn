@@ -89,6 +89,36 @@ jobs:
           CGO_ENABLED=0 go test -count=1 -v \
             -run 'SMAppServiceIsNotImplementedHere|PeerRequirementIsRefusedWhereItCannotBeChecked' ./core/elevate/
 
+  # The local end-to-end scenarios (test/e2e/local, build tag e2e): the real
+  # packer, installer, launcher and a host application as separate processes
+  # against a repository on 127.0.0.1 — defer, crash recovery, failed migration,
+  # downgrade preflight, tampered payload, retention, and install-and-restart
+  # (IDN-29), whose relaunch mechanism differs per OS: execve on Linux and macOS,
+  # a supervising launcher or a waiting new launcher on Windows. No network, no
+  # secrets; the service-mode scenario skips here because it needs root.
+  e2e-local:
+    name: e2e local (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+
+      - name: Local end-to-end scenarios
+        env:
+          IDUNN_E2E_WORK: ${{ runner.temp }}/e2e-local
+        run: go test -tags=e2e -count=1 -timeout 15m ./test/e2e/local/...
+
   # Reproducible builds (IDN-18): the shipped commands, for every released
   # platform, built twice -- from two source directories, with two empty build
   # caches -- and compared byte for byte (scripts/repro.sh). TUF says the bytes
