@@ -23,7 +23,7 @@ piece of the section is missing; **open** — contract only, or nothing.
 | §6.4 | Delta stage 1 (content-addressed reuse) | **partial** — go-tuf cache reuse works, and an unchanged file is now taken from `current`/a retained version and verified against its signed target before it is staged (IDN-10); two named pieces are still missing: the reuse is a copy rather than a reflink/hardlink, and a file that changed destination between releases is not looked up by content hash |
 | §6.4 | Delta stage 2 (binary patches) | **done** — the format on both sides (`stage.ApplyPatch`, `internal/delta`), the walk a skipped-releases client follows (`release.Chain`, `trust.Versions`), staging that rebuilds a changed file from the cheapest published patches and verifies every hop, a packer that emits patch targets against the last N releases (`delta:` in pack.yaml), and a `MinFromVersion` floor that is now walked rather than refused where the repository publishes releases that bridge it. Three corpus cases attack the patches (IDN-14) |
 | §7 | Hook system | **done** — all six hooks defined and wired |
-| §8 | Headless default, UI sidecars | **done** in `core` (no UI dependency); sidecar repos are out of tree |
+| §8 | Headless default, UI sidecars | **done** in `core` (no UI dependency); `idunn-fyne` is the first out-of-tree sidecar and exercises the `Observer`/`Prompter` surface end to end (IDN-19) |
 | §9 | Packer | **partial** — `cmd/packer publish` builds and signs a release end to end (`internal/packer`); retention (step 4) is open |
 | §10 | TUF repository layout | **done** — the packer produces it, the client resolves it, a golden test pins the emitted bytes |
 | §11 | Security concept | **done** as a document; per-threat coverage below |
