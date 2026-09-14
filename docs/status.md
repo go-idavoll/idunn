@@ -119,6 +119,16 @@ real UAC prompts, checks that the check in between needs none, and refuses a
 user-owned root twice — before the prompt, and in the helper started elevated by a
 hostile caller.
 
+The local end-to-end scenarios (`go test -tags=e2e ./test/e2e/local/...`, not in CI
+yet, run on Windows) drive the failure paths that run needs no GitHub for, with the
+same real binaries against a repository on 127.0.0.1: a busy application that
+defers and the launcher that finishes it; a process killed in `download`, `apply`
+and `verify`, each settled by the launcher's recovery to one exact whole version; a
+failing host migration that unwinds, `Rollback` hook included; the installer's
+downgrade preflight; a same-length tampered payload, refused for the hash with the
+bytes attested as served whole (so a 404 or truncation cannot pass it); and
+retention windows of three and two.
+
 ## Deliberate non-goals for now
 
 These are open in the design and stay open on purpose, not by oversight: TAP-4
