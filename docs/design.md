@@ -911,8 +911,9 @@ elevation, quiesce) — go-tuf is tested upstream and is not re-tested. Achievab
 - **Golden tests** on packer/artifact output ⇒ reproducible, bit-identical builds.
 - **Property/invariant tests:** "Apply is atomic" (crash injection at every journal
   boundary yields a valid state: old **or** new, never half).
-- **Mutation testing** (e.g. `go-mutesting`) as a quality measure of assertions —
-  coverage percentage alone says nothing about the strength of the tests.
+- **Mutation testing** as a quality measure of assertions — coverage percentage alone
+  says nothing about the strength of the tests. Built with gremlins and gated in CI
+  (`make mutate`, IDN-16).
 
 Honest note for the audit: 100% coverage ≠ security. The security guarantee rests on (a)
 this threat model, (b) fuzzing of the parsers, (c) reproducible builds, and (d) ideally
