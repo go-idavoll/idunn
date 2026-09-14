@@ -80,6 +80,15 @@ path, and the corpus grows cases for a hostile caller.
 `SMAppService` on macOS, with the same three-scalar request grammar the Windows path
 already enforces.
 
+On macOS the proven one-shot shape is Sparkle 2's: `AuthorizationCopyRights` for a
+custom right with `kAuthorizationRuleAuthenticateAsAdmin`, then the helper submitted
+as a run-once launchd job in the system domain (`SMJobSubmit`,
+`InstallerLauncher/SUInstallerLauncher.m`). That API is deprecated; its replacement,
+`SMAppService.daemon` (macOS 13+), registers a permanent daemon the user has to
+approve under Login Items, which fits the service mode (IDN-07) better than a prompt.
+Decide which one, and whether macOS 13 is the floor. Whatever runs elevated is the
+IDN-28 helper; `AuthorizationExecuteWithPrivileges` is not an option.
+
 ### IDN-09 — Monotonic known-good time floor (§14.7, T22) — **done**
 `core/timefloor` persists `max(build time, clock at the last successful refresh)` in
 the install root and refuses a local clock below it — before the refresh whose expiry
@@ -122,6 +131,133 @@ registered but never exercised by a case.
 `trust.Target` holds every payload in memory because go-tuf's `DownloadTarget`
 returns a slice (`TODO(stage)` in `core/trust`). A multi-hundred-megabyte payload is
 a memory spike today. Needs a fetcher that exposes the response body.
+
+### IDN-24 — A default install root that follows the platform's conventions (§5, §6.1, §14.2)
+`cmd/installer` requires `--root` and only makes it absolute; nothing proposes a
+location, so every host has to know where per-user and system-wide software lives on
+every OS, and gets it wrong in a different way each time. The launcher defaults to
+its own directory, which is only right once something put it in the right place. The
+one path that does follow the platform today is the TUF cache (`os.UserCacheDir`).
+
+Wanted: a `--scope user|machine` (default `user`, matching `ElevationNone`) that
+derives the root from a build-time application name (`-ldflags -X`, like
+`appBinary`), with `--root` still overriding:
+
+| OS | user | machine |
+|---|---|---|
+| Windows | `FOLDERID_UserProgramFiles` (`%LocalAppData%\Programs\<app>`) | `FOLDERID_ProgramFiles\<app>` |
+| Linux | `$XDG_DATA_HOME/<app>` (`~/.local/share/<app>`) | `/opt/<app>` |
+| macOS | `~/Library/Application Support/<bid>` + `~/Applications/<app>.app` | `/Library/Application Support/<bid>` + `/Applications/<app>.app` |
+
+Known folders on Windows come from `SHGetKnownFolderPath`, never from environment
+variables a caller controls — the machine root is what the elevated helper vets
+(IDN-22), and it must not be steerable. macOS has two paths, not one: where the
+versions live and where the bundle a user starts lives; that split is IDN-26's.
+Linux needs a decision on the launcher's discoverability (a `.desktop` entry, a
+`~/.local/bin` link) or an explicit statement that it is the host's job.
+
+### IDN-25 — Symlink entries in a release (§3.1, §3.2, §6.4)
+A descriptor names regular files of kind exe/lib/data and nothing else; the packer
+takes a file list and staging refuses a symlink anywhere below a version directory.
+A macOS `.app` cannot be expressed that way: frameworks carry `Versions/Current` and
+top-level links into it, and the code signature seals them as links. Linux shared
+libraries (`libfoo.so -> libfoo.so.1`) have the same shape.
+
+Wanted: a `symlink` entry with a relative target, validated by `safepath` so it can
+never resolve outside the version directory (no absolute target, no `..` that climbs
+past the root after resolution, no link through a link), created by staging after
+the files it may point at, covered by the release digest like every other entry, and
+refused by the packer when the source tree's link escapes. Staging's own "no symlink
+on the way down" defence stays: it applies to the directories it walks while writing,
+which a release link must not be allowed to become.
+
+### IDN-26 — macOS: the application bundle as the live pointer (§6.1, §13)
+On darwin `current` is a symlink in the root, but what a user starts, what the Dock,
+Launch Services and TCC know, is `/Applications/<app>.app` (or `~/Applications`). A
+bundle cannot be the blue/green layout inside itself: any change below `Contents/`
+breaks its seal and, on Apple Silicon, gets the process killed at launch. Every
+mature macOS updater therefore replaces the whole signed bundle — Sparkle 2 swaps it
+with `renamex_np(old, new, RENAME_SWAP)` from a launchd job
+(`Autoupdate/SUPlainInstaller.m`, `Sparkle/SUFileManager.m`).
+
+Wanted, keeping the journal and the retained versions Sparkle does not have:
+- `versions/<v>/<app>.app` holds complete bundles; staging assembles one there
+  (reusing verified files through `clonefile`, which is also IDN-10's missing
+  reflink half).
+- The darwin `SetPointer` is a `RENAME_SWAP` between the staged bundle and the
+  bundle at the install path; the previous bundle lands in `versions/<old>`, so a
+  rollback is a second swap. Staging must be on the bundle's volume (compare
+  `st_dev`; `RENAME_SWAP` does not cross volumes) — verify on the CI runner that
+  `/Applications` (a firmlink into the Data volume) and `/Library/Application
+  Support` qualify.
+- Recovery cannot read a marker inside the bundle (writing one breaks the seal); it
+  identifies which version sits at the install path by the signed digest of a file
+  in it (`Contents/_CodeSignature/CodeResources`).
+- Before the swap: owner and group matched to the bundle being replaced,
+  `com.apple.quarantine` removed (clones copy it from the installed bundle),
+  `futimes` on the bundle root so Launch Services notices, `gktool scan` where it
+  exists (14.4+).
+- Refuse up front, with a message that says what to do, when the bundle runs
+  translocated (`/AppTranslocation/` in the path) or from a read-only volume
+  (`statfs` `MNT_RDONLY`) — there is nothing an update could replace.
+
+Depends on IDN-25; the default paths come from IDN-24.
+
+### IDN-27 — macOS: Apple code signing as a gate before the swap (§13, §14.2)
+TUF decides what is authentic; this is the platform's own check that the result will
+run, as an additional refusal that can never accept something TUF refused.
+
+Decided: AGENTS.md §1.2 carries an explicit carve-out for it. It answers a different
+question — not "are these the publisher's bytes" but "will macOS launch them" — which
+a release signed in TUF but broken for Gatekeeper (a missing notarization, a nested
+binary signed with the wrong identity) otherwise fails only after the swap. It runs
+after TUF accepted every byte and can only narrow the funnel, never widen it.
+
+`SecStaticCodeCheckValidity` on the staged bundle with
+`kSecCSStrictValidate | kSecCSCheckAllArchitectures | kSecCSCheckNestedCode` against
+a requirement built into the binary — `anchor apple generic and certificate
+leaf[subject.OU] = "<TEAMID>" and identifier "<bid>"` — not against the installed
+bundle's designated requirement as Sparkle does, so a tampered installed bundle
+cannot lower the bar.
+
+Open: how to reach Security.framework. The calls needed are plain C with pointer and
+integer arguments — `CFURLCreateFromFileSystemRepresentation`,
+`SecStaticCodeCreateWithPath`, `SecRequirementCreateWithString`,
+`SecStaticCodeCheckValidityWithErrors`, `CFErrorCopyDescription`, `CFRelease`; no
+structs by value, no callbacks, no variadics.
+- `/usr/bin/codesign --verify --strict --deep -R=<req> <bundle>`: no dependency, no
+  cgo; the verdict is the exit status, so no output is parsed. Absolute path (SIP
+  protects it), empty environment. Costs one process per apply. **Unverified:**
+  whether `/usr/bin/codesign` exists on a macOS without the Command Line Tools —
+  sources disagree; signing needs `codesign_allocate` from the CLT, verifying may
+  not. Check on a clean install before choosing this; if it is absent, only the
+  framework routes remain.
+- Pure-Go FFI without cgo — `github.com/go-webgpu/goffi` (MIT, v0.6.x) or
+  `github.com/ebitengine/purego` (Apache-2.0, beta, Tier 1 on darwin, more
+  deployments). Both replace the cgo runtime with a fake one under
+  `CGO_ENABLED=0`, which changes process startup for the whole binary — including
+  the helper that runs as root — and is a new `core` dependency (AGENTS.md §3).
+  goffi's advantages (zero-alloc calls, full struct ABI) buy nothing for six calls
+  per apply.
+- cgo: exact and dependency-free, but ends cross-compiling darwin from another OS.
+
+Leaning: `codesign` first; FFI only if the process spawn proves a problem. Also decide
+whether a build without a Team ID is refused on darwin or skips the gate with a
+warning.
+
+### IDN-28 — macOS: install on quit and relaunch (§14.3)
+There is no launcher on macOS — the bundle is what starts — so `DEFERRED` cannot be
+completed "at the next start" without starting the application twice. The macOS
+shape is Sparkle's: a helper shipped in `Contents/Helpers/`, signed with the same
+Team ID (macOS 13's App Management lets a process modify only bundles of its own
+team without a prompt), started when the application wants the update applied; it
+waits for the application's process to exit (optionally asking it to quit with an
+Apple event), resumes the deferred transaction, swaps (IDN-26) and relaunches through
+Launch Services — only on success, and only if the application was running.
+
+The helper takes the same three scalars as the elevated `apply` verb and no path from
+its caller; for a system-wide install it is the thing IDN-08 elevates.
+
 
 ---
 
