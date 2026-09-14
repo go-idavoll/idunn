@@ -15,14 +15,10 @@
 package main
 
 import (
-	"bytes"
 	"embed"
-	"encoding/json"
-	"errors"
 	"fmt"
-	"io/fs"
-	"net/url"
-	"path"
+
+	internalanchor "github.com/go-idavoll/idunn/internal/anchor"
 )
 
 // The build-time trust anchor.
@@ -43,8 +39,8 @@ var anchorFS embed.FS
 
 const (
 	anchorDir      = "anchor"
-	anchorRootName = "root.json"
-	anchorRepoName = "repository.json"
+	anchorRootName = internalanchor.RootName
+	anchorRepoName = internalanchor.RepoName
 
 	// anchorFlag is the only way to name a trust anchor at runtime, and only a
 	// build that embeds none accepts it.
@@ -53,15 +49,11 @@ const (
 
 // ErrAnchor is the class of every rejection of the embedded configuration or of
 // a flag that tries to displace it.
-var ErrAnchor = errors.New("installer: trust anchor")
+var ErrAnchor = internalanchor.ErrAnchor
 
 // repository is the embedded description of where the repository lives. It
 // carries no trust: root.json does.
-type repository struct {
-	MetadataURL string `json:"metadata_url"`
-	TargetsURL  string `json:"targets_url"`
-	Channel     string `json:"channel"`
-}
+type repository = internalanchor.Repository
 
 // anchor is what this build was compiled with.
 type anchor struct {
@@ -73,79 +65,30 @@ type anchor struct {
 // is the tool as it lives in idunn's own tree, usable only with the flags that
 // name a trust anchor explicitly.
 func loadAnchor() (*anchor, error) {
-	a := &anchor{}
-
-	raw, err := anchorFS.ReadFile(path.Join(anchorDir, anchorRootName))
-	switch {
-	case err == nil:
-		if len(bytes.TrimSpace(raw)) == 0 {
-			return nil, fmt.Errorf("%w: the embedded %s is empty", ErrAnchor, anchorRootName)
-		}
-		a.root = raw
-	case errors.Is(err, fs.ErrNotExist):
-	default:
-		return nil, fmt.Errorf("%w: %w", ErrAnchor, err)
+	e, err := internalanchor.Load(anchorFS, anchorDir)
+	if err != nil {
+		return nil, err
 	}
-
-	raw, err = anchorFS.ReadFile(path.Join(anchorDir, anchorRepoName))
-	switch {
-	case err == nil:
-		if err := decodeRepository(raw, &a.repo); err != nil {
-			return nil, err
-		}
-	case errors.Is(err, fs.ErrNotExist):
-	default:
-		return nil, fmt.Errorf("%w: %w", ErrAnchor, err)
+	a := &anchor{root: e.Root}
+	if e.Repo != nil {
+		a.repo = *e.Repo
 	}
 	return a, nil
 }
 
-// decodeRepository parses repository.json strictly. An unknown key means the
-// build embedded a configuration this binary does not understand, which is not
-// something to proceed on with defaults.
+// decodeRepository parses repository.json strictly (internal/anchor).
 func decodeRepository(raw []byte, out *repository) error {
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(out); err != nil {
-		return fmt.Errorf("%w: %s: %w", ErrAnchor, anchorRepoName, err)
-	}
-	if dec.More() {
-		return fmt.Errorf("%w: %s: trailing data", ErrAnchor, anchorRepoName)
-	}
-	if out.MetadataURL == "" {
-		return fmt.Errorf("%w: %s names no metadata_url", ErrAnchor, anchorRepoName)
-	}
-	if err := checkURL("metadata_url", out.MetadataURL); err != nil {
+	repo, err := internalanchor.DecodeRepository(raw)
+	if err != nil {
 		return err
 	}
-	if out.TargetsURL != "" {
-		if err := checkURL("targets_url", out.TargetsURL); err != nil {
-			return err
-		}
-	}
+	*out = repo
 	return nil
 }
 
-// checkURL rejects a repository URL this binary could not fetch from.
-//
-// It does not demand https. TLS is transport hardening here, not the basis of
-// trust — the embedded root.json is (docs/design.md §4) — and an air-gapped
-// mirror served over plain http is a legitimate deployment, not a downgrade.
-func checkURL(field, raw string) error {
-	u, err := url.Parse(raw)
-	if err != nil {
-		return fmt.Errorf("%w: %s is not a URL: %w", ErrAnchor, field, err)
-	}
-	switch u.Scheme {
-	case "http", "https":
-	default:
-		return fmt.Errorf("%w: %s has scheme %q; only http and https are supported", ErrAnchor, field, u.Scheme)
-	}
-	if u.Host == "" {
-		return fmt.Errorf("%w: %s names no host", ErrAnchor, field)
-	}
-	return nil
-}
+// checkURL rejects a repository URL this binary could not fetch from
+// (internal/anchor).
+func checkURL(field, raw string) error { return internalanchor.CheckURL(field, raw) }
 
 // hasRoot reports whether this build carries a trust anchor.
 func (a *anchor) hasRoot() bool { return len(a.root) > 0 }
@@ -189,16 +132,9 @@ func (a *anchor) urls(metadataFlag, targetsFlag string) (metadataURL, targetsURL
 		return "", "", err
 	}
 
-	targetsURL = firstNonEmpty(targetsFlag, a.repo.TargetsURL)
-	if targetsURL == "" {
-		// The published layout puts /metadata/ and /targets/ side by side
-		// (docs/packer.md §6), so the sibling is the right default — not
-		// go-tuf's, which nests targets underneath the metadata URL.
-		base, perr := url.Parse(metadataURL)
-		if perr != nil {
-			return "", "", fmt.Errorf("%w: metadata URL: %w", ErrAnchor, perr)
-		}
-		targetsURL = base.JoinPath("..", "targets/").String()
+	targetsURL, err = internalanchor.TargetsURL(metadataURL, firstNonEmpty(targetsFlag, a.repo.TargetsURL))
+	if err != nil {
+		return "", "", err
 	}
 	if err := checkURL("--targets-url", targetsURL); err != nil {
 		return "", "", err

@@ -12,19 +12,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:build !windows && !unix
+//go:build windows
 
 package elevate
 
-import "fmt"
+import (
+	"fmt"
 
-// On a platform without an owner model this check knows, no root is safe.
-func checkVolume(dir string) error {
-	return fmt.Errorf("%w: %w: no ownership model on this platform", ErrUnsafeRoot, ErrNotImplemented)
-}
+	"golang.org/x/sys/windows"
+)
 
-func checkPointer(path string) error { return checkObject(path, roleContainer) }
-
-func checkObject(string, role) error {
-	return fmt.Errorf("%w: %w: no ownership model on this platform", ErrUnsafeRoot, ErrNotImplemented)
+// programFiles asks the shell for the Program Files folder rather than reading
+// %ProgramFiles%: an environment variable is the caller's to set, and the state
+// directory it would name is where a privileged helper reads who may ask.
+func programFiles() (string, error) {
+	p, err := windows.KnownFolderPath(windows.FOLDERID_ProgramFiles, windows.KF_FLAG_DEFAULT)
+	if err != nil {
+		return "", fmt.Errorf("%w: cannot locate Program Files: %w", ErrHelper, err)
+	}
+	return p, nil
 }

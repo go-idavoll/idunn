@@ -82,6 +82,10 @@ func AcceptRequest(root, channel, version string) (Request, error) {
 // non-administrator cannot change any of them between this check and the
 // helper's writes, so the check does not race.
 //
+// The install's `current` entry is the one link it may contain: on POSIX the
+// pointer is a symlink by design (internal/layout), and it passes if root owns
+// it. Every other link is refused.
+//
 // The contents of version directories below their top level are not examined:
 // the helper verifies every byte it reuses from them against its signed hash
 // (§6.4) and never writes into an existing one.
@@ -123,8 +127,13 @@ func CheckPrivilegedRoot(root string) error {
 	if err != nil {
 		return err
 	}
+	pointer := filepath.Join(root, layout.CurrentName)
 	for _, p := range objects {
-		if err := checkObject(p, roleContainer); err != nil {
+		check := func(p string) error { return checkObject(p, roleContainer) }
+		if p == pointer {
+			check = checkPointer
+		}
+		if err := check(p); err != nil {
 			return err
 		}
 	}

@@ -257,10 +257,10 @@ func (j *Journal) Append(r Record) error {
 	}
 	raw = append(raw, '\n')
 
-	if err := j.fs.MkdirAll(layout.Meta(j.root), 0o700); err != nil {
+	if err := j.fs.MkdirAll(layout.Meta(j.root), layout.DirMode); err != nil {
 		return fmt.Errorf("%w: %w", ErrJournal, err)
 	}
-	if err := fsx.WriteFileAtomic(j.fs, j.path, raw, 0o600); err != nil {
+	if err := fsx.WriteFileAtomic(j.fs, j.path, raw, layout.MetaFileMode); err != nil {
 		return fmt.Errorf("%w: %w", ErrJournal, err)
 	}
 

@@ -12,19 +12,29 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:build !windows && !unix
+//go:build !windows
 
-package elevate
+package main
 
-import "fmt"
+import (
+	"context"
+	"io"
+	"os"
+	"os/signal"
+	"syscall"
+)
 
-// On a platform without an owner model this check knows, no root is safe.
-func checkVolume(dir string) error {
-	return fmt.Errorf("%w: %w: no ownership model on this platform", ErrUnsafeRoot, ErrNotImplemented)
+// runService runs body in the foreground until SIGINT or SIGTERM — the signals
+// launchd and systemd stop a daemon with. Logs go to stderr, which both collect.
+func runService(body func(context.Context, io.Writer) int, stderr io.Writer) int {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return body(ctx, stderr)
 }
 
-func checkPointer(path string) error { return checkObject(path, roleContainer) }
-
-func checkObject(string, role) error {
-	return fmt.Errorf("%w: %w: no ownership model on this platform", ErrUnsafeRoot, ErrNotImplemented)
+func requireAdministrator() error {
+	if os.Geteuid() != 0 {
+		return errNotAdministrator
+	}
+	return nil
 }

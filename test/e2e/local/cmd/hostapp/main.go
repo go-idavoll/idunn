@@ -31,9 +31,19 @@
 //	                                application does, so the update defers
 //	  --relaunch-via <launcher>     afterwards, launch.Relaunch through that
 //	                                launcher and exit with its code (IDN-29)
+//	hostapp --self-update --service E ...
+//	                                the same, but the install root belongs to a
+//	                                privileged helper listening on E, which
+//	                                applies the update (updater.ElevationService)
+//	hostapp --service E --root R --request-version V
+//	                                send the helper a bare request for V, with no
+//	                                trust client and no resolution on this side:
+//	                                a caller asking for what the channel does not
+//	                                offer
 //
 // Exit codes: 0 ok, 1 error, 2 usage, 3 already up to date, 4 deferred to the
-// next start.
+// next start, 5 denied by the helper (elevate.ErrDenied), 6 the helper refused
+// or failed the apply (elevate.ErrHelper).
 //
 // Build-time configuration:
 //
@@ -50,10 +60,12 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/go-idavoll/idunn/core/elevate"
 	"github.com/go-idavoll/idunn/core/fetch"
 	"github.com/go-idavoll/idunn/core/fsx"
 	"github.com/go-idavoll/idunn/core/hook"
 	"github.com/go-idavoll/idunn/core/launch"
+	"github.com/go-idavoll/idunn/core/release"
 	"github.com/go-idavoll/idunn/core/trust"
 	"github.com/go-idavoll/idunn/core/updater"
 )
@@ -68,6 +80,8 @@ const (
 	exitUsage    = 2
 	exitNoUpdate = 3
 	exitDeferred = 4
+	exitDenied   = 5
+	exitHelper   = 6
 )
 
 func main() {
@@ -85,9 +99,11 @@ type config struct {
 	failMigrate bool
 	hangAt      string
 
-	holdOwnLock bool
-	relaunchVia string
-	args        []string // this run's own arguments, for the relaunch
+	holdOwnLock    bool
+	relaunchVia    string
+	args           []string // this run's own arguments, for the relaunch
+	service        string
+	requestVersion string
 }
 
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
@@ -111,6 +127,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fs.StringVar(&c.hangAt, "hang-at", "", "stop and wait to be killed the moment this phase is entered")
 	fs.BoolVar(&c.holdOwnLock, "hold-own-lock", false, "hold --lock while updating, as a running instance does")
 	fs.StringVar(&c.relaunchVia, "relaunch-via", "", "after the update, relaunch through this launcher")
+	fs.StringVar(&c.service, "service", "", "endpoint of the privileged helper that owns --root")
+	fs.StringVar(&c.requestVersion, "request-version", "", "with --service: ask the helper for this version, resolving nothing here")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
@@ -119,6 +137,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	switch {
 	case *holdLock:
 		return hold(c.lockFile, stdin, stdout, stderr)
+	case c.requestVersion != "":
+		return request(c, stdout, stderr)
 	case *selfUpdate:
 		return doSelfUpdate(c, stdout, stderr)
 	default:
@@ -214,6 +234,18 @@ func doSelfUpdate(c config, stdout, stderr io.Writer) int {
 	if c.data != "" {
 		o.Migrate = &migrator{dir: c.data, fail: c.failMigrate}
 	}
+	if c.service != "" {
+		el, err := elevate.NewService(elevate.ServiceOptions{Endpoint: c.service})
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "hostapp: --service: %v\n", err)
+			return exitUsage
+		}
+		o.Elevator = el
+		o.Policy.Elevation = updater.ElevationService
+		// The helper decides on the user that connects; printing it ties this
+		// process to the helper's log line.
+		_, _ = fmt.Fprintf(stdout, "euid %d\n", os.Geteuid())
+	}
 
 	// A running application holds its own lock while it works, which is exactly
 	// why an update it applies to itself has to wait for a moment it is gone.
@@ -270,10 +302,45 @@ func applyOnce(u *updater.Updater, stdout, stderr io.Writer) int {
 			return exitDeferred
 		}
 		_, _ = fmt.Fprintf(stderr, "hostapp: apply: %v\n", err)
-		return exitError
+		return elevationExit(err)
 	}
 	_, _ = fmt.Fprintf(stdout, "updated %s -> %s\n", rel.FromVersion, rel.Descriptor.Version)
 	return exitOK
+}
+
+// request sends the helper a request for one version and nothing else: no
+// refresh, no resolution, no policy on this side. It is the caller the helper
+// must not take at its word.
+func request(c config, stdout, stderr io.Writer) int {
+	if c.service == "" || c.root == "" {
+		_, _ = fmt.Fprintln(stderr, "hostapp: --request-version needs --service and --root")
+		return exitUsage
+	}
+	el, err := elevate.NewService(elevate.ServiceOptions{Endpoint: c.service})
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "hostapp: --service: %v\n", err)
+		return exitUsage
+	}
+	_, _ = fmt.Fprintf(stdout, "euid %d\n", os.Geteuid())
+	d := &release.Descriptor{Channel: c.channel, Version: c.requestVersion}
+	if err := el.Apply(context.Background(), c.root, d); err != nil {
+		_, _ = fmt.Fprintf(stderr, "hostapp: request: %v\n", err)
+		return elevationExit(err)
+	}
+	_, _ = fmt.Fprintf(stdout, "requested %s\n", c.requestVersion)
+	return exitOK
+}
+
+// elevationExit classifies a failed apply by what the helper answered.
+func elevationExit(err error) int {
+	switch {
+	case errors.Is(err, elevate.ErrDenied):
+		return exitDenied
+	case errors.Is(err, elevate.ErrHelper):
+		return exitHelper
+	default:
+		return exitError
+	}
 }
 
 // progress prints one line per event and, when asked, stops in a named phase.

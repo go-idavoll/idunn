@@ -12,19 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:build !windows && !unix
+//go:build !windows
 
 package elevate
 
 import "fmt"
 
-// On a platform without an owner model this check knows, no root is safe.
-func checkVolume(dir string) error {
-	return fmt.Errorf("%w: %w: no ownership model on this platform", ErrUnsafeRoot, ErrNotImplemented)
-}
-
-func checkPointer(path string) error { return checkObject(path, roleContainer) }
-
-func checkObject(string, role) error {
-	return fmt.Errorf("%w: %w: no ownership model on this platform", ErrUnsafeRoot, ErrNotImplemented)
+func programFiles() (string, error) {
+	return "", fmt.Errorf("%w: Program Files exists on Windows only", ErrNotImplemented)
 }

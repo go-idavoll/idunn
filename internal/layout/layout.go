@@ -62,6 +62,23 @@ const (
 	TrustCacheName = "tuf"
 )
 
+// The permissions of what the updater creates under an install root.
+//
+// An install tree is readable by everyone and writable only by its owner, like
+// any program installed under /opt or /usr/local. A system-wide install is written
+// by root (the elevated or service helper) and run by ordinary users: they must be
+// able to follow `current`, execute the version directory, and read the install
+// state and the known-good time floor that CheckForUpdate checks against — which
+// 0700/0600 would forbid, turning every such install into one its users cannot
+// start or update. Nothing under a root is secret: the payload is a published
+// release, the journal and state name versions, and the TUF cache holds public
+// metadata. What must not be possible is writing, and that is the owner's alone
+// either way.
+const (
+	DirMode      = 0o755
+	MetaFileMode = 0o644
+)
+
 // ErrLayout is the class of every rejection in this package: a root that is not
 // an install, a version string that must not become a path, a `current` that is
 // not the pointer it should be.

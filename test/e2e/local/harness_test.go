@@ -171,11 +171,14 @@ func workBase() (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-func goBuild(out, pkg, ldflags string) error {
+// goBuild builds pkg into out. extra goes before the package, for flags such as
+// -overlay.
+func goBuild(out, pkg, ldflags string, extra ...string) error {
 	args := []string{"build", "-o", out}
 	if ldflags != "" {
 		args = append(args, "-ldflags", ldflags)
 	}
+	args = append(args, extra...)
 	args = append(args, pkg)
 	ctx, cancel := context.WithTimeout(context.Background(), buildTimeout)
 	defer cancel()

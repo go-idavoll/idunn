@@ -138,7 +138,9 @@ func (s *Stager) Stage(ctx context.Context, d *release.Descriptor, route Route) 
 	if err := s.FS.RemoveAll(stageDir); err != nil {
 		return "", fmt.Errorf("%w: clear staging: %w", ErrStage, err)
 	}
-	if err := s.FS.MkdirAll(stageDir, 0o700); err != nil {
+	// Becomes versions/<v> by rename, so it is created with the mode the version
+	// directory must have: executable by the users who run the application.
+	if err := s.FS.MkdirAll(stageDir, layout.DirMode); err != nil {
 		return "", fmt.Errorf("%w: create staging: %w", ErrStage, err)
 	}
 
@@ -247,7 +249,7 @@ func (s *Stager) makeDirs(base, rel string) (string, error) {
 		if err := s.refuseSymlink(dir); err != nil {
 			return "", err
 		}
-		if err := s.FS.MkdirAll(dir, 0o700); err != nil {
+		if err := s.FS.MkdirAll(dir, layout.DirMode); err != nil {
 			return "", fmt.Errorf("%w: %w", ErrStage, err)
 		}
 	}

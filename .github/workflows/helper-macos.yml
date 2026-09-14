@@ -1,0 +1,211 @@
+# Copyright 2026 The idunn Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The macOS helper packaging flow (scripts/macos, docs/helper.md): build
+# cmd/helper with a throwaway anchor, put it into a minimal application bundle,
+# sign it ad-hoc and verify the result -- and check that the scripts refuse what
+# they exist to refuse.
+#
+# What this proves: the scripts agree with each other, with `helper plist`
+# (elevate.DaemonPlist) and with codesign's reading of the signed bundle; the
+# helper's code-signing identifier is its label; a requirement naming the app
+# is satisfied and one naming another app is not; tampering is caught.
+#
+# What it cannot prove: a Developer ID signature, notarization, Gatekeeper,
+# stapling, SMAppService registration and user approval. Those need a
+# certificate, Apple's notary service and a person; no step here pretends
+# otherwise. No signing identity or credential is available to this workflow.
+name: Helper (macOS)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "cmd/helper/**"
+      - "scripts/macos/**"
+      - "core/elevate/**"
+      - ".github/workflows/helper-macos.yml"
+  pull_request:
+    paths:
+      - "cmd/helper/**"
+      - "scripts/macos/**"
+      - "core/elevate/**"
+      - ".github/workflows/helper-macos.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: helper-macos-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: stable
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  shellcheck:
+    name: shellcheck (scripts/macos)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # scripts/macos/.shellcheckrc makes the sourced common.sh part of the check.
+      - name: shellcheck
+        run: |
+          shellcheck --version
+          shellcheck scripts/macos/*.sh
+
+  bundle:
+    name: bundle, sign (ad-hoc), verify
+    runs-on: macos-latest
+    timeout-minutes: 20
+    env:
+      LABEL: com.idunn.ci.app.helper
+      BUNDLE_ID: com.idunn.ci.app
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+
+      - name: cmd/helper is present
+        run: |
+          test -d cmd/helper && test -d cmd/helper/anchor || {
+            echo "cmd/helper (and cmd/helper/anchor/) is missing: there is no helper to bundle"
+            exit 1
+          }
+
+      # A throwaway root, as test/e2e/run.sh makes one. Only 1.root.json is
+      # used; the private keys are deleted before anything else runs. The
+      # anchor exists in this workspace only and is never committed.
+      - name: Throwaway anchor
+        run: |
+          work="$RUNNER_TEMP/helper-ci"
+          mkdir -p "$work"
+          go run ./test/e2e/cmd/e2etool init-repo --repo "$work/root" --keys "$work/keys" >/dev/null
+          rm -rf "$work/keys"
+          cp "$work/root/metadata/1.root.json" cmd/helper/anchor/root.json
+          cat >cmd/helper/anchor/repository.json <<'EOF'
+          {
+            "metadata_url": "https://updates.invalid/metadata/",
+            "targets_url": "https://updates.invalid/targets/",
+            "channel": "stable"
+          }
+          EOF
+          cat >cmd/helper/anchor/helper.json <<EOF
+          {
+            "label": "$LABEL",
+            "allowed_roots": ["/Library/Application Support/IdunnCI"],
+            "peer_requirement": "identifier \"$BUNDLE_ID\"",
+            "min_interval_seconds": 5,
+            "macos_bundle_identifier": "$BUNDLE_ID"
+          }
+          EOF
+          cat cmd/helper/anchor/helper.json
+
+      - name: Build the helper
+        run: |
+          go build -trimpath -ldflags "-X main.version=0.0.0-ci" -o "$RUNNER_TEMP/helper-ci/$LABEL" ./cmd/helper
+          "$RUNNER_TEMP/helper-ci/$LABEL" version
+          "$RUNNER_TEMP/helper-ci/$LABEL" plist
+
+      - name: Minimal application bundle
+        run: |
+          app="$RUNNER_TEMP/helper-ci/IdunnCI.app"
+          mkdir -p "$app/Contents/MacOS"
+          cat >"$app/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
+            <key>CFBundleExecutable</key><string>IdunnCI</string>
+            <key>CFBundleName</key><string>IdunnCI</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>0.0.0</string>
+            <key>CFBundleVersion</key><string>1</string>
+            <key>LSMinimumSystemVersion</key><string>13.0</string>
+          </dict>
+          </plist>
+          EOF
+          plutil -lint "$app/Contents/Info.plist"
+          printf 'int main(void) { return 0; }\n' >"$RUNNER_TEMP/helper-ci/main.c"
+          cc -o "$app/Contents/MacOS/IdunnCI" "$RUNNER_TEMP/helper-ci/main.c"
+
+      - name: Bundle, sign ad-hoc, verify
+        run: |
+          work="$RUNNER_TEMP/helper-ci"
+          app="$work/IdunnCI.app"
+          scripts/macos/bundle-helper.sh --app "$app" --helper "$work/$LABEL" --label "$LABEL"
+          scripts/macos/sign.sh --app "$app" --identity - --adhoc-for-ci
+          scripts/macos/verify.sh --app "$app" --label "$LABEL" --adhoc --requirement "identifier \"$BUNDLE_ID\""
+
+      # Each case must fail, and fail for its own reason.
+      - name: Refusals
+        run: |
+          work="$RUNNER_TEMP/helper-ci"
+          app="$work/IdunnCI.app"
+          refused() { # refused <expected message part> <command...>
+            local want="$1" out
+            shift
+            if out="$("$@" 2>&1)"; then
+              printf 'NOT REFUSED: %s\n%s\n' "$*" "$out"
+              exit 1
+            fi
+            case "$out" in
+              *"$want"*) printf 'refused as expected: %s\n' "$want" ;;
+              *) printf 'refused for the wrong reason (want "%s"): %s\n%s\n' "$want" "$*" "$out"; exit 1 ;;
+            esac
+          }
+          fresh() { rm -rf "$work/t.app"; ditto "$app" "$work/t.app"; }
+
+          refused "not reverse-DNS" scripts/macos/bundle-helper.sh --app "$app" --helper "$work/$LABEL" --label nodots
+          refused "longer than 62 bytes" scripts/macos/bundle-helper.sh --app "$app" --helper "$work/$LABEL" \
+            --label "a.$(printf '%061d' 0 | tr 0 b)"
+          refused "needs --adhoc-for-ci" scripts/macos/sign.sh --app "$app" --identity -
+          refused "no signing identity" env -u IDUNN_SIGN_IDENTITY scripts/macos/sign.sh --app "$app"
+          refused "never taken on the command line" scripts/macos/notarize.sh --app "$app" --apple-id x@example.invalid
+
+          fresh
+          refused "is signed" scripts/macos/bundle-helper.sh --app "$work/t.app" --helper "$work/$LABEL" --label "$LABEL"
+          refused "is not this helper's" scripts/macos/bundle-helper.sh --app "$work/t.app" --helper "$work/$LABEL" \
+            --label com.idunn.ci.other --force
+
+          refused "does not satisfy the requirement" scripts/macos/verify.sh --app "$app" --label "$LABEL" --adhoc \
+            --requirement 'identifier "com.idunn.ci.someoneelse"'
+          refused "carries helper" scripts/macos/verify.sh --app "$app" --label com.idunn.ci.other --adhoc
+          refused "is ad-hoc signed" scripts/macos/verify.sh --app "$app" --label "$LABEL"
+
+          fresh
+          printf 'x' >>"$work/t.app/Contents/Library/HelperTools/$LABEL"
+          refused "does not verify" scripts/macos/verify.sh --app "$work/t.app" --label "$LABEL" --adhoc
+
+          fresh
+          /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:DYLD_INSERT_LIBRARIES string /tmp/x.dylib" \
+            "$work/t.app/Contents/Library/LaunchDaemons/$LABEL.plist"
+          refused "want exactly" scripts/macos/verify.sh --app "$work/t.app" --label "$LABEL" --adhoc
+          refused "want exactly" scripts/macos/sign.sh --app "$work/t.app" --identity - --adhoc-for-ci
+
+          rm -rf "$work/t.app"

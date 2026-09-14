@@ -12,19 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:build !windows && !unix
+//go:build e2e && !linux
 
-package elevate
+package e2elocal
 
-import "fmt"
+import (
+	"runtime"
+	"testing"
+)
 
-// On a platform without an owner model this check knows, no root is safe.
-func checkVolume(dir string) error {
-	return fmt.Errorf("%w: %w: no ownership model on this platform", ErrUnsafeRoot, ErrNotImplemented)
-}
-
-func checkPointer(path string) error { return checkObject(path, roleContainer) }
-
-func checkObject(string, role) error {
-	return fmt.Errorf("%w: %w: no ownership model on this platform", ErrUnsafeRoot, ErrNotImplemented)
+// TestServiceModeInstallsAndUpdatesThroughTheHelper is service_linux_test.go's
+// scenario. It needs a helper run as root, an application run as another user
+// and the Linux helper paths; here it only says why it did not run.
+func TestServiceModeInstallsAndUpdatesThroughTheHelper(t *testing.T) {
+	t.Skipf("the service-mode scenario runs on Linux as root only (this is %s)", runtime.GOOS)
 }

@@ -111,10 +111,10 @@ func WriteInstall(f fsx.FS, root string, in Install) error {
 	}
 	raw = append(raw, '\n')
 
-	if err := f.MkdirAll(Meta(root), 0o700); err != nil {
+	if err := f.MkdirAll(Meta(root), DirMode); err != nil {
 		return fmt.Errorf("%w: %w", ErrLayout, err)
 	}
-	if err := fsx.WriteFileAtomic(f, State(root), raw, 0o600); err != nil {
+	if err := fsx.WriteFileAtomic(f, State(root), raw, MetaFileMode); err != nil {
 		return fmt.Errorf("%w: %w", ErrLayout, err)
 	}
 	return nil

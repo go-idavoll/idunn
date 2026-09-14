@@ -1,0 +1,4 @@
+# ShellCheck settings for scripts/linux, found by walking up from each script.
+# The scripts source common.sh from their own directory.
+source-path=SCRIPTDIR
+external-sources=true

@@ -154,10 +154,12 @@ func (f Floor) Observe(now time.Time) error {
 	}
 	raw = append(raw, '\n')
 
-	if err := f.FS.MkdirAll(layout.Meta(f.Root), 0o700); err != nil {
+	if err := f.FS.MkdirAll(layout.Meta(f.Root), layout.DirMode); err != nil {
 		return fmt.Errorf("%w: %w", ErrFloor, err)
 	}
-	if err := fsx.WriteFileAtomic(f.FS, layout.Clock(f.Root), raw, 0o600); err != nil {
+	// Readable by everyone: in a system-wide install, the unprivileged application
+	// checks its clock against this floor before every refresh (layout.DirMode).
+	if err := fsx.WriteFileAtomic(f.FS, layout.Clock(f.Root), raw, layout.MetaFileMode); err != nil {
 		return fmt.Errorf("%w: %w", ErrFloor, err)
 	}
 	return nil

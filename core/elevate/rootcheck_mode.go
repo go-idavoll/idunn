@@ -32,6 +32,24 @@ func judgeMode(path string, mode fs.FileMode, uid, gid uint64, r role) error {
 	return nil
 }
 
+// judgePointer is judgeMode for the install's `current` entry. On POSIX that
+// entry is a symlink (internal/layout's pointer form), the one link an install
+// contains, and it passes if root owns it: a symlink's own mode bits mean
+// nothing, and replacing it takes write access to the root directory, which is
+// judged as a container. Where it points is not this check's question —
+// layout.PointerTarget refuses a pointer that does not name a version directory
+// before anything follows it. Anything that is not a symlink is judged like every
+// other entry of the install.
+func judgePointer(path string, mode fs.FileMode, uid, gid uint64) error {
+	if mode&fs.ModeSymlink == 0 {
+		return judgeMode(path, mode, uid, gid, roleContainer)
+	}
+	if uid != 0 {
+		return fmt.Errorf("%w: %q is owned by uid %d", ErrUnsafeRoot, path, uid)
+	}
+	return nil
+}
+
 // modeProblem says why an object with this owner and mode is not one only root
 // controls in role r, or nil. It carries no error class; each caller adds the
 // one that fits what the object is to it (an install root, a helper binary).
