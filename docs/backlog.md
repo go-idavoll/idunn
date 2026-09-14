@@ -403,10 +403,15 @@ module; a public `packer.ValidateConfig([]byte) error` and a `--json` flag on
 `publish` would let it stop mirroring unexported rules and parsing human-readable
 output.
 
-### IDN-20 — Decide the mythology naming question (§2.1)
-Left explicitly open in the design. Functional names are canonical in code today,
-which is the recommended middle path; the decision is whether mythological names are
-adopted as branding. Closing it costs nothing and removes a recurring question.
+### IDN-20 — Decide the mythology naming question (§2.1) — **done**
+Functional names are canonical in code; mythological names are branding for the
+umbrella `idunn` and nothing below it.
+
+The first half is what the code has always done, so deciding it costs nothing. The
+second half is the part that needed deciding: not `heimdall`, not `bifrost`, not as an
+internal codename. A codename that lives in a README is charming; one that turns up in
+a stack trace an auditor is reading is a question they have to stop and ask, and the
+boundary is easier to hold at zero than at two.
 
 ### IDN-22 — The elevated helper vets the install root it is asked to write (§14.2, T16) — **done**
 The root is one of the three scalars, and the caller chooses it. A helper running as
