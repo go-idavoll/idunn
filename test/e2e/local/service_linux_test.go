@@ -410,6 +410,11 @@ func startHelper(t *testing.T, bin, endpoint string) *helperProc {
 			_ = h.cmd.Process.Kill()
 			<-h.done
 		}
+		// The helper's reasons never reach the caller, only its log: without it
+		// a failed scenario says "denied" and nothing about why.
+		if t.Failed() {
+			t.Logf("helper log:\n%s", h.log())
+		}
 	})
 
 	deadline := time.After(lineTimeout)
