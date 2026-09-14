@@ -233,8 +233,23 @@ func RunPatchedUpdate(srv *Server, rootBytes []byte, workDir string, at time.Tim
 }
 
 // InstalledBytes reads a file out of the running installation.
+//
+// It follows the install pointer rather than reading through `current`: on
+// POSIX that is a symlink the path can traverse, but on Windows it is a pointer
+// file, and `current/<dst>` does not exist there at all.
 func InstalledBytes(installRoot, dst string) ([]byte, error) {
-	return os.ReadFile(filepath.Join(layout.Current(installRoot), filepath.FromSlash(dst)))
+	version, err := layout.PointerTarget(fsx.OS(), installRoot)
+	if err != nil {
+		return nil, err
+	}
+	if version == "" {
+		return nil, fmt.Errorf("%s holds no installation", installRoot)
+	}
+	dir, err := layout.VersionDir(installRoot, version)
+	if err != nil {
+		return nil, err
+	}
+	return os.ReadFile(filepath.Join(filepath.FromSlash(dir), filepath.FromSlash(dst)))
 }
 
 // NoTraceOf reports whether marker appears in any file under root.
