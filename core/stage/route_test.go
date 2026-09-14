@@ -375,3 +375,43 @@ func TestStagePrefersReuseOverPatching(t *testing.T) {
 		t.Errorf("fetched %v for a file that did not change", r.asked)
 	}
 }
+
+// Patching cannot route around the target ceiling either (IDN-12). The patch
+// itself is small, but what it would build is above what the trust client will
+// allocate: the patch is never fetched, its base never read, and the full
+// target is refused as well.
+func TestStageDoesNotPatchTowardsATargetAboveTheCeiling(t *testing.T) {
+	const dst = "lib/libcef.so"
+	old := runtimeBytes(61, 1<<16)
+	newer := rebuilt(old, 62)
+
+	r := newRepo(t, old, newer)
+	patch := r.publishPatch(old, newer)
+	r.ceiling = int64(len(newer)) - 1
+	if int64(len(r.files[patch])) > r.ceiling {
+		t.Fatal("the patch is above the ceiling itself; the case would be vacuous")
+	}
+
+	m := installedWith(t, "1.2.0", dst, old)
+	base := "/opt/app/versions/1.2.0/" + dst
+	opened := false
+	m.Fail = func(op, name string) error {
+		if op == "open" && name == base {
+			opened = true
+		}
+		return nil
+	}
+	s := &stage.Stager{FS: m, Trust: r, Root: root}
+
+	if _, err := s.Stage(context.Background(), descriptor(
+		ref(payload(newer), dst, release.KindLib, 0o644),
+	), stage.Route{dst: {payload(old), payload(newer)}}); err == nil {
+		t.Fatal("staged a target above the ceiling")
+	}
+	if slices.Contains(r.asked, patch) {
+		t.Error("fetched a patch towards a target above the ceiling")
+	}
+	if opened {
+		t.Error("read a patch base for a target above the ceiling")
+	}
+}

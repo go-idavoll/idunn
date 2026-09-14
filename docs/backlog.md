@@ -127,10 +127,41 @@ authority verifiable, an unknown one stays refused), the user agent, the timeout
 and the refusals. Three corpus cases were added for the resolve mutators that were
 registered but never exercised by a case.
 
-### IDN-12 — Streaming targets instead of whole-file buffers
-`trust.Target` holds every payload in memory because go-tuf's `DownloadTarget`
-returns a slice (`TODO(stage)` in `core/trust`). A multi-hundred-megabyte payload is
-a memory spike today. Needs a fetcher that exposes the response body.
+### IDN-12 — Streaming targets instead of whole-file buffers — **partly done, streaming blocked upstream**
+`trust.Target` holds every payload in memory, and at go-tuf v2.4.2 — the newest
+release — that is structural rather than a shortcut taken here: the fetcher contract is
+
+```go
+DownloadFile(urlPath string, maxLength int64, _ time.Duration) ([]byte, error)
+```
+
+and `Updater.DownloadTarget` verifies with `VerifyLengthHashes` over the complete
+slice. There is no seam below that line to stream through. Getting one locally would
+mean fetching and verifying beside go-tuf rather than through it, which AGENTS.md §1.2
+forbids and which a memory optimisation does not justify.
+
+What was in this repository's hands is done: the allocation is bounded.
+`trust.Options.MaxTargetBytes` (default `trust.DefaultMaxTargetBytes`, 2 GiB; negative
+is refused by `trust.New`) refuses a target whose signed length is above the ceiling
+**before a byte of it is requested or read**. The signed length is the allocation about
+to be made, and a repository is untrusted input even when correctly signed, so the
+failure mode changes from an OOM kill with no diagnosis into an `ErrTrust` that names
+the option to raise. The check sits where every path starts — the download and the
+go-tuf cache read behind `Target` (and so `LatestRelease`, `ReleaseVersion`,
+`MaterializeTarget`), and `TargetLength`/`VerifyTarget`, which size and admit what
+reuse (IDN-10), patch bases and patch outputs (IDN-14) and `VerifyAfterApply` read
+beside go-tuf. It can only refuse; verification is untouched. Negative tests: one byte
+under the signed length is refused with nothing requested and nothing cached, the
+exact length is fetched, a cached target is refused too, and staging neither reads a
+reuse candidate or patch base nor fetches a patch for a target above the ceiling.
+
+What is left: streaming itself — a go-tuf `Fetcher` that can hand back an
+`io.ReadCloser` and a `DownloadTarget` that verifies incrementally, then
+`core/fetch` implementing it (and `fetch.Options.Resume` with it). Also upstream:
+`FindCachedTarget` reads the cached file with an unbounded `os.ReadFile` before it
+compares the length, so an oversized file planted in the local cache is read whole
+even though its signed length is within the ceiling (the cache is local, owner-only
+state — T23).
 
 ### IDN-24 — A default install root that follows the platform's conventions (§5, §6.1, §14.2)
 `cmd/installer` requires `--root` and only makes it absolute; nothing proposes a

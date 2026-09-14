@@ -63,7 +63,9 @@ type Materializer interface {
 
 	// TargetLength returns the signed length of a target without fetching it,
 	// so a local reuse candidate of the wrong size can be dismissed before it
-	// is read.
+	// is read. Every read and allocation staging makes beside Target is sized by
+	// it, so a trust client that will not hold a target (the ceiling of IDN-12)
+	// refuses here as well, and staging treats that like any other refusal.
 	TargetLength(targetPath string) (int64, error)
 
 	// VerifyTarget reports whether data are exactly the signed bytes of a

@@ -316,3 +316,40 @@ func TestStageRefusesACandidateSwappedAfterTheSizeCheck(t *testing.T) {
 		t.Error("the swapped candidate was adopted instead of fetching the target")
 	}
 }
+
+// The trust client's target ceiling (IDN-12) is not something reuse can route
+// around. A file already on disk holds exactly the signed bytes, but the signed
+// length is above what the client will allocate: the candidate is not even
+// opened, the fetch is refused too, and nothing is staged. Reuse degrades into a
+// download, and a download of this target is refused — so the update fails.
+func TestStageRefusesAReusableTargetAboveTheCeiling(t *testing.T) {
+	m := newRoot(t)
+	install(t, m, "1.2.0", map[string]string{"lib/libcef.so": "the runtime"})
+	if err := layout.SetPointer(m, root, "1.2.0"); err != nil {
+		t.Fatalf("SetPointer: %v", err)
+	}
+
+	tr := newTargets(map[string][]byte{"targets/libcef.so": []byte("the runtime")})
+	tr.ceiling = int64(len("the runtime")) - 1
+	candidate := "/opt/app/versions/1.2.0/lib/libcef.so"
+	opened := false
+	m.Fail = func(op, name string) error {
+		if op == "open" && name == candidate {
+			opened = true
+		}
+		return nil
+	}
+	s := &stage.Stager{FS: m, Trust: tr, Root: root}
+
+	if _, err := s.Stage(context.Background(), descriptor(
+		ref("targets/libcef.so", "lib/libcef.so", release.KindLib, 0o644),
+	), nil); err == nil {
+		t.Fatal("staged a target above the ceiling")
+	}
+	if opened {
+		t.Error("the candidate was read although its signed length is refused")
+	}
+	if _, err := fsx.Lstat(m, "/opt/app/versions/1.3.0"); !fsx.IsNotExist(err) {
+		t.Errorf("a version directory exists after the refusal: %v", err)
+	}
+}
