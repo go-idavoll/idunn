@@ -26,9 +26,9 @@ import (
 // It answers the question the helper actually asks — which local user is on the
 // other end — and the kernel answers it about this connection, so it cannot be
 // forged. The audit token (LOCAL_PEERTOKEN), which additionally identifies the
-// signed application rather than only the user, is the stronger statement macOS
-// can make and belongs with the SMAppService daemon (IDN-08, IDN-07); it refines
-// this check rather than replacing it.
+// signed application rather than only the user, is read by the code-signing
+// check that HelperOptions.PeerRequirement enables (framework_darwin.go); it
+// refines this check rather than replacing it.
 func peerOf(conn net.Conn) (peer, error) {
 	uc, ok := conn.(*net.UnixConn)
 	if !ok {

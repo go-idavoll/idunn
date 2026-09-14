@@ -65,6 +65,30 @@ jobs:
       - name: Test (race)
         run: go test -race ./...
 
+      # IDN-08: core/elevate/framework_darwin.go is the repository's only cgo
+      # (ServiceManagement for SMAppService, Security for the peer's code
+      # signature). It is excluded from every CGO_ENABLED=0 build, including the
+      # reproducible release builds, so this is the one place it is compiled.
+      # The steps above already ran it with cgo; this makes sure cgo really was
+      # on, shows the bridge's own tests by name, and checks that the build
+      # without it still fails closed.
+      #
+      # Not tested, because it cannot be unattended: registering a daemon needs a
+      # signed application bundle carrying the plist and a user approving it under
+      # Login Items. No step here pretends otherwise.
+      - name: macOS cgo bridge (core/elevate)
+        if: runner.os == 'macOS'
+        run: |
+          test "$(go env CGO_ENABLED)" = 1 || { echo "cgo is off: the bridge was never built"; exit 1; }
+          go list -f '{{.CgoFiles}}' ./core/elevate/ | grep -q framework_darwin.go \
+            || { echo "framework_darwin.go is not in the cgo build"; exit 1; }
+          CGO_ENABLED=1 go vet ./core/elevate/
+          CGO_ENABLED=1 go test -count=1 -v \
+            -run 'Daemon|Plist|PeerRequirement|RealPeer|AdmitPeer|SocketLocations' ./core/elevate/
+          CGO_ENABLED=0 go vet ./core/elevate/
+          CGO_ENABLED=0 go test -count=1 -v \
+            -run 'SMAppServiceIsNotImplementedHere|PeerRequirementIsRefusedWhereItCannotBeChecked' ./core/elevate/
+
   # Reproducible builds (IDN-18): the shipped commands, for every released
   # platform, built twice -- from two source directories, with two empty build
   # caches -- and compared byte for byte (scripts/repro.sh). TUF says the bytes

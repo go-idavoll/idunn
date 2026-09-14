@@ -406,9 +406,13 @@ func speak(t *testing.T, endpoint, payload string) string {
 	if err := conn.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := io.WriteString(conn, payload); err != nil {
-		t.Fatalf("write: %v", err)
-	}
+	// A write error is not a test failure either. The helper judges the request
+	// as it reads, so it may refuse and close while this side is still writing an
+	// oversized or malformed payload; the rest of the write then fails with a
+	// broken pipe (macOS reports it where Linux often does not). What the helper
+	// answered, if anything, is still read below — and an "ok" is what must never
+	// come back.
+	_, _ = io.WriteString(conn, payload)
 	if uc, ok := conn.(*net.UnixConn); ok {
 		// Close our half so a helper waiting for the terminator sees EOF rather
 		// than the deadline; a caller that simply stops talking is one of the
