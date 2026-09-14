@@ -22,6 +22,18 @@ import (
 	"slices"
 )
 
+// checkPrincipals refuses the Windows half of the caller allow-list here.
+//
+// A setting for the other platform is a refusal, not a value quietly ignored: an
+// operator who wrote AllowedSIDs believed it restricted who may ask, and a helper
+// that started anyway would be answering a set of callers nobody chose.
+func checkPrincipals(o HelperOptions) ([]string, error) {
+	if len(o.AllowedSIDs) != 0 {
+		return nil, fmt.Errorf("%w: AllowedSIDs is a Windows setting; on this platform the helper decides on AllowedUIDs", ErrRequest)
+	}
+	return nil, nil
+}
+
 // On POSIX the socket's mode cannot express "these users may connect, and I want
 // to know which one", so the decision is made here from credentials the kernel
 // attached to the connection. They are the kernel's answer about the process at

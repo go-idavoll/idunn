@@ -30,13 +30,13 @@ piece of the section is missing; **open** — contract only, or nothing.
 | §12 | Test concept | **partial** — see coverage below; mutation testing gated in CI (IDN-16, [score](#mutation-score)); one fuzz target missing |
 | §13 | Cross-platform specifics | **partial** — layout, elevation and the launcher hand-over are per-OS; no `MoveFileEx` self-update of the launcher itself (IDN-17) |
 | §14.1 | GC / retention | **done** — `stage.GC`, soft-fails on locked dirs |
-| §14.2 | Elevation | **partial** — Windows `ElevationInteractive` done for installs and updates: the unprivileged side writes nothing under the root, the helper (`cmd/installer apply`, or a host verb on `Updater.ApplyRequested`) re-resolves and runs the transaction; tested end to end through real UAC prompts (`elevated` e2e scenario). Linux `ElevationInteractive` via `pkexec` (fixed pkexec path, root-only helper, argv, empty environment; IDN-08), unit-tested on every OS and against a stand-in pkexec on Linux, with no e2e scenario through a real polkit agent; macOS has no prompt by decision (service mode, IDN-07). `ElevationService` works on POSIX (Unix socket, kernel peer credentials, allow-listed and re-checked roots, `updater.RequestApplier`; IDN-07), fails closed on Windows until the named pipe lands; the helper refuses a root anyone but an administrator controls (IDN-22); recovery and deferral in a system root are open (IDN-23) |
+| §14.2 | Elevation | **partial** — Windows `ElevationInteractive` done for installs and updates: the unprivileged side writes nothing under the root, the helper (`cmd/installer apply`, or a host verb on `Updater.ApplyRequested`) re-resolves and runs the transaction; tested end to end through real UAC prompts (`elevated` e2e scenario). Linux `ElevationInteractive` via `pkexec` (fixed pkexec path, root-only helper, argv, empty environment; IDN-08), unit-tested on every OS and against a stand-in pkexec on Linux, with no e2e scenario through a real polkit agent; macOS has no prompt by decision (service mode, IDN-07). `ElevationService` works on POSIX (Unix socket, kernel peer credentials) and Windows (named pipe with a helper-built DACL, first-instance and remote-client refusal, client token user SID via impersonation; empty allow-list = SYSTEM only), both with allow-listed and re-checked roots and `updater.RequestApplier` (IDN-07); the helper refuses a root anyone but an administrator controls (IDN-22); recovery and deferral in a system root are open (IDN-23) |
 | §14.3 | Quiesce, app lock, `OnBusy` | **done** — lock + coordinator + all three policies; `BusyDeferToRestart` keeps the staged tree in a resting `DEFERRED` journal state and the launcher finishes it at the next start. `BusyAbort` is the zero value and is not promoted; deferral is a recommendation to the host, which the design now says in those words (IDN-21) |
 | §14.4 | Enterprise proxy / CA | **partial** — system trust store, `ExtraCAs`, env proxy, resumable ranged downloads with offset checks, proxy authentication, mTLS client certificates, and a `ProxyResolver` seam; the OS-native resolvers (PAC/WPAD, WinHTTP, `SCDynamicStore`, GSettings) are the remainder of IDN-13 |
 | §14.5 | Telemetry + staged rollout | **done** — `Reporter` with a closed error-class vocabulary; local rollout bucketing |
 | §14.6 | Installer downgrade preflight | **done** |
 | §14.7 | Clock skew | **done** — expiry is classified as `clock_skew`, and `core/timefloor` persists the monotonic known-good time floor that refuses a rolled-back clock |
-| §14.8 | Shared TUF cache in elevated mode | **partial** — separate caches: the privileged side's lives in `<root>/.updater/tuf` (`PrivilegedCacheDir`), never the caller's; the fd hand-off that would avoid the helper's second download is open (IDN-07) |
+| §14.8 | Shared TUF cache in elevated mode | **partial** — separate caches: the privileged side's lives in `<root>/.updater/tuf` (`PrivilegedCacheDir`), never the caller's; the fd hand-off that would avoid the helper's second download (`SCM_RIGHTS` / `DuplicateHandle` pulled by the helper over the now-authenticated socket or pipe) is open (IDN-07) |
 
 ## Threat model coverage (§11.3)
 
@@ -52,9 +52,12 @@ before an apply, and raised by every successful refresh).
 
 Not yet enforced:
 
-- **T16, T23** (LPE via the helper, cache TOCTOU) — the POSIX helper service
-  authenticates the peer from the kernel, allow-lists and re-checks the root, and
-  keeps a privileged cache; the Windows service transport is not built. The
+- **T16, T23** (LPE via the helper, cache TOCTOU) — the helper service, on POSIX and
+  Windows, authenticates the caller from the kernel (peer credentials; the pipe
+  client's token), allow-lists and re-checks the root, and keeps a privileged cache;
+  on Windows it also builds the pipe DACL, refuses a squatted pipe name and remote
+  clients. The fd hand-off (T23) and a client-side check of the pipe's server are
+  open. The
   Windows and Linux interactive paths enforce their half: three
   validated scalars cross the boundary, nothing else; the helper validates them
   again, resolves the channel head itself and refuses any other version, and keeps

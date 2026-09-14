@@ -61,9 +61,16 @@ const DefaultMinInterval = 5 * time.Second
 
 // HelperOptions configures the privileged side.
 type HelperOptions struct {
-	// Endpoint is the local address to listen on: a Unix socket path on POSIX.
-	// Its directory must belong to the helper's own user and be writable by
-	// nobody else, and so must every directory above it (see listenLocal).
+	// Endpoint is the local address to listen on.
+	//
+	// On POSIX it is a Unix socket path. Its directory must belong to the
+	// helper's own user and be writable by nobody else, and so must every
+	// directory above it (see listenLocal).
+	//
+	// On Windows it is a named pipe, `\\.\pipe\<name>`, where name is 1 to 128
+	// letters, digits, '.', '_' or '-', beginning and ending with a letter or
+	// digit. The helper creates the pipe with a security descriptor it builds
+	// itself from AllowedSIDs, and refuses to start if the name already exists.
 	Endpoint string
 
 	// Applier performs the verified install. Required.
@@ -88,7 +95,26 @@ type HelperOptions struct {
 	// superuser, which is the fail-closed reading of "not configured": a helper
 	// that answered everyone by default would be a helper nobody meant to deploy
 	// that way.
+	//
+	// POSIX only. On Windows a non-empty AllowedUIDs is refused, not ignored: an
+	// operator who wrote it believed it restricted something.
 	AllowedUIDs []uint32
+
+	// AllowedSIDs are the Windows accounts permitted to ask, as canonical SID
+	// strings ("S-1-5-21-…-1001"). Each is compared with the user SID of the
+	// client's token, which the helper obtains through the pipe itself; group
+	// membership is never consulted, so naming a group would permit nobody, and
+	// is refused. Accepted are account SIDs only: SYSTEM, LocalService,
+	// NetworkService, local and domain accounts (S-1-5-21-…), service accounts
+	// (S-1-5-80-…) and Entra ID users (S-1-12-1-…). Everyone, Users,
+	// Authenticated Users, NETWORK, Anonymous and every other well-known group are
+	// refused.
+	//
+	// Empty means SYSTEM only, for the same fail-closed reason as AllowedUIDs —
+	// not even members of Administrators, whose token user is their own account.
+	//
+	// Windows only. On POSIX a non-empty AllowedSIDs is refused.
+	AllowedSIDs []string
 
 	// MinInterval is the shortest gap between two accepted requests. Zero
 	// selects DefaultMinInterval.
@@ -112,6 +138,7 @@ type Helper struct {
 
 	roots     []string
 	uids      []uint32
+	sids      []string
 	interval  time.Duration
 	now       func() time.Time
 	onEvent   func(string)
@@ -141,6 +168,12 @@ func newHelper(o HelperOptions, checkRoot func(string) error) (*Helper, error) {
 	if o.Endpoint == "" {
 		return nil, fmt.Errorf("%w: no endpoint", ErrRequest)
 	}
+	// The principals come before the roots: a helper configured with another
+	// platform's notion of a caller is wrong however good its roots are.
+	sids, err := checkPrincipals(o)
+	if err != nil {
+		return nil, err
+	}
 	if len(o.AllowedRoots) == 0 {
 		return nil, fmt.Errorf("%w: no allowed install roots; a helper that would write anywhere is a local root exploit", ErrRequest)
 	}
@@ -156,6 +189,7 @@ func newHelper(o HelperOptions, checkRoot func(string) error) (*Helper, error) {
 		applier:   o.Applier,
 		roots:     roots,
 		uids:      slices.Clone(o.AllowedUIDs),
+		sids:      sids,
 		interval:  o.MinInterval,
 		now:       o.Now,
 		onEvent:   o.OnEvent,
@@ -168,12 +202,7 @@ func newHelper(o HelperOptions, checkRoot func(string) error) (*Helper, error) {
 		h.now = time.Now
 	}
 
-	// On a platform without a service transport this always fails, which staticcheck
-	// can prove there and not here; see transport_other.go.
-	//
-	//nolint:staticcheck // SA4023: true per platform, not per program.
-	ln, err := listenLocal(o.Endpoint)
-	//nolint:staticcheck // SA4023: as above.
+	ln, err := listenLocal(o.Endpoint, sids)
 	if err != nil {
 		return nil, err
 	}
@@ -247,9 +276,7 @@ func (h *Helper) handle(ctx context.Context, conn net.Conn) {
 // workload; the root is judged last and immediately before the apply, so the
 // answer is as fresh as it can be.
 func (h *Helper) serve(ctx context.Context, conn net.Conn) string {
-	//nolint:staticcheck // SA4023: fails everywhere without a transport; see transport_other.go.
 	caller, err := authorizeConn(h, conn)
-	//nolint:staticcheck // SA4023: as above.
 	if err != nil {
 		h.emit("denied: " + err.Error())
 		return classDenied
@@ -312,7 +339,9 @@ func (h *Helper) emit(msg string) {
 
 // ServiceOptions configures the unprivileged side.
 type ServiceOptions struct {
-	// Endpoint is where the privileged helper listens.
+	// Endpoint is where the privileged helper listens: its Unix socket path on
+	// POSIX, its `\\.\pipe\<name>` on Windows, where NewService refuses anything
+	// outside the pipe-name grammar before it could dial it.
 	Endpoint string
 
 	// DialTimeout bounds reaching the helper. Zero selects DefaultDialTimeout.
@@ -334,8 +363,7 @@ func NewService(o ServiceOptions) (Elevator, error) {
 	if o.Endpoint == "" {
 		return nil, fmt.Errorf("%w: no helper endpoint", ErrRequest)
 	}
-	//nolint:staticcheck // SA4023: fails everywhere without a transport; see transport_other.go.
-	if err := checkServicePlatform(); err != nil {
+	if err := checkServiceEndpoint(o.Endpoint); err != nil {
 		return nil, err
 	}
 	timeout := o.DialTimeout
@@ -363,9 +391,7 @@ func (s *serviceElevator) Apply(ctx context.Context, root string, d *release.Des
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	//nolint:staticcheck // SA4023: fails everywhere without a transport; see transport_other.go.
 	conn, err := dialLocal(ctx, s.endpoint, s.timeout)
-	//nolint:staticcheck // SA4023: as above.
 	if err != nil {
 		return fmt.Errorf("%w: cannot reach the privileged helper: %w", ErrHelper, err)
 	}

@@ -248,14 +248,19 @@ macOS has no interactive elevation by decision: `NewInteractive` fails with
 `elevate.ErrNotImplemented`, and a system-wide install there is the service mode
 (`SMAppService`).
 
-`ElevationService` on POSIX: `elevate.NewService(ServiceOptions{Endpoint})` on the
-unprivileged side, and a daemon on the privileged side running
-`elevate.NewHelper(HelperOptions{Endpoint, Applier, AllowedRoots, AllowedUIDs})` with
+`ElevationService` on POSIX and Windows: `elevate.NewService(ServiceOptions{Endpoint})`
+on the unprivileged side, and a daemon or service on the privileged side running
+`elevate.NewHelper(HelperOptions{Endpoint, Applier, AllowedRoots, AllowedUIDs})` (POSIX,
+a Unix socket path) or `elevate.NewHelper(HelperOptions{Endpoint, Applier,
+AllowedRoots, AllowedSIDs})` (Windows, `\\.\pipe\<name>`) with
 `updater.RequestApplier{Channel, Options}` as its applier. The helper authenticates the
-caller from the kernel, allows only listed roots that also pass `CheckPrivilegedRoot`
-(at start and per request), rate-limits, and answers with a class only. On Windows the
-service fails closed with `elevate.ErrNotImplemented` until its named-pipe transport
-lands (backlog IDN-07).
+caller from the kernel — `SO_PEERCRED`/`LOCAL_PEERCRED` on POSIX, the pipe client's
+token user SID on Windows — allows only listed roots that also pass
+`CheckPrivilegedRoot` (at start and per request), rate-limits, and answers with a class
+only. An empty allow-list means root (POSIX) or SYSTEM (Windows) only, and the other
+platform's allow-list is refused. On Windows the helper builds the pipe's DACL itself
+(SYSTEM and Administrators full; the listed accounts read/write only), refuses to start
+if the pipe name is already taken, and refuses remote (SMB) clients (backlog IDN-07).
 
 Cancelling the context stops the *wait*, never the apply: the elevated process owns
 the swap once it starts, and killing it mid-write is the half-installed state the
