@@ -36,6 +36,13 @@ name: E2E update
 on:
   push:
     branches: [main]
+    # Every run creates releases and uploads packages in the sandbox, which
+    # GitHub rate-limits as content creation. A push that changes only prose
+    # cannot change what this proves, so it does not spend that budget. A push
+    # that touches anything else still runs.
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
 
 permissions:
   contents: read
@@ -56,9 +63,15 @@ jobs:
   update:
     name: ${{ matrix.scenario }} (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    # Room for bounded rate-limit backoff and the repeated update checks.
+    timeout-minutes: 40
     strategy:
       fail-fast: false
+      # All jobs publish with the same token into the same repository, and
+      # GitHub's secondary rate limit counts content-creating requests per
+      # token per minute. Three at a time keeps a run's bursts under it; the
+      # client under test and what every job attests are unchanged.
+      max-parallel: 3
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
         scenario: [minor, major, floor-gap]
