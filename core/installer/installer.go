@@ -106,7 +106,7 @@ func Install(ctx context.Context, o Options) error {
 	if r == nil {
 		// The channel offers exactly what is installed. For an installer that is
 		// success: the requested state is the state on disk.
-		return recordKnownGood(floor, now(o))
+		return recordKnownGood(o, floor, now(o))
 	}
 	if err := preflightVersion(existing, r.Descriptor.Version, o.AllowDowngrade); err != nil {
 		return err
@@ -119,7 +119,7 @@ func Install(ctx context.Context, o Options) error {
 	if err := u.Apply(ctx, r); err != nil {
 		return err
 	}
-	return recordKnownGood(floor, now(o))
+	return recordKnownGood(o, floor, now(o))
 }
 
 // recordKnownGood raises the time floor once an install has succeeded.
@@ -133,7 +133,14 @@ func Install(ctx context.Context, o Options) error {
 // A failure to record it is reported rather than swallowed, and says what
 // happened: the install is done, and re-running the installer is a safe way to
 // retry the record.
-func recordKnownGood(floor timefloor.Floor, at time.Time) error {
+//
+// An install that elevates records nothing here. The floor lives in the root,
+// which is the very thing this process cannot write; the elevated helper ran an
+// install of its own, and its refresh raised the floor before it did.
+func recordKnownGood(o Options, floor timefloor.Floor, at time.Time) error {
+	if o.Updater.Policy.Elevation != updater.ElevationNone {
+		return nil
+	}
 	if err := floor.Observe(at); err != nil {
 		return fmt.Errorf("the install completed but the known-good time could not be recorded: %w", err)
 	}

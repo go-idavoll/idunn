@@ -89,7 +89,7 @@ func TestStageReportsFilesystemFailures(t *testing.T) {
 			_, err := s.Stage(context.Background(), descriptor(
 				ref("targets/app", "app", release.KindExe, 0o755),
 				ref("targets/plugin.so", "lib/plugin.so", release.KindLib, 0o644),
-			))
+			), nil)
 			if err == nil {
 				t.Fatal("staging reported success although the filesystem failed")
 			}
@@ -132,7 +132,7 @@ func TestStageRefusesAnUninspectableDestination(t *testing.T) {
 
 	if _, err := s.Stage(context.Background(), descriptor(
 		ref("targets/app", "a/app", release.KindExe, 0o755),
-	)); err == nil {
+	), nil); err == nil {
 		t.Fatal("staging wrote to a destination it could not inspect")
 	}
 }

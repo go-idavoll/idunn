@@ -57,6 +57,11 @@ linters:
       # under attack. These are throwaway fixtures, never an install root.
       - path: ^test/redteam/
         linters: [gosec]
+      # The e2e plumbing does the same with a repository published as release
+      # assets, and serves it locally when run without GitHub. Its paths and
+      # URLs come from test/e2e/run.sh, never from a user.
+      - path: ^test/e2e/
+        linters: [gosec]
 
 formatters:
   enable:

@@ -1,0 +1,140 @@
+# Copyright 2026 The idunn Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Real-world update test: publish real packages as GitHub release assets, install
+# from github.com, publish newer releases, and let the installed app update
+# itself headlessly (test/e2e/run.sh).
+#
+#   minor      1.0.0 -> 1.1.0 -> 1.2.0   minor, then sequential minor update
+#   major      1.0.0 -> 2.0.0 -> 2.1.0   major, then sequential update
+#   floor-gap  1.0.0 -/-> 1.2.0          refused: min_from_version 1.1.0 unpublished
+#
+# Every case is attested (exit code, installed and running version, version
+# directories, journal, staging) into a JSON report per job; the summary job
+# merges them into one matrix and fails unless every case passed everywhere.
+#
+# The releases live in a separate sandbox repository so this one never carries
+# test tags — a SemVer tag here would be read by the Go module proxy as a
+# version of idunn. E2E_RELEASE_TOKEN is a fine-grained token with Contents
+# read/write on that repository only.
+#
+# Each job owns its own release and its own throwaway keys: nothing crosses
+# jobs, and a failed job leaves its release in place for inspection.
+name: E2E update
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-update
+  cancel-in-progress: false
+
+env:
+  GO_VERSION: stable
+  E2E_REPO: go-idavoll/idunn-e2e
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  update:
+    name: ${{ matrix.scenario }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        scenario: [minor, major, floor-gap]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+
+      - name: Publish, install and update through GitHub releases
+        env:
+          GH_TOKEN: ${{ secrets.E2E_RELEASE_TOKEN }}
+          E2E_SCENARIOS: ${{ matrix.scenario }}
+          E2E_TAG: e2e-${{ github.run_id }}-${{ github.run_attempt }}-${{ runner.os }}
+          E2E_REPORT_DIR: ${{ runner.temp }}/e2e-report/${{ runner.os }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::secret E2E_RELEASE_TOKEN is not set"
+            exit 1
+          fi
+          test/e2e/run.sh
+
+      - name: Upload attestation report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-report-${{ runner.os }}-${{ matrix.scenario }}
+          path: ${{ runner.temp }}/e2e-report
+          if-no-files-found: warn
+
+  summary:
+    name: summary
+    needs: update
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: e2e-report-*
+          path: reports
+          merge-multiple: true
+
+      - name: Attestation matrix
+        run: |
+          shopt -s globstar nullglob
+          files=(reports/**/*.json)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::no e2e reports were produced"
+            exit 1
+          fi
+          status=0
+          go run ./test/e2e/cmd/e2etool summary "${files[@]}" >summary.md || status=$?
+          cat summary.md | tee -a "$GITHUB_STEP_SUMMARY"
+          # A job that died before writing its report shows up here, not in
+          # the matrix.
+          if [ "${{ needs.update.result }}" != success ]; then
+            echo "::error::update jobs: ${{ needs.update.result }}"
+            status=1
+          fi
+          exit "$status"
+
+      - name: Upload merged reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-attestation
+          path: |
+            reports
+            summary.md
+          if-no-files-found: warn

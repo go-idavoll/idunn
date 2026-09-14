@@ -2,7 +2,7 @@
 	"signatures": [
 		{
 			"keyid": "bbf0f8fa0041d56e5cb91ac937aade674706f0a8508efb055fcc63e132b62dd6",
-			"sig": "da6f72dc676f4a5af0db0e4f60d784cac8588f6fc1425a423200eb722c5d005e3a1223b5e9d5fc91b183a2e07ffc0ff90fad67e56a6685d5287fd0b6850f8707"
+			"sig": "37c678d688f3f8c30277324db9f009db754cb610f62bbe28a599f5652609949d83779315b1b29fb1715d49d43c117ad12138d0c969773ec78c3d2b27ca83c50b"
 		}
 	],
 	"signed": {
@@ -36,7 +36,8 @@
 					"name": "v1",
 					"paths": [
 						"releases/*/1.*.json",
-						"payloads/v1/*"
+						"payloads/v1/*",
+						"patches/v1/*"
 					],
 					"terminating": true,
 					"threshold": 1

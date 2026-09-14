@@ -22,6 +22,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/go-idavoll/idunn/core/release"
 )
 
 // The delegation scheme (docs/design.md §4.1, docs/packer.md §5).
@@ -94,7 +96,8 @@ func channelPaths(channel string) []string {
 }
 
 // linePaths is the path pattern set of a release-line role: every descriptor of
-// that major, for every platform, and every payload of that line.
+// that major, for every platform, every payload of that line, and every delta
+// patch that produces one of those payloads (docs/design.md §6.4 stage 2).
 //
 // go-tuf matches a pattern segment by segment, so neither wildcard can cross a
 // "/" and neither pattern can be widened by a crafted target path.
@@ -102,12 +105,15 @@ func linePaths(major string) []string {
 	return []string{
 		fmt.Sprintf("releases/*/%s.*.json", major),
 		fmt.Sprintf("payloads/v%s/*", major),
+		fmt.Sprintf("patches/v%s/*", major),
 	}
 }
 
 // payloadTarget is the target path of a payload file with the given content.
+// The layout itself lives in core/release, which is also where the client reads
+// it back out of a descriptor, so the two cannot drift apart.
 func payloadTarget(major string, sum [sha256.Size]byte) string {
-	return fmt.Sprintf("payloads/v%s/%s", major, hex.EncodeToString(sum[:]))
+	return release.PayloadPath(major, sum[:])
 }
 
 // majorOf returns the major component of a SemVer version. The version must

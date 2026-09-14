@@ -1,0 +1,32 @@
+# Copyright 2026 The idunn Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+class: patch-poison
+description: >
+  A properly signed delta patch that reconstructs bytes of the attacker's
+  choosing instead of the payload it is published for.
+expect: no-effect
+mutator: patch_poison
+notes: >
+  This is T21, and the reason delta stage 2 needs no trust handling of its own.
+  The patch is authentic: the repository signed it, TUF accepts it, and the
+  client applies it. What the client does not do is believe the result — it is
+  checked against the signed hash of the payload it was supposed to rebuild, and
+  a mismatch means the full target is fetched instead. The attack costs the
+  client bandwidth and nothing else.
+
+  The poisoned payload is the real one with a marker written into it, so that the
+  patch producing it stays small enough for the client to prefer over the full
+  download. A patch the client would skip on cost alone would make the case pass
+  without ever exercising the defence.

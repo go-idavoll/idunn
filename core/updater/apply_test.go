@@ -383,6 +383,84 @@ func TestApplyRecoversAnInterruptedTransactionFirst(t *testing.T) {
 	}
 }
 
+// The crash that matters most for this: between the swap and the commit,
+// `current` already points at the new version and nothing has said so yet.
+//
+// Apply must settle that before it judges anything against the state it finds,
+// or it refuses the very transaction recovery was about to finish — and the
+// install is left with a pointer to one version and a state file naming
+// another, indefinitely, because every later Apply refuses it too.
+func TestApplyFinishesACrashAfterTheSwap(t *testing.T) {
+	f := newFixture(t, "1.2.0", "1.3.0")
+
+	dir, err := layout.VersionDir(root, "1.3.0")
+	if err != nil {
+		t.Fatalf("VersionDir: %v", err)
+	}
+	if err := f.fs.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := fsx.WriteFileAtomic(f.fs, fsx.Join(dir, "app"), []byte("binary 1.3.0"), 0o755); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	j, err := txn.Open(f.fs, root)
+	if err != nil {
+		t.Fatalf("txn.Open: %v", err)
+	}
+	record := func(state txn.State) {
+		t.Helper()
+		if err := j.Append(txn.Record{
+			State: state, Name: appName, FromVersion: "1.2.0", ToVersion: "1.3.0", Phase: hook.PhaseApply,
+		}); err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+	}
+	record(txn.StateBegin)
+	record(txn.StateStaged)
+	// The migration ran before the crash, which is what the record says and
+	// what recovery must not undo.
+	if err := fsx.WriteFileAtomic(f.fs, "/appdata/schema", []byte("1.3.0"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	record(txn.StateMigrated)
+	if err := layout.SetPointer(f.fs, root, "1.3.0"); err != nil {
+		t.Fatalf("SetPointer: %v", err)
+	}
+	record(txn.StateSwapped)
+
+	// A caller applying the release it resolved before the crash.
+	err = f.updater().Apply(context.Background(), &updater.Release{
+		Descriptor: f.trust.descriptor, FromVersion: "1.2.0",
+	})
+	if !errors.Is(err, updater.ErrStale) {
+		t.Fatalf("err = %v, want ErrStale: the release is live already", err)
+	}
+
+	// That refusal is fine. Leaving the transaction unfinished is not.
+	if got := f.stateVersion(); got != "1.3.0" {
+		t.Errorf("recorded state = %q, want the interrupted transaction to have been finished", got)
+	}
+	if got := f.hostState(); got != "1.3.0" {
+		t.Errorf("host state = %q: the migration that already ran was undone", got)
+	}
+	last, err := txnLast(f)
+	if err != nil {
+		t.Fatalf("reading the journal: %v", err)
+	}
+	if last.State != txn.StateCommitted {
+		t.Errorf("journal ends at %s, want COMMITTED", last.State)
+	}
+}
+
+func txnLast(f *fixture) (txn.Record, error) {
+	j, err := txn.Open(f.fs, root)
+	if err != nil {
+		return txn.Record{}, err
+	}
+	last, _ := j.Last()
+	return last, nil
+}
+
 // Reporting is best-effort and must never change the update's result (§14.5).
 func TestReportingCannotAffectTheResult(t *testing.T) {
 	f := newFixture(t, "1.2.0", "1.3.0")

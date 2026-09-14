@@ -184,7 +184,10 @@ type FileRef struct {
 
 type Requirements struct {
     // MinFromVersion blocks downgrade/skip-migration; complements TUF rollback
-    // protection with an app-level floor for migration validity.
+    // protection with an app-level floor for migration validity. An install
+    // below the floor is not refused outright where the repository publishes
+    // releases that bridge it: those are installed in order, each with its own
+    // migration, which is what the floor was asking for (§6.4).
     MinFromVersion string `json:"min_from_version"`
     // MinClientVersion stops an outdated client from mishandling a newer layout.
     MinClientVersion string `json:"min_client_version"`
@@ -497,9 +500,26 @@ files are individual, content-addressed targets. Two stages:
 - The new `versions/x/` is nonetheless complete and self-contained (a prerequisite for
   blue/green + instant rollback).
 
+**Walking, not jumping.** A full target is self-contained, so any client can fetch any
+release directly. A patch is not: it turns one exact set of bytes into another, so a
+client that skipped releases follows the ones it missed. `release.Chain` orders that
+walk out of the descriptors the repository already publishes — a descriptor's target
+path states its version, so nothing new has to be signed for it — and every hop's output
+is checked against *that* release's signed target hash before it becomes the base of the
+next, which makes a chain exactly as trustworthy as a direct download. The bytes are
+walked; the release is not: one blue/green swap installs the version being updated to.
+The exception is a migration floor (`Requirements.MinFromVersion`), which is precisely a
+statement that the releases in between must really be installed — there the walk becomes
+one installation per release.
+
 **Stage 2 — intra-file binary delta (optional, large binaries):**
 - For a changed file, instead of the full target, fetch a **patch target**
-  `oldHash → newHash` (`zstd --patch-from` / bsdiff) and apply it locally.
+  `oldHash → newHash` and apply it locally. The format is the bsdiff arrangement
+  — control runs, byte-wise differences against the base, literals — in idunn's
+  own container with deflate streams (`core/stage`, reader; `internal/delta`,
+  generator). Both halves are standard library only, so the trust path gains no
+  dependency for delta; a raw-dictionary zstd delta was measured first and falls
+  apart above ~32 MiB of base with the Go implementations available.
 - The patch needs no separate trust handling: the *result* is checked against the signed
   target hash. A tampered/broken patch only produces a hash mismatch ⇒ fallback to the
   full target. Minimal attack surface.
@@ -1003,6 +1023,22 @@ Residual risk: the helper binary runs with full administrator rights, so it must
 live where only administrators can write. That is an install-time property; it
 cannot be established at update time without a TOCTOU of its own. What is enforced
 here is that the path is absolute, local (never UNC), existing, and a regular file.
+
+> **As built — elevated updates.** The unprivileged process runs no part of the
+> transaction: journal, staging and the time floor all live under a root it cannot
+> write. It decides with reads only (clock floor, stale check, policy and walk,
+> `Checker`, `Prompter`), sends the request, and reads the pointer back — an exit
+> code of zero without the requested version installed is a failure. The helper
+> answers with `Updater.ApplyRequested`: its own refresh, its own channel head, and
+> the ordinary transaction; a requested version that is not the head is refused.
+> Its TUF cache is `<root>/.updater/tuf`, never the invoking user's cache. This
+> means download and staging run elevated, which is more privileged surface than
+> "download+verify unprivileged" above; the fd hand-off that would restore that
+> needs the authenticated IPC of the service mode (IDN-07). The root is chosen by
+> the caller, so the helper refuses one that anyone but SYSTEM, Administrators or
+> TrustedInstaller could change — by owner, by ACL including inheritable ACEs, by
+> reparse points on the path, and by drive kind — before it writes anything
+> (`elevate.AcceptRequest`, IDN-22). Callers run the same check before the prompt.
 
 `ElevationService` (the privileged helper and its authenticated IPC, 14.8) is not
 built yet and fails closed.

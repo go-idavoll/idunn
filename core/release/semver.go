@@ -48,6 +48,19 @@ func Compare(a, b string) (int, error) {
 	return compareParsed(parseVersion(a), parseVersion(b)), nil
 }
 
+// Major returns the major component of a version, and false for anything that
+// is not a version this project accepts.
+//
+// It exists because a release line is a unit of the repository, not only of
+// version numbering: a line is a delegated role of its own, and a client that
+// wants to see what another line publishes has to say which one.
+func Major(v string) (uint64, bool) {
+	if !ValidVersion(v) {
+		return 0, false
+	}
+	return parseVersion(v).nums[0], true
+}
+
 // Newer reports whether a has strictly higher precedence than b.
 func Newer(a, b string) (bool, error) {
 	c, err := Compare(a, b)

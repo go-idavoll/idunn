@@ -53,8 +53,12 @@ type Resolver interface {
 	// LatestRelease resolves the channel pointer to a verified descriptor.
 	LatestRelease(channel, goos, goarch string) (*release.Descriptor, error)
 
-	// Target returns the verified bytes of one target.
-	Target(targetPath string) ([]byte, error)
+	// Materializer is the target surface staging consumes: the verified bytes
+	// of a target, its signed length, and the verdict on bytes that came from
+	// somewhere else. It is embedded rather than restated so the two interfaces
+	// cannot drift apart — the Stager this Resolver is handed to needs exactly
+	// these methods.
+	stage.Materializer
 }
 
 // AppLock is the exclusive lock a running host application holds, and the ground
@@ -337,8 +341,15 @@ func (u *Updater) CheckForUpdate(ctx context.Context) (*Release, error) {
 	}
 	// The refresh succeeded, so this machine has been at this local time with a
 	// repository it trusts answering. That is the new floor.
-	if err := u.floor.Observe(u.now()); err != nil {
-		return nil, u.checkFailed(err)
+	//
+	// Not from a process that elevates to write the root: the floor lives in the
+	// root, and this process may not write there. That is not a check skipped —
+	// the floor was still enforced above — only a record left to the helper,
+	// whose own refresh raises it before any update it installs.
+	if u.policy.Elevation == ElevationNone {
+		if err := u.floor.Observe(u.now()); err != nil {
+			return nil, u.checkFailed(err)
+		}
 	}
 	d, err := u.trust.LatestRelease(u.channel, u.goos, u.goarch)
 	if err != nil {
@@ -354,7 +365,13 @@ func (u *Updater) CheckForUpdate(ctx context.Context) (*Release, error) {
 		return nil, nil
 	}
 
-	if err := u.applicable(d, installed); err != nil {
+	// Whether this install may take the release is the same question as how it
+	// gets there: usually in one step, and where a migration floor forbids that,
+	// through the releases the repository published in between. Asking for the
+	// walk rather than only for the verdict is what keeps the answer here and
+	// the answer in Apply the same one.
+	walk, err := u.steps(d, installed)
+	if err != nil {
 		return nil, u.checkFailed(err)
 	}
 	if !u.inRollout(d) {
@@ -362,7 +379,12 @@ func (u *Updater) CheckForUpdate(ctx context.Context) (*Release, error) {
 		return nil, nil
 	}
 
-	u.emit(hook.PhaseCheck, "update available: "+d.Version, nil)
+	available := "update available: " + d.Version
+	if len(walk) > 1 {
+		available += fmt.Sprintf(" (through %d releases; %s migrates only from %s or newer)",
+			len(walk), d.Version, d.Requirements.MinFromVersion)
+	}
+	u.emit(hook.PhaseCheck, available, nil)
 	return &Release{Descriptor: d, FromVersion: installed}, nil
 }
 
@@ -427,8 +449,8 @@ func (u *Updater) applicable(d *release.Descriptor, installed string) error {
 			return fmt.Errorf("%w: %w", ErrPolicy, err)
 		}
 		if c < 0 {
-			return fmt.Errorf("%w: release migrates only from %s or newer, this install is %s",
-				ErrPolicy, req, installed)
+			return fmt.Errorf("%w: %w: %s migrates only from %s or newer, this install is %s",
+				ErrPolicy, ErrMigrationFloor, d.Version, req, installed)
 		}
 	}
 	return nil

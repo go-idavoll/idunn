@@ -20,6 +20,7 @@ import (
 	"io/fs"
 	"net"
 
+	"github.com/go-idavoll/idunn/core/elevate"
 	"github.com/go-idavoll/idunn/core/stage"
 	"github.com/go-idavoll/idunn/core/timefloor"
 	"github.com/go-idavoll/idunn/core/trust"
@@ -40,6 +41,13 @@ var (
 	// ErrPolicy is a release this install may not take: a downgrade, a client
 	// too old for the layout, a migration floor this install is below.
 	ErrPolicy = errors.New("update policy")
+
+	// ErrMigrationFloor marks the one refusal in ErrPolicy that a path can
+	// answer: the release will not migrate from the version installed here.
+	// Unlike a downgrade or a client too old for the layout, it says nothing
+	// about this machine being wrong — only that it is too far back to arrive
+	// in one step, which is what the releases in between are for.
+	ErrMigrationFloor = errors.New("migration floor")
 
 	// ErrBusy is a host application that would not stop writing in time.
 	ErrBusy = errors.New("application busy")
@@ -85,6 +93,7 @@ const (
 	classDisk       = "disk"
 	classPermission = "permission"
 	classConfig     = "config"
+	classElevation  = "elevation"
 	classUnknown    = "unknown"
 )
 
@@ -107,7 +116,7 @@ func classify(err error) string {
 		return classClockSkew
 	case errors.As(err, &netErr):
 		return classNetwork
-	case errors.Is(err, ErrDeclined):
+	case errors.Is(err, ErrDeclined), errors.Is(err, elevate.ErrDeclined):
 		return classDeclined
 	case errors.Is(err, ErrDeferred), errors.Is(err, ErrBusy):
 		return classBusy
@@ -119,6 +128,9 @@ func classify(err error) string {
 		return classPolicy
 	case errors.Is(err, ErrConfig):
 		return classConfig
+	case errors.Is(err, elevate.ErrHelper), errors.Is(err, elevate.ErrRequest),
+		errors.Is(err, elevate.ErrNotImplemented):
+		return classElevation
 	case errors.Is(err, ErrVerify), errors.Is(err, trust.ErrTrust):
 		return classVerify
 	case errors.Is(err, trust.ErrResolve):

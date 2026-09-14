@@ -57,7 +57,20 @@ const MinRetain = 2
 // system: trust decides what may be trusted, this package decides only where the
 // bytes go.
 type Materializer interface {
+	// Target returns the verified bytes of one target, fetching it if the
+	// go-tuf cache does not already hold it.
 	Target(targetPath string) ([]byte, error)
+
+	// TargetLength returns the signed length of a target without fetching it,
+	// so a local reuse candidate of the wrong size can be dismissed before it
+	// is read.
+	TargetLength(targetPath string) (int64, error)
+
+	// VerifyTarget reports whether data are exactly the signed bytes of a
+	// target. Bytes that did not come from Target — reused from an installed
+	// version, later reconstructed from a patch — are admitted only by this,
+	// so staging never holds a signed hash and never compares one itself.
+	VerifyTarget(targetPath string, data []byte) error
 }
 
 // Stager writes verified files into a staging directory and swaps them in.
@@ -84,11 +97,14 @@ func SanitizeDst(dst string) (string, error) {
 // TUF-signed target hash before it is written, whether it was downloaded, reused
 // from cache, or reconstructed from a delta patch.
 //
+// route is the byte-level history of the releases being walked, and may be nil:
+// without it every file is reused from disk or fetched whole.
+//
 // The files are assembled under .updater/staging/<version>/ and moved into place
 // with a single rename at the end. Nothing incomplete is ever visible under
 // versions/, so a crash mid-staging leaves a tree the recovery can simply delete
 // rather than one it has to inspect file by file.
-func (s *Stager) Stage(ctx context.Context, d *release.Descriptor) (string, error) {
+func (s *Stager) Stage(ctx context.Context, d *release.Descriptor, route Route) (string, error) {
 	if err := s.check(); err != nil {
 		return "", err
 	}
@@ -124,11 +140,15 @@ func (s *Stager) Stage(ctx context.Context, d *release.Descriptor) (string, erro
 		return "", fmt.Errorf("%w: create staging: %w", ErrStage, err)
 	}
 
+	// Which installed versions may donate unchanged files. Computed once: the
+	// listing is the same for every file, and a release is thousands of them.
+	sources := s.reuseSources(live, d.Version)
+
 	for i := range d.Files {
 		if err := ctx.Err(); err != nil {
 			return "", fmt.Errorf("%w: %w", ErrStage, err)
 		}
-		if err := s.stageFile(stageDir, &d.Files[i]); err != nil {
+		if err := s.stageFile(stageDir, &d.Files[i], sources, route); err != nil {
 			// Leave the staging tree where it is; the transaction's rollback
 			// and the next recovery both remove it, and removing it here would
 			// destroy the evidence of what went wrong.
@@ -164,8 +184,10 @@ func (s *Stager) Stage(ctx context.Context, d *release.Descriptor) (string, erro
 	return versionDir, nil
 }
 
-// stageFile writes one payload file into the staging tree.
-func (s *Stager) stageFile(stageDir string, f *release.FileRef) error {
+// stageFile writes one payload file into the staging tree, taking its bytes from
+// an installed version when one holds exactly the signed content and from the
+// trust layer otherwise.
+func (s *Stager) stageFile(stageDir string, f *release.FileRef, sources []string, route Route) error {
 	dst, err := SanitizeDst(f.Dst)
 	if err != nil {
 		return fmt.Errorf("%w: %s: %w", ErrStage, f.Target, err)
@@ -184,14 +206,26 @@ func (s *Stager) stageFile(stageDir string, f *release.FileRef) error {
 		return err
 	}
 
-	// TODO(stage): reuse identical files already present in `current` or a
-	// retained version by content hash (delta stage 1's second half,
-	// docs/design.md §6.4). It needs the signed hash from the trust layer, so
-	// that reuse can be verified rather than assumed; until it exists, the
-	// go-tuf cache is what keeps unchanged files off the network.
-	data, err := s.Trust.Target(f.Target)
-	if err != nil {
-		return err
+	// An unchanged file is taken from a version already on disk (delta stage 1,
+	// docs/design.md §6.4) — verified against the signed target, so what is
+	// reused is the content, never the trust. Everything else is fetched.
+	//
+	// TODO(stage): reuse still copies the bytes. Reflink/CoW, else hardlink,
+	// would make an unchanged payload free rather than cheap; both need an fsx
+	// operation that does not exist yet.
+	data := s.reuse(f, dst, sources)
+	if data == nil {
+		// A changed file may still be mostly the old one. Reconstructing it
+		// from what is on disk plus the patches the repository publishes is
+		// delta stage 2; it produces bytes that are verified exactly like
+		// downloaded ones, and falls back to the download whenever it cannot.
+		data = s.patched(f, dst, sources, route)
+	}
+	if data == nil {
+		var err error
+		if data, err = s.Trust.Target(f.Target); err != nil {
+			return err
+		}
 	}
 	if err := fsx.WriteFileAtomic(s.FS, full, data, mode(f)); err != nil {
 		return fmt.Errorf("%w: %w", ErrStage, err)
@@ -372,24 +406,6 @@ func retained(versions []string, live string, retain int) (map[string]bool, erro
 		keep[older[i]] = true
 	}
 	return keep, nil
-}
-
-// ApplyPatch reconstructs a target from a base file and a delta patch. The result
-// is accepted only if it matches the signed target hash; a patch that produces the
-// wrong bytes is a failure, never a fallback. It is the fuzz target FuzzPatchApply.
-//
-// Intra-file binary deltas are stage 2 of docs/design.md §6.4 and are deliberately
-// not implemented yet: they need a chosen patch format (zstd --patch-from, bsdiff)
-// and a packer that emits patch targets, and they buy nothing until then, because
-// stage 1 — content-addressed targets plus the go-tuf cache — already keeps
-// unchanged files off the network. Returning an error rather than a best guess
-// keeps the fail-closed rule intact for any caller that reaches here early.
-//
-// no body yet; renaming them to _ would delete the only thing it currently says.
-//
-//nolint:revive // The parameter names are the contract of a function that has
-func ApplyPatch(base, patch []byte) ([]byte, error) {
-	return nil, fmt.Errorf("%w: intra-file delta patches are not implemented (docs/design.md §6.4 stage 2)", ErrStage)
 }
 
 // check validates the Stager's own configuration. A half-configured Stager must

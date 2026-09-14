@@ -15,10 +15,10 @@
 package updater
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/go-idavoll/idunn/core/fsx"
@@ -34,10 +34,169 @@ import (
 // Observer events and an opt-in Reporter Outcome. For system-wide installs it
 // routes the privileged apply through the configured Elevator. On any failure it
 // rolls back files and calls Migrator.Rollback. Safe to call again after a crash.
+//
+// Usually that is one installation. It becomes several when the release refuses
+// to migrate from the version installed here (Requirements.MinFromVersion) and
+// the repository publishes releases in between that bridge the gap: those are
+// then installed in order, each a complete update of its own — its own
+// transaction, its own migration hooks, its own commit. A release that skipped
+// a migration is exactly what the floor exists to prevent, and walking to it is
+// the only way to honour that and still arrive.
+//
+// Each step is a real installation, so a failure part-way leaves the install on
+// the last release that committed — a published release, not a half-state — and
+// says so. A step that defers to the next restart stops the walk there; the
+// remaining releases follow when the deferred one has been applied.
 func (u *Updater) Apply(ctx context.Context, r *Release) error {
 	if r == nil || r.Descriptor == nil {
 		return fmt.Errorf("%w: no release to apply", ErrConfig)
 	}
+
+	// A root this process cannot write gets no transaction from it at all: the
+	// helper runs the whole of one, walk included (§14.2).
+	if u.policy.Elevation != ElevationNone {
+		return u.applyElevated(ctx, r)
+	}
+
+	from := r.FromVersion
+	for i, step := range u.plan(ctx, r) {
+		if err := u.applyRelease(ctx, &Release{Descriptor: step, FromVersion: from}); err != nil {
+			if i == 0 {
+				return err
+			}
+			return fmt.Errorf("%w (on the way to %s, this install is now %s)", err, r.Descriptor.Version, from)
+		}
+		from = step.Version
+	}
+	return nil
+}
+
+// plan settles an interrupted transaction and then works out which releases
+// have to be installed to reach the one asked for.
+//
+// The order of the three things it does is the whole of it.
+//
+// The clock first, because everything after it is a decision taken on this
+// machine's word about the time. Recovery finishes an update forward or undoes
+// it, and planning reads repository metadata whose expiry is judged against
+// this very clock — neither may happen below the known-good floor, which is
+// what makes turning the clock back useless rather than merely detectable
+// (§14.7, T22).
+//
+// Recovery second, and this is the only reason this function exists rather
+// than the planning happening inline. A crash between the swap and the commit
+// leaves `current` already pointing at the new version with nothing having said
+// so; a plan made from that state refuses the very transaction recovery is
+// about to finish, and the install keeps a pointer to one version and a state
+// file naming another for as long as anyone keeps trying.
+//
+// Everything here may then give up and answer "just the release that was asked
+// for". A clock below the floor, a precondition that no longer holds, a journal
+// that will not settle, a migration floor with no path around it: each of those
+// is refused inside the transaction below, where it is rolled back and reported
+// like any other failure. Refusing them here as well would mean two places
+// deciding the same thing, which is one place too many for them to still agree
+// in a year.
+func (u *Updater) plan(ctx context.Context, r *Release) []*release.Descriptor {
+	alone := []*release.Descriptor{r.Descriptor}
+
+	if err := u.floor.Check(u.now()); err != nil {
+		return alone
+	}
+	if _, err := txn.RecoverResult(ctx, u.fs, u.root, u.migrate); err != nil {
+		return alone
+	}
+	installed, err := u.installedVersion()
+	if err != nil || installed != r.FromVersion || installed == r.Descriptor.Version {
+		return alone
+	}
+	walk, err := u.steps(r.Descriptor, installed)
+	if err != nil {
+		return alone
+	}
+	return walk
+}
+
+// steps is the releases that have to be installed to reach d, in order.
+//
+// It is one release — d itself — unless d refuses to migrate from what is
+// installed. That refusal is the only one a path can answer: a downgrade or a
+// client too old for the layout says this machine may not have the release at
+// all, while a migration floor says only that it is too far back to arrive in
+// one step.
+//
+// The walk it produces is the shortest one the repository supports, and every
+// release on it is checked by the same applicable() the apply path enforces —
+// so a step this planner picks cannot be one the apply then refuses. Releases
+// of another channel are not stepping stones: a stable install does not pass
+// through a beta to get anywhere.
+func (u *Updater) steps(d *release.Descriptor, installed string) ([]*release.Descriptor, error) {
+	err := u.applicable(d, installed)
+	if err == nil {
+		return []*release.Descriptor{d}, nil
+	}
+	if !errors.Is(err, ErrMigrationFloor) {
+		return nil, err
+	}
+
+	hist, ok := u.trust.(History)
+	if !ok {
+		return nil, err
+	}
+	// Between rather than Chain: stepping through releases for their migrations
+	// does not need the installed release to still be published, only the ones
+	// on top of it.
+	openLines(hist, d.OS, d.Arch, installed, d.Version)
+	walk, walkErr := release.Between(hist.Versions(d.OS, d.Arch), installed, d.Version)
+	if walkErr != nil {
+		return nil, err
+	}
+
+	// The far end of the walk is in hand already; the rest has to be resolved.
+	candidates := make([]*release.Descriptor, 0, len(walk))
+	for _, v := range walk[:len(walk)-1] {
+		step, sErr := hist.ReleaseVersion(d.OS, d.Arch, v)
+		if sErr != nil || step.Channel != d.Channel {
+			continue
+		}
+		candidates = append(candidates, step)
+	}
+	candidates = append(candidates, d)
+
+	var out []*release.Descriptor
+	for at := installed; at != d.Version; {
+		next := furthestReachable(u, candidates, at)
+		if next == nil {
+			return nil, fmt.Errorf("%w; and no published release bridges the gap", err)
+		}
+		out = append(out, next)
+		at = next.Version
+		if len(out) > maxWalk {
+			return nil, fmt.Errorf("%w; and the published path to it is longer than %d releases", err, maxWalk)
+		}
+	}
+	return out, nil
+}
+
+// furthestReachable picks the newest candidate that may be installed on top of
+// at — the fewest installations that still honour every floor on the way.
+func furthestReachable(u *Updater, candidates []*release.Descriptor, at string) *release.Descriptor {
+	var pick *release.Descriptor
+	for _, c := range candidates {
+		newer, err := release.Newer(c.Version, at)
+		if err != nil || !newer {
+			continue
+		}
+		if u.applicable(c, at) == nil {
+			pick = c // candidates are in ascending order, so the last wins
+		}
+	}
+	return pick
+}
+
+// applyRelease installs one release: the transaction, its rollback, the
+// application lock, and the outcome report.
+func (u *Updater) applyRelease(ctx context.Context, r *Release) error {
 
 	// The application lock, if one was taken, is held until everything is
 	// finished — including the rollback. Migrator.Rollback touches the same
@@ -63,11 +222,23 @@ func (u *Updater) Apply(ctx context.Context, r *Release) error {
 	// the failure it is handling. The rollback's own error is joined to the
 	// original rather than replacing it: an operator needs to know both that
 	// the update failed and that undoing it did too.
+	//
+	// What is undone is this call's own transaction, and only that. A refusal
+	// in pre-flight opened none, and an interrupted one it happens to find is
+	// not its to undo: rolling that back moves `current` and deletes a version
+	// directory, which is a decision about what runs on this machine — taken by
+	// a call that has just established it may not take one. A clock below the
+	// floor is exactly that case, and undoing a swapped transaction under it
+	// would be a downgrade for the asking (§14.7, T22). An older transaction is
+	// settled by recovery instead, at the start of the next apply or the next
+	// launch, both of which check the floor first.
 	result := "aborted"
-	if rbErr := u.rollback(ctx); rbErr != nil {
-		err = errors.Join(err, rbErr)
-	} else if phaseIsTransactional(phase) {
-		result = "rolled_back"
+	if phaseIsTransactional(phase) {
+		if rbErr := u.rollback(ctx); rbErr != nil {
+			err = errors.Join(err, rbErr)
+		} else {
+			result = "rolled_back"
+		}
 	}
 	u.reportOutcome(ctx, r, result, classify(err), phase)
 	return err
@@ -170,7 +341,7 @@ func (u *Updater) apply(ctx context.Context, r *Release) (hook.Phase, func(), er
 	// From here on every failure is transactional: the journal exists, and the
 	// caller's rollback will find it and undo whatever got done.
 	u.emit(hook.PhaseDownload, "staging "+d.Version, nil)
-	versionDir, err := u.stager.Stage(ctx, d)
+	versionDir, err := u.stager.Stage(ctx, d, u.route(d, installed))
 	if err != nil {
 		return hook.PhaseStage, unlock, err
 	}
@@ -204,7 +375,7 @@ func (u *Updater) apply(ctx context.Context, r *Release) (hook.Phase, func(), er
 	}
 
 	u.emit(hook.PhaseApply, "installing "+d.Version, nil)
-	if err := u.swap(ctx, d, versionDir); err != nil {
+	if err := u.stager.Swap(versionDir); err != nil {
 		return hook.PhaseApply, unlock, err
 	}
 	if err := record(txn.StateSwapped, hook.PhaseApply); err != nil {
@@ -252,18 +423,6 @@ func (u *Updater) apply(ctx context.Context, r *Release) (hook.Phase, func(), er
 	return "", unlock, nil
 }
 
-// swap installs the staged version, directly or through the privileged helper.
-func (u *Updater) swap(ctx context.Context, d *release.Descriptor, versionDir string) error {
-	if u.policy.Elevation == ElevationNone {
-		return u.stager.Swap(versionDir)
-	}
-	// The privileged side re-verifies everything it installs; the descriptor is
-	// untrusted input to it, not a verdict it may act on (AGENTS.md §1.4). This
-	// call is a request, and everything it asks for is checked again on the
-	// other side of the boundary.
-	return u.elevator.Apply(ctx, u.root, d)
-}
-
 // verifyInstalled re-reads what is on disk and compares it with the verified
 // target bytes.
 //
@@ -271,13 +430,20 @@ func (u *Updater) swap(ctx context.Context, d *release.Descriptor, versionDir st
 // between then and now — a truncated write that reported success, a local
 // tamper in the window before the swap (§11.3 T9). It is off by default because
 // it costs a full re-read of the release.
+//
+// It asks the trust layer for a verdict on what it read rather than for the
+// target itself, so verifying costs no network. That is not a convenience: since
+// staging reuses unchanged files from the previous version (§6.4 stage 1), the
+// bytes of an unchanged payload may never have been downloaded at all, and a
+// verify that fetched them would spend the traffic the reuse just saved — on a
+// release whose bulk is a browser runtime, all of it.
 func (u *Updater) verifyInstalled(ctx context.Context, d *release.Descriptor, versionDir string) error {
 	for i := range d.Files {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		f := &d.Files[i]
-		want, err := u.trust.Target(f.Target)
+		want, err := u.trust.TargetLength(f.Target)
 		if err != nil {
 			return err
 		}
@@ -285,11 +451,11 @@ func (u *Updater) verifyInstalled(ctx context.Context, d *release.Descriptor, ve
 		if err != nil {
 			return err
 		}
-		got, err := fsx.ReadFile(u.fs, fsx.Join(versionDir, dst), int64(len(want)))
+		got, err := fsx.ReadFile(u.fs, fsx.Join(versionDir, dst), max(want, 1))
 		if err != nil {
 			return fmt.Errorf("%w: %w", ErrVerify, err)
 		}
-		if !bytes.Equal(got, want) {
+		if err := u.trust.VerifyTarget(f.Target, got); err != nil {
 			// No paths, no contents: this string can reach a Reporter.
 			return fmt.Errorf("%w: an installed file does not match its verified target", ErrVerify)
 		}
@@ -464,4 +630,108 @@ func (u *Updater) reportOutcome(ctx context.Context, r *Release, result, class s
 	if err := u.report.Report(context.WithoutCancel(ctx), o); err != nil {
 		u.emit(phase, "reporting the outcome failed", err)
 	}
+}
+
+// History is the optional capability of looking a release up by version and
+// saying which releases exist at all.
+//
+// It is separate from Resolver because it is not part of applying an update: a
+// client that cannot answer these questions still updates, it just fetches full
+// targets where it could have patched. Keeping it optional also keeps the
+// mandatory trust surface at what the apply path truly needs (the same reason
+// installer.VersionResolver stands apart).
+type History interface {
+	// ReleaseVersion resolves one explicitly named release.
+	ReleaseVersion(goos, goarch, version string) (*release.Descriptor, error)
+
+	// Versions lists the releases the repository publishes for a platform,
+	// oldest first.
+	Versions(goos, goarch string) []string
+
+	// OpenLine makes one release line's descriptors visible to Versions.
+	OpenLine(goos, goarch, major string)
+}
+
+// maxLines bounds how many release lines a walk will open. Each one is a
+// metadata file to fetch and verify, and a client this many majors behind is
+// not going to be walked anywhere — it will be told to fetch the release it is
+// going to, which is the fallback either way.
+const maxLines = 8
+
+// openLines makes every release line between two versions visible to the walk.
+//
+// Without it a walk can only see the line it is going to. Delegated roles load
+// lazily, so a client that has just resolved a 2.0.0 head knows the 2.x
+// descriptors and no others — and would conclude that the 1.5.0 it has to step
+// through, or patch through, was never published.
+func openLines(hist History, goos, goarch, from, to string) {
+	first, ok := release.Major(from)
+	last, ok2 := release.Major(to)
+	if !ok || !ok2 || last < first || last-first > maxLines {
+		return
+	}
+	// Counted by steps rather than by counting up to `last`: a major of
+	// 18446744073709551615 is a version SemVer allows, and a loop that
+	// increments past it wraps to zero and never ends. The span is bounded
+	// above, so first+step cannot pass last either.
+	for step := uint64(0); step <= last-first; step++ {
+		hist.OpenLine(goos, goarch, strconv.FormatUint(first+step, 10))
+	}
+}
+
+// maxWalk bounds how many releases a patched update will walk through.
+//
+// It is a cost bound, not a safety one — every hop is verified, so a longer
+// walk is not less trustworthy, only less likely to be worth it. A client this
+// far behind is better served by downloading the release it is going to, which
+// is exactly what an unavailable route falls back to.
+const maxWalk = 32
+
+// route works out the byte-level history of the release being applied: for each
+// destination, the payload targets it had at the releases between the installed
+// version and this one.
+//
+// Everything here is an optimisation with the same fallback — fetch the full
+// target — so nothing in it returns an error. A trust client that cannot list
+// releases, a chain that is not published end to end, an intermediate
+// descriptor that will not resolve: each simply means there is no route, and
+// the update proceeds the way it did before patches existed.
+func (u *Updater) route(d *release.Descriptor, installed string) stage.Route {
+	hist, ok := u.trust.(History)
+	if !ok || installed == "" {
+		return nil
+	}
+
+	// Resolving the installed release first is not only for its file list: it
+	// is also the descriptor whose payload targets the first patch starts from,
+	// and a release the repository no longer publishes is one no patch can be
+	// applied against.
+	first, err := hist.ReleaseVersion(d.OS, d.Arch, installed)
+	if err != nil {
+		return nil
+	}
+	openLines(hist, d.OS, d.Arch, installed, d.Version)
+	walk, err := release.Chain(hist.Versions(d.OS, d.Arch), installed, d.Version)
+	if err != nil || len(walk) > maxWalk {
+		return nil
+	}
+
+	route := stage.Route{}
+	for i, v := range walk {
+		step := first
+		switch {
+		case i == 0:
+		case v == d.Version:
+			step = d
+		default:
+			if step, err = hist.ReleaseVersion(d.OS, d.Arch, v); err != nil {
+				return nil
+			}
+		}
+		for j := range step.Files {
+			f := &step.Files[j]
+			route[f.Dst] = append(route[f.Dst], f.Target)
+		}
+	}
+	return route
 }

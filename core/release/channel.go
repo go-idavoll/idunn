@@ -14,7 +14,12 @@
 
 package release
 
-import "fmt"
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"strings"
+)
 
 // Pointer is the channel pointer target
 // `channels/<channel>/<os>-<arch>/latest.json`. It names the currently valid
@@ -47,4 +52,80 @@ func PointerPath(channel, goos, goarch string) string {
 // DescriptorPath returns the TUF target path of a release descriptor.
 func DescriptorPath(goos, goarch, version string) string {
 	return fmt.Sprintf("releases/%s-%s/%s.json", goos, goarch, version)
+}
+
+// VersionOfDescriptorPath reads a version back out of a descriptor target path,
+// reporting false for anything that is not one for this platform.
+//
+// It is how a client learns which releases exist without a new document to sign:
+// the signed targets metadata already lists every descriptor the repository
+// publishes, and this is the inverse of the function that put them there. The
+// path is the claim — a descriptor that disagrees with the path it lives at is
+// refused when it is resolved (see Client.ReleaseVersion) — so reading a version
+// out of one is a lookup, never a trust decision.
+func VersionOfDescriptorPath(targetPath, goos, goarch string) (string, bool) {
+	prefix := fmt.Sprintf("releases/%s-%s/", goos, goarch)
+	if !strings.HasPrefix(targetPath, prefix) {
+		return "", false
+	}
+	rest := strings.TrimPrefix(targetPath, prefix)
+	version, ok := strings.CutSuffix(rest, ".json")
+	if !ok || !ValidVersion(version) {
+		return "", false
+	}
+	return version, true
+}
+
+// PayloadPath returns the TUF target path of a payload file with the given
+// content hash, in the release line of the given major version.
+//
+// Payload targets are content-addressed, which is what makes file-level delta
+// free: identical bytes are one target, published once, reused by every release
+// that ships them.
+func PayloadPath(major string, sum []byte) string {
+	return fmt.Sprintf("payloads/v%s/%s", major, hex.EncodeToString(sum))
+}
+
+// payloadOfPath splits a payload target path back into its line and its content
+// hash, reporting false for anything that is not one.
+func payloadOfPath(targetPath string) (major, sum string, ok bool) {
+	rest, ok := strings.CutPrefix(targetPath, "payloads/v")
+	if !ok {
+		return "", "", false
+	}
+	major, sum, ok = strings.Cut(rest, "/")
+	if !ok || major == "" || strings.Trim(major, "0123456789") != "" {
+		return "", "", false
+	}
+	if len(sum) != 2*sha256.Size || strings.Trim(sum, "0123456789abcdef") != "" {
+		return "", "", false
+	}
+	return major, sum, true
+}
+
+// PatchPath returns the TUF target path of the binary patch that turns one
+// payload into another, and false if the two are not payload targets it can be
+// stated for.
+//
+// The path is derived, not published: both content hashes are already in the
+// descriptors the client resolves anyway, so a client asks for the patch it
+// wants by name and the signed metadata answers whether it exists. That is why
+// delta stage 2 needs no field in the descriptor and no schema bump — and why
+// there is nothing here to spoof, since a patch is only ever a cheaper way to
+// obtain bytes that are then checked against the signed hash of the result.
+//
+// A patch lives in the line of the payload it produces: that is the role whose
+// publish emitted it, and the role a client following that line already has.
+func PatchPath(fromPayload, toPayload string) (string, bool) {
+	_, from, ok := payloadOfPath(fromPayload)
+	if !ok {
+		return "", false
+	}
+	major, to, ok := payloadOfPath(toPayload)
+	if !ok || from == to {
+		// A patch from a payload to itself describes nothing; the file is
+		// unchanged and reuse already has it.
+		return "", false
+	}
+	return fmt.Sprintf("patches/v%s/%s-%s", major, from, to), true
 }

@@ -15,6 +15,7 @@
 package harness
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -28,6 +29,7 @@ import (
 	"github.com/go-idavoll/idunn/core/timefloor"
 	"github.com/go-idavoll/idunn/core/trust"
 	"github.com/go-idavoll/idunn/core/updater"
+	"github.com/go-idavoll/idunn/internal/layout"
 )
 
 // Result is the outcome of running the client under test against one repository.
@@ -130,6 +132,146 @@ func RunInstall(srv *Server, rootBytes []byte, workDir string, at time.Time, opt
 	})
 	res.Err, res.Class = err, classify(err)
 	return res
+}
+
+// PatchedResult is the outcome of the delta story: a machine installed on the
+// older release, updated to the newer one against a repository whose patches
+// may be anything at all.
+type PatchedResult struct {
+	Result
+
+	// Version is what is installed when the dust settles.
+	Version string
+}
+
+// RunPatchedUpdate installs the previous release of a delta build and then
+// updates to the head, driving the real path: core/installer, core/updater, the
+// route through the releases in between, and core/stage applying whatever
+// patches the repository offers.
+//
+// It is the only driver that can exercise a patch at all, because a patch needs
+// a base — an installation that already exists. What it proves is not that a bad
+// patch is refused: a patch is not trusted in the first place, so the client is
+// free to try it and throw the result away. What it proves is that the bytes
+// that end up installed are the signed ones either way.
+func RunPatchedUpdate(srv *Server, rootBytes []byte, workDir string, at time.Time, opts BuildOptions) PatchedResult {
+	installRoot := filepath.Join(workDir, "install")
+	res := PatchedResult{Result: Result{InstallRoot: installRoot}}
+
+	// One client per run of the client, because that is what the story is: the
+	// machine installs today and updates later, and a go-tuf workflow runs once
+	// per process. They share the local cache, as two runs on one machine do.
+	newClient := func() (*trust.Client, error) {
+		c, err := trust.New(trust.Options{
+			Root:        rootBytes,
+			MetadataURL: srv.MetadataURL(),
+			TargetsURL:  srv.TargetsURL(),
+			LocalDir:    filepath.Join(workDir, "cache"),
+			Now:         func() time.Time { return at },
+		})
+		if err != nil {
+			return nil, err
+		}
+		c.UnsafeSetRefTime(at)
+		return c, nil
+	}
+	updaterOpts := func(c *trust.Client) updater.Options {
+		return updater.Options{
+			Trust:   c,
+			FS:      fsx.OS(),
+			Root:    installRoot,
+			Channel: opts.Channel,
+			OS:      opts.OS,
+			Arch:    opts.Arch,
+			Now:     func() time.Time { return at },
+		}
+	}
+
+	// The machine starts out on the older release. Everything the attack is
+	// about happens on top of this.
+	c, err := newClient()
+	if err != nil {
+		res.Err, res.Class = err, classify(err)
+		return res
+	}
+	if err := installer.Install(context.Background(), installer.Options{
+		Updater: updaterOpts(c),
+		Version: opts.Previous,
+	}); err != nil {
+		res.Err, res.Class = fmt.Errorf("installing %s: %w", opts.Previous, err), classify(err)
+		return res
+	}
+
+	if c, err = newClient(); err != nil {
+		res.Err, res.Class = err, classify(err)
+		return res
+	}
+	u, err := updater.New(updaterOpts(c))
+	if err != nil {
+		res.Err, res.Class = err, classify(err)
+		return res
+	}
+	rel, err := u.CheckForUpdate(context.Background())
+	if err != nil {
+		res.Err, res.Class = err, classify(err)
+		return res
+	}
+	if rel == nil {
+		res.Err = errors.New("the update to the head release was not offered")
+		return res
+	}
+	if err := u.Apply(context.Background(), rel); err != nil {
+		res.Err, res.Class = err, classify(err)
+		return res
+	}
+
+	res.Version, err = installer.InstalledVersion(installRoot)
+	if err != nil {
+		res.Err, res.Class = err, classify(err)
+	}
+	return res
+}
+
+// InstalledBytes reads a file out of the running installation.
+//
+// It follows the install pointer rather than reading through `current`: on
+// POSIX that is a symlink the path can traverse, but on Windows it is a pointer
+// file, and `current/<dst>` does not exist there at all.
+func InstalledBytes(installRoot, dst string) ([]byte, error) {
+	version, err := layout.PointerTarget(fsx.OS(), installRoot)
+	if err != nil {
+		return nil, err
+	}
+	if version == "" {
+		return nil, fmt.Errorf("%s holds no installation", installRoot)
+	}
+	dir, err := layout.VersionDir(installRoot, version)
+	if err != nil {
+		return nil, err
+	}
+	return os.ReadFile(filepath.Join(filepath.FromSlash(dir), filepath.FromSlash(dst)))
+}
+
+// NoTraceOf reports whether marker appears in any file under root.
+//
+// It is the assertion a delta case turns on. "The update succeeded" is not the
+// interesting part — what matters is that nothing the attacker chose is anywhere
+// on the machine afterwards, in the installation, in a retained version, or in
+// a staging tree somebody forgot to clean up.
+func NoTraceOf(root string, marker []byte) error {
+	return filepath.WalkDir(root, func(name string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !d.Type().IsRegular() {
+			return err
+		}
+		raw, err := os.ReadFile(name)
+		if err != nil {
+			return err
+		}
+		if bytes.Contains(raw, marker) {
+			return fmt.Errorf("the attacker's bytes are on disk at %s", name)
+		}
+		return nil
+	})
 }
 
 // InstalledVersion reports what RunInstall left installed, or "" for nothing.
