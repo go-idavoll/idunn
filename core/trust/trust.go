@@ -137,6 +137,16 @@ func New(o Options) (*Client, error) {
 		maxTarget = DefaultMaxTargetBytes
 	}
 
+	// Created here, before go-tuf creates its metadata and targets directories
+	// inside with 0700: MkdirAll would give every missing parent that mode too,
+	// and for a privileged cache (<root>/.updater/tuf) those parents are the
+	// install root and its metadata directory, which the application's users must
+	// be able to read (layout.DirMode). The cache's own contents stay go-tuf's.
+	//nolint:gosec // G301: see above.
+	if err := os.MkdirAll(o.LocalDir, 0o755); err != nil {
+		return nil, fmt.Errorf("%w: local directory: %w", ErrTrust, err)
+	}
+
 	cfg, err := tufconfig.New(o.MetadataURL, o.Root)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrTrust, err)
@@ -400,7 +410,11 @@ func (c *Client) MaterializeTarget(targetPath, dst string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+	// The destination is inside a staging tree that becomes a version directory
+	// (layout.DirMode): its subdirectories must be enterable by the users who run
+	// the application.
+	//nolint:gosec // G301: an install tree is world-readable by design; see layout.DirMode.
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return fmt.Errorf("%w: %w", ErrTrust, err)
 	}
 	// Write via a temp file in the destination directory so an interrupted
