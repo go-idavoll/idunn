@@ -46,7 +46,10 @@ var maxSocketPath = len(unix.RawSockaddrUnix{}.Path) - 1
 // whoever got there first. That is not a privilege escalation — the helper side
 // is the one that authenticates — but it is a silent denial of every future
 // update, and it is cheaply excluded here.
-func listenLocal(endpoint string) (net.Listener, error) {
+//
+// The allowed SIDs are Windows's; checkPrincipals has refused any before this
+// runs, and a socket's mode could not express them anyway.
+func listenLocal(endpoint string, _ []string) (net.Listener, error) {
 	if !filepath.IsAbs(endpoint) {
 		return nil, fmt.Errorf("%w: socket path %q is not absolute", ErrRequest, endpoint)
 	}
@@ -171,6 +174,7 @@ func dialLocal(ctx context.Context, endpoint string, timeout time.Duration) (net
 	return d.DialContext(ctx, "unix", endpoint)
 }
 
-// checkServicePlatform reports whether the unprivileged side can reach a helper
-// here at all.
-func checkServicePlatform() error { return nil }
+// checkServiceEndpoint reports whether the unprivileged side can reach a helper
+// at endpoint here at all. Any socket path can; whether it is the right one is
+// the helper's to prove by answering.
+func checkServiceEndpoint(string) error { return nil }

@@ -1126,10 +1126,30 @@ configured only through environment variables does not reach its download
 > root against `AllowedRoots` and `CheckPrivilegedRoot`, and only then the `Applier` —
 > `updater.RequestApplier`, which builds this side's own trust client per root with
 > `PrivilegedCacheDir` and calls `ApplyRequested`. The answer is `ok` or an error
-> class, never text. On Windows the service fails closed until the named-pipe
-> transport (go-winio, pipe DACL + client token) lands; on macOS the helper is meant to
-> run as an `SMAppService` daemon (IDN-08). The read-only fd hand-off of §14.8 is not
-> built: the helper downloads again into its privileged cache.
+> class, never text. On macOS the helper is meant to run as an `SMAppService` daemon
+> (IDN-08). The read-only fd hand-off of §14.8 is not built: the helper downloads again
+> into its privileged cache.
+
+> **As built — `ElevationService` on Windows.** Same `Applier`, same wire protocol, same
+> decision order, over a named pipe (`\\.\pipe\<name>`, strict name grammar on both
+> sides) created through go-winio. The helper builds the pipe's security descriptor
+> itself from SIDs — owner its default owner (SYSTEM or Administrators in production);
+> protected DACL with `FILE_ALL_ACCESS` for SYSTEM, Administrators and its own account,
+> and only `FILE_READ_DATA|FILE_WRITE_DATA|FILE_READ_ATTRIBUTES|SYNCHRONIZE` for each
+> `AllowedSIDs` entry (no `FILE_CREATE_PIPE_INSTANCE`, `WRITE_DAC`, `WRITE_OWNER`); no
+> ACE for Everyone, Users, Anonymous or NETWORK. The first instance is created with
+> `FILE_CREATE`, so a name somebody already holds stops the helper from starting, and
+> every instance rejects remote clients. The DACL is the first gate, not the decision:
+> per connection the helper refuses a client the pipe reports a client computer for
+> (SMB, including `\\localhost`), then obtains the client's token by
+> `ImpersonateNamedPipeClient` + `OpenThreadToken` (as self) + `RevertToSelf` on a
+> locked OS thread — the thread is discarded if reverting fails — and compares the
+> token's user SID with `AllowedSIDs` (canonical account SIDs only; empty = SYSTEM
+> only). `NewService` dials at identification level, so the helper can identify but
+> not act as the caller; an anonymous-level client is refused. The pid
+> (`GetNamedPipeClientProcessId`) is logged, never decided on. `AllowedUIDs` on Windows
+> and `AllowedSIDs` on POSIX are refused at `NewHelper`. A client does not yet verify
+> that the pipe it reached belongs to SYSTEM (open in IDN-07).
 
 ### 14.3 Graceful shutdown & external file locks
 
