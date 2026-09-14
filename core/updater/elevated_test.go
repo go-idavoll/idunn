@@ -386,3 +386,75 @@ func TestApplyRequestedIsIdempotent(t *testing.T) {
 		t.Fatalf("refreshes = %d, want 1: even a no-op is decided on fresh metadata", f.trust.refreshes)
 	}
 }
+
+// The service helper's applier: the request names a root and a version, and the
+// privileged side supplies everything else itself.
+func TestRequestApplierInstallsTheChannelHead(t *testing.T) {
+	f := newFixture(t, "1.2.0", "1.3.0")
+	var gotRoot, gotCache string
+	a := updater.RequestApplier{
+		Channel: channel,
+		Options: func(root, cacheDir string) (updater.Options, error) {
+			gotRoot, gotCache = root, cacheDir
+			return f.opts, nil
+		},
+	}
+	err := a.Apply(context.Background(), elevate.Request{Root: root, Channel: channel, Version: "1.3.0"})
+	if err != nil {
+		t.Fatalf("Apply = %v", err)
+	}
+	if got := f.pointer(); got != "1.3.0" {
+		t.Fatalf("current = %q, want 1.3.0", got)
+	}
+	if gotRoot != root || gotCache != elevate.PrivilegedCacheDir(root) {
+		t.Fatalf("Options(%q, %q), want the root and its privileged cache", gotRoot, gotCache)
+	}
+}
+
+func TestRequestApplierRefuses(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(f *fixture, a *updater.RequestApplier, req *elevate.Request)
+		want  error
+	}{
+		{"another channel than the helper's", func(_ *fixture, _ *updater.RequestApplier, req *elevate.Request) {
+			req.Channel = "beta"
+		}, updater.ErrPolicy},
+		{"a version that is not the head", func(_ *fixture, _ *updater.RequestApplier, req *elevate.Request) {
+			req.Version = "1.2.5"
+		}, updater.ErrStale},
+		{"options that would elevate again", func(f *fixture, a *updater.RequestApplier, _ *elevate.Request) {
+			a.Options = func(string, string) (updater.Options, error) {
+				o := f.opts
+				o.Elevator = &fakeElevator{}
+				o.Policy.Elevation = updater.ElevationService
+				return o, nil
+			}
+		}, updater.ErrConfig},
+		{"no channel configured", func(_ *fixture, a *updater.RequestApplier, _ *elevate.Request) {
+			a.Channel = ""
+		}, updater.ErrConfig},
+		{"no options function", func(_ *fixture, a *updater.RequestApplier, _ *elevate.Request) {
+			a.Options = nil
+		}, updater.ErrConfig},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t, "1.2.0", "1.3.0")
+			a := updater.RequestApplier{
+				Channel: channel,
+				Options: func(string, string) (updater.Options, error) { return f.opts, nil },
+			}
+			req := elevate.Request{Root: root, Channel: channel, Version: "1.3.0"}
+			tc.setup(f, &a, &req)
+			if err := a.Apply(context.Background(), req); !errors.Is(err, tc.want) {
+				t.Fatalf("Apply = %v, want %v", err, tc.want)
+			}
+			if f.journalExists() {
+				t.Fatal("a refused request opened a transaction")
+			}
+			if got := f.pointer(); got != "1.2.0" {
+				t.Fatalf("current = %q, want 1.2.0", got)
+			}
+		})
+	}
+}

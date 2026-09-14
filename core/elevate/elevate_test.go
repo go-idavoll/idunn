@@ -196,12 +196,14 @@ func systemRoot(t *testing.T) string {
 	return filepath.Join(dir, "System32")
 }
 
-func TestNewServiceIsNotImplemented(t *testing.T) {
+// A service elevator needs an endpoint, and says so at construction rather than
+// on the first apply.
+func TestNewServiceNeedsAnEndpoint(t *testing.T) {
 	t.Parallel()
 
-	el, err := elevate.NewService()
-	if !errors.Is(err, elevate.ErrNotImplemented) {
-		t.Fatalf("NewService() = %v, want ErrNotImplemented", err)
+	el, err := elevate.NewService(elevate.ServiceOptions{})
+	if !errors.Is(err, elevate.ErrRequest) {
+		t.Fatalf("NewService(no endpoint) = %v, want ErrRequest", err)
 	}
 	if el != nil {
 		t.Fatal("NewService() returned an Elevator alongside its error")
