@@ -25,13 +25,15 @@
 #   major      1.0.0 -> 2.0.0 -> 2.1.0   major update, then a sequential one
 #   floor-gap  1.0.0 -/-> 1.2.0          1.2.0 requires min_from_version 1.1.0,
 #                                        which is never published: refused
-#   elevated   1.0.0 -> 1.1.0            Windows only, interactive: the install
-#                                        root is writable by administrators only,
-#                                        so install and update each raise a UAC
-#                                        prompt that someone has to accept. Not
-#                                        in the default set and not in CI — a
-#                                        runner is already elevated and has no
-#                                        one to click.
+#   elevated   1.0.0 -> 1.1.0            Windows only, interactive: installs into
+#                                        %ProgramFiles% and updates there through
+#                                        UAC prompts someone has to accept (four:
+#                                        a hostile helper start, install, update,
+#                                        removal). Also refuses a user-owned root,
+#                                        before the prompt and in the elevated
+#                                        helper. Not in the default set and not in
+#                                        CI — a runner is already elevated and has
+#                                        no one to click.
 #
 # Every step is a case with an expectation, a verdict and an attestation — the
 # observed exit code, installed version (pointer and recorded state agreeing),
@@ -281,14 +283,25 @@ refuse_case() {
     "rc=$rc error=$(printf '%s' "$out" | grep 'e2eapp:' | oneline)"
 }
 
-# admin_only <dir>: create dir so that administrators may write it and this
-# user may only read it — the shape of C:\Program Files, in a place the test can
-# clean up. The user keeps DELETE, which is enough to remove the tree afterwards
-# and not enough to create anything in it: NeedsElevation probes by creating.
-admin_only() {
+# user_owned_readonly <dir>: create dir so that this user may only read it and
+# administrators may write it. It is the shape of a root that passes the probe
+# (NeedsElevation says yes) and must still be refused: the user owns it, so the
+# user can take its ACL back and redirect a privileged write through it at any
+# time (IDN-22). The user keeps DELETE, so the tree can be removed afterwards.
+user_owned_readonly() {
   mkdir -p "$1"
   MSYS_NO_PATHCONV=1 icacls "$(cygpath -w "$1")" /inheritance:r \
     /grant:r "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" "$USERDOMAIN\\$USERNAME:(OI)(CI)(RX,D)" >/dev/null
+}
+
+# as_admin <exe> <args...>: run a program elevated through a UAC prompt, wait,
+# and return its exit code. Arguments must not contain spaces or quotes.
+as_admin() {
+  local exe="$1" list="" a
+  shift
+  for a in "$@"; do list="$list,'$a'"; done
+  powershell.exe -NoProfile -NonInteractive -Command \
+    "\$p = Start-Process -FilePath '$(cygpath -w "$exe")' -ArgumentList @(${list#,}) -Verb RunAs -Wait -PassThru -WindowStyle Hidden; exit \$p.ExitCode"
 }
 
 # unwritable_case <dir>: attest that this process cannot create in dir, so an
@@ -300,7 +313,7 @@ unwritable_case() {
     why="created a file in $1 without privileges; "
   fi
   attestation="dir=$1"
-  verdict "install root is administrators-only" "an unprivileged create in the root is denied" ""
+  verdict "$2" "an unprivileged create in $1 is denied" ""
 }
 
 # elevated_case <case> <from> <to> <versions after> <verb> <expected output>
@@ -323,6 +336,32 @@ elevated_case() {
   # The helper refreshed on its own, into its own cache inside the root.
   if [ ! -f "$sroot/.updater/tuf/metadata/timestamp.json" ]; then why="${why}no helper cache in the root; "; fi
   verdict "$1" "UAC accepted, $2 -> $3 applied by the elevated helper" "rc=$rc"
+}
+
+# unsafe_root_cases <dir>: a root the user controls is refused — by the caller
+# before any prompt, and by the helper itself when a hostile caller starts it
+# elevated directly. Either way nothing is created.
+unsafe_root_cases() {
+  local root="$1/e2eapp" out rc
+  out="$("$work/$scen/build/1.0.0/bin/e2eapp$exe" install --root "$root" 2>&1)"
+  rc=$?
+  out="${out//$'\r'/}"
+  why=""
+  attestation="root=$root"
+  want rc "$rc" 5
+  contains output "$out" "administrators-only"
+  if [ -e "$root" ]; then why="${why}the root was created; "; fi
+  verdict "refuse a user-owned root before the prompt" "exit 5, no UAC prompt, nothing created" \
+    "error=$(printf '%s' "$out" | grep 'e2eapp:' | oneline)" || return 1
+
+  step "accept the UAC prompt: a hostile caller starts the helper elevated on a user-owned root"
+  as_admin "$work/$scen/build/1.0.0/bin/e2eapp$exe" apply --root "$(cygpath -w "$root")" --channel stable --version 1.0.0
+  rc=$?
+  why=""
+  attestation="root=$root"
+  want rc "$rc" 5
+  if [ -e "$root" ]; then why="${why}the elevated helper created the root; "; fi
+  verdict "elevated helper refuses a user-owned root" "helper exits 5 before any write" "rc=$rc"
 }
 
 # --- scenarios ----------------------------------------------------------------
@@ -359,14 +398,18 @@ scenario_elevated() {
     record "elevated" "Windows host" FAIL "the elevated scenario needs Windows and UAC, this is $goos"
     return 1
   fi
-  sroot="$work/$scen/programs/e2eapp"
+  local programs
+  programs="$(cygpath -m "$PROGRAMFILES")"
+  sroot="$programs/idunn-$stag/e2eapp"
   slauncher="$work/$scen/launcher$exe"
   cp "$bin/launcher$exe" "$slauncher"
-  admin_only "$work/$scen/programs"
-  unwritable_case "$work/$scen/programs" || return 1
+  unwritable_case "$programs" "Program Files is administrators-only" || return 1
 
   publish 1.0.0 || return 1
-  step "accept the UAC prompt for the elevated install of 1.0.0"
+  user_owned_readonly "$work/$scen/user-owned"
+  unsafe_root_cases "$work/$scen/user-owned" || return 1
+
+  step "accept the UAC prompt for the elevated install of 1.0.0 into $sroot"
   elevated_case "elevated install 1.0.0" "" 1.0.0 "1.0.0" install "installed 1.0.0" || return 1
   publish 1.1.0 || return 1
   step "accept the UAC prompt for the elevated update to 1.1.0"
@@ -374,6 +417,23 @@ scenario_elevated() {
   # No prompt for this one: checking needs no privileges, and a check that
   # tried to write the root would fail here.
   uptodate_case 1.1.0
+}
+
+# cleanup_elevated removes the install from Program Files, which takes one more
+# prompt. Declining it leaves the directory and says where.
+cleanup_elevated() {
+  local dir
+  dir="$(cygpath -w "$(cygpath -m "$PROGRAMFILES")/idunn-$tag-elevated")"
+  [ -d "$dir" ] || return 0
+  if [ -n "${E2E_KEEP:-}" ]; then
+    printf 'install kept: %s\n' "$dir"
+    return 0
+  fi
+  step "accept the UAC prompt to remove $dir"
+  powershell.exe -NoProfile -NonInteractive -Command \
+    "Start-Process -FilePath cmd.exe -ArgumentList '/c rmdir /s /q \"$dir\"' -Verb RunAs -Wait -WindowStyle Hidden" ||
+    true
+  if [ -d "$dir" ]; then printf 'not removed: %s\n' "$dir"; fi
 }
 
 # --- run ----------------------------------------------------------------------
@@ -397,6 +457,7 @@ for s in $scenarios; do
     --scenario "$s" --platform "$goos/$goarch" --commit "$commit" --run "$run_url" >"$work/$s/report.md"; then
     failed=1
   fi
+  if [ "$s" = elevated ] && [ "$goos" = windows ]; then cleanup_elevated; fi
   cat "$work/$s/report.md"
   if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then cat "$work/$s/report.md" >>"$GITHUB_STEP_SUMMARY"; fi
 done

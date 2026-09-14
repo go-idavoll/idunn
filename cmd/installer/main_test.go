@@ -16,7 +16,9 @@ package main
 
 import (
 	"bytes"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -123,12 +125,27 @@ func TestApplyRefusesAMalformedRequest(t *testing.T) {
 	}
 }
 
+// adminOnlyRoot is a root that does not exist, in a directory only administrators
+// control on a stock system, so the helper's root check lets it through to
+// whatever the test is about.
+func adminOnlyRoot(t *testing.T) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		pf := os.Getenv("ProgramFiles")
+		if pf == "" {
+			t.Skip("no %ProgramFiles%")
+		}
+		return filepath.Join(pf, "idunn-test-does-not-exist", "app")
+	}
+	return "/idunn-test-does-not-exist/app"
+}
+
 // A build that embeds nothing cannot serve as its own privileged helper, and
 // says so rather than starting an elevated process that would fail after the
 // prompt.
 func TestApplyNeedsAnEmbeddedAnchor(t *testing.T) {
 	var out bytes.Buffer
-	args := []string{"apply", "--root", filepath.Join(t.TempDir(), "app"), "--channel", "stable", "--version", "1.2.0"}
+	args := []string{"apply", "--root", adminOnlyRoot(t), "--channel", "stable", "--version", "1.2.0"}
 	if code := run(args, &out, &out); code != exitError {
 		t.Fatalf("run = %d, want %d\n%s", code, exitError, &out)
 	}
@@ -165,5 +182,23 @@ func TestRootIsMadeAbsolute(t *testing.T) {
 	}
 	if !filepath.IsAbs(cfg.root) {
 		t.Errorf("root = %q, want an absolute path", cfg.root)
+	}
+}
+
+// The helper refuses a root that someone other than an administrator controls,
+// before it reads its anchor or touches anything (IDN-22). A user who can start
+// the helper elevated — or talk an administrator into accepting the prompt —
+// must not get a privileged write into a directory they can redirect.
+func TestApplyRefusesARootAUserControls(t *testing.T) {
+	if runtime.GOOS != "windows" && os.Geteuid() == 0 {
+		t.Skip("as root, a temporary directory is root-owned")
+	}
+	var out bytes.Buffer
+	args := []string{"apply", "--root", filepath.Join(t.TempDir(), "app"), "--channel", "stable", "--version", "1.2.0"}
+	if code := run(args, &out, &out); code != exitUnsafeRoot {
+		t.Fatalf("run = %d, want %d\n%s", code, exitUnsafeRoot, &out)
+	}
+	if !strings.Contains(out.String(), "administrators-only") {
+		t.Errorf("err = %q", out.String())
 	}
 }

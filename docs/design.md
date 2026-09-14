@@ -1034,9 +1034,11 @@ here is that the path is absolute, local (never UNC), existing, and a regular fi
 > Its TUF cache is `<root>/.updater/tuf`, never the invoking user's cache. This
 > means download and staging run elevated, which is more privileged surface than
 > "download+verify unprivileged" above; the fd hand-off that would restore that
-> needs the authenticated IPC of the service mode (IDN-07). Still open: the root is
-> chosen by the caller, and the helper does not yet refuse a root that a
-> non-administrator can write (IDN-22).
+> needs the authenticated IPC of the service mode (IDN-07). The root is chosen by
+> the caller, so the helper refuses one that anyone but SYSTEM, Administrators or
+> TrustedInstaller could change — by owner, by ACL including inheritable ACEs, by
+> reparse points on the path, and by drive kind — before it writes anything
+> (`elevate.AcceptRequest`, IDN-22). Callers run the same check before the prompt.
 
 `ElevationService` (the privileged helper and its authenticated IPC, 14.8) is not
 built yet and fails closed.

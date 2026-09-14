@@ -32,7 +32,8 @@
 // resolves everything again on its own.
 //
 // Exit codes: 0 ok, 1 error, 2 usage, 3 refused by update policy (a downgrade,
-// a migration floor, a client too old), 4 the elevation prompt was declined.
+// a migration floor, a client too old), 4 the elevation prompt was declined,
+// 5 the install root is not administrators-only and is not elevated for.
 // A refusal is kept apart from an error so a test that expects one cannot pass
 // on a network failure.
 //
@@ -119,6 +120,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 			return 3
 		case errors.Is(err, elevate.ErrDeclined):
 			return 4
+		case errors.Is(err, elevate.ErrUnsafeRoot):
+			return 5
 		}
 		return 1
 	}
@@ -169,6 +172,11 @@ func withRoot(args []string, stdout io.Writer, verb func(context.Context, update
 	if err != nil {
 		return err
 	}
+	// The helper refuses such a root; asking for consent first would be a
+	// prompt for nothing.
+	if err := elevate.CheckPrivilegedRoot(abs); err != nil {
+		return err
+	}
 	el, err := elevate.NewInteractive(elevate.InteractiveOptions{})
 	if err != nil {
 		return err
@@ -180,7 +188,8 @@ func withRoot(args []string, stdout io.Writer, verb func(context.Context, update
 }
 
 // applyVerb is the privileged helper. It takes the three scalars core/elevate
-// sends and nothing else, validates them by the same grammar, and answers with
+// sends and nothing else, validates them by the same grammar, refuses a root
+// anyone but an administrator controls, and answers with
 // an update of its own: its own refresh, its own resolution of the channel head,
 // its own cache inside the root. The requested version only has to agree.
 func applyVerb(args []string, stdout io.Writer) error {
@@ -194,7 +203,7 @@ func applyVerb(args []string, stdout io.Writer) error {
 	if fl.NArg() != 0 {
 		return fmt.Errorf("unexpected argument %q", fl.Arg(0))
 	}
-	req, err := elevate.ParseRequest(*root, *ch, *ver)
+	req, err := elevate.AcceptRequest(*root, *ch, *ver)
 	if err != nil {
 		return err
 	}

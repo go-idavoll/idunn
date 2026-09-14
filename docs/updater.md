@@ -205,7 +205,10 @@ would still be an upgrade. A request for the installed head is a no-op success.
 A host's helper verb validates its arguments with `elevate.ParseRequest` — the
 same grammar the sender enforced — and keeps its TUF cache in
 `elevate.PrivilegedCacheDir(root)`, inside the root, never in a directory the
-invoking user can write (T23).
+invoking user can write (T23). `elevate.AcceptRequest` does the validation and also
+refuses a root that anyone but an administrator could change (owner, ACL including
+inheritable ACEs, reparse points, drive kind); a caller should run
+`elevate.CheckPrivilegedRoot` before asking, so such a root never gets a prompt.
 
 Download and staging therefore run elevated today, in the helper. The design's
 unprivileged pre-download handed over by file descriptor needs the authenticated
