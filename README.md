@@ -205,7 +205,7 @@ What exists today:
 | Delta stage 1 (content-addressed reuse) | go-tuf cache reuse plus verified local reuse from `current`/retained versions; the copy is not yet a reflink/hardlink |
 | Packer (`cmd/packer`, `internal/packer`) | publishes a delegated, reproducible TUF repository, with opt-in retention |
 | Installer binary (`cmd/installer`) | implemented: embedded anchor, elevation decision, privileged `apply` verb |
-| Launcher (`cmd/launcher`, `core/launch`) and `BusyDeferToRestart` | implemented: a busy application defers, the launcher applies at the next start |
+| Launcher (`cmd/launcher`, `core/launch`) and `BusyDeferToRestart` | implemented: a busy application defers, the launcher applies at the next start, and swaps in a new launcher the updater staged after a committed update |
 | Delta stage 2 (binary patches) | implemented end to end: patch format (`core/stage`, `internal/delta`), the release walk a skipped-releases client follows, staging that patches hop by hop and falls back to the full target, and a packer that publishes patch targets against the last N releases |
 
 The full section-by-section reconciliation against the design lives in

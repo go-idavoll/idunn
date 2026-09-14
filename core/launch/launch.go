@@ -38,6 +38,7 @@ import (
 	"github.com/go-idavoll/idunn/core/hook"
 	"github.com/go-idavoll/idunn/core/stage"
 	"github.com/go-idavoll/idunn/core/txn"
+	"github.com/go-idavoll/idunn/internal/launcherfile"
 	"github.com/go-idavoll/idunn/internal/layout"
 )
 
@@ -81,6 +82,17 @@ type Options struct {
 	// update is finished. Zero selects the minimum that still leaves a rollback
 	// target.
 	RetainVersions int
+
+	// SelfPath is where this launcher lives — normally the running executable,
+	// which must sit directly in Root. When the updater has staged a launcher
+	// for its file name (.updater/launcher.next/<name>, staged only by a
+	// committed update), the start swaps it in; and an interrupted swap from an
+	// earlier start is repaired first.
+	//
+	// Empty disables both, which is the default. Which file of a release is the
+	// launcher is host knowledge given to the updater (updater.Options.Launcher),
+	// never something a descriptor nominates (docs/design.md §13, IDN-17).
+	SelfPath string
 }
 
 // Deferred describes an update that is staged and waiting for a start.
@@ -98,6 +110,22 @@ type Result struct {
 
 	// Applied is true when a deferred update was completed by this start.
 	Applied bool
+
+	// SelfReplaced is true when the launcher in the install root was replaced
+	// by the one a committed update staged. The new one takes effect at the
+	// next start: this process keeps running the image it was started with.
+	SelfReplaced bool
+
+	// SelfRestored is true when this start found the launcher's name empty
+	// after an interrupted replacement and put the previous launcher back.
+	SelfRestored bool
+
+	// SelfErr is why a staged launcher was not swapped in, or why an
+	// interrupted swap could not be repaired: ErrSelfRefused,
+	// ErrSelfNotWritable (a system-wide root, IDN-23), or an I/O failure that
+	// left the old launcher in place. It never makes Start fail — the
+	// installation that is live is runnable either way.
+	SelfErr error
 
 	// Skipped is true when a deferred update was found but left waiting,
 	// because the application lock said an instance is still running.
@@ -156,12 +184,27 @@ func Start(ctx context.Context, o Options) (Result, error) {
 			ErrLaunch, o.RetainVersions, stage.MinRetain)
 	}
 
+	// Launchers a previous start moved aside are removable now — or, if an
+	// interruption left the launcher's own name empty, one goes back.
+	restored, repairErr := false, error(nil)
+	if o.SelfPath != "" && fsx.Dir(fsx.Clean(o.SelfPath)) == fsx.Clean(o.Root) {
+		restored, repairErr = launcherfile.Repair(o.FS, fsx.Clean(o.SelfPath))
+		if restored {
+			o.emit(hook.PhaseRollback, "an interrupted launcher replacement was undone", nil)
+		}
+		if repairErr != nil {
+			repairErr = fmt.Errorf("%w: repairing an interrupted launcher replacement: %w", ErrLaunch, repairErr)
+			o.emit(hook.PhaseRollback, "an interrupted launcher replacement could not be undone", repairErr)
+		}
+	}
+
 	rec, err := txn.RecoverResult(ctx, o.FS, o.Root, o.Migrate)
 	if err != nil {
-		return Result{}, err
+		return Result{SelfRestored: restored, SelfErr: repairErr}, err
 	}
-	res := Result{Recovered: rec.Recovered, FromVersion: rec.FromVersion, ToVersion: rec.ToVersion}
+	res := Result{Recovered: rec.Recovered, SelfRestored: restored, SelfErr: repairErr, FromVersion: rec.FromVersion, ToVersion: rec.ToVersion}
 	if !rec.Deferred {
+		o.selfUpdate(&res)
 		return res, nil
 	}
 
@@ -214,7 +257,37 @@ func Start(ctx context.Context, o Options) (Result, error) {
 		}
 		o.emit(hook.PhaseGC, "some old versions could not be removed yet", err)
 	}
+
+	// The launcher is swapped last: finishing the deferred update is what may
+	// have staged the one it carries.
+	o.selfUpdate(&res)
 	return res, nil
+}
+
+// selfUpdate swaps in a staged launcher and records the outcome in res.
+//
+// A failure is reported and never returned. The installation that is live is
+// complete and runnable whether or not the launcher is current, and refusing to
+// start an application because its launcher could not be refreshed would be the
+// worse outcome by a wide margin — the same judgement Start already makes about a
+// deferred update it could not finish.
+func (o Options) selfUpdate(res *Result) {
+	if res.SelfErr != nil {
+		// The repair before recovery failed: the name may be empty, and a swap
+		// on top of an unrepaired state is not one to attempt.
+		return
+	}
+	replaced, err := o.updateSelf(replaceSelf)
+	res.SelfReplaced, res.SelfErr = replaced, err
+	switch {
+	case errors.Is(err, ErrSelfNotWritable):
+		o.emit(hook.PhaseApply, "a new launcher is staged but this root is not writable; "+
+			"it stays as it is until an elevated install replaces it (IDN-23)", err)
+	case err != nil:
+		o.emit(hook.PhaseApply, "the launcher itself was not replaced", err)
+	case replaced:
+		o.emit(hook.PhaseCommit, "the launcher was replaced; it takes effect at the next start", nil)
+	}
 }
 
 // emit notifies the Observer if the host registered one.

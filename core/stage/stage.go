@@ -80,6 +80,53 @@ type Stager struct {
 	FS    fsx.FS
 	Trust Materializer
 	Root  string
+
+	// Launcher names the host's launcher, for a host whose releases carry it
+	// (IDN-17). The zero value means they do not, and staging writes nothing
+	// beyond the version directory.
+	Launcher Launcher
+}
+
+// Launcher is which file of a release is the launcher, and what it is called in
+// the install root.
+//
+// Both are host knowledge, compiled into the host exactly like the path of the
+// application itself, and never read from a descriptor: a release cannot nominate
+// which of its files becomes the program everyone starts next, nor where it goes.
+type Launcher struct {
+	// Source is the install-relative destination (a descriptor's Dst) at which
+	// a release ships the launcher, e.g. "bin/acme-launcher.exe".
+	Source string
+
+	// Name is the launcher's file name directly in the install root, e.g.
+	// "acme.exe".
+	Name string
+}
+
+// Enabled reports whether a launcher is configured at all.
+func (l Launcher) Enabled() bool { return l.Source != "" || l.Name != "" }
+
+// Validate refuses a launcher configuration that is incomplete or that could
+// address anything but one file inside a version directory and one file name
+// directly in the root.
+func (l Launcher) Validate() error {
+	if !l.Enabled() {
+		return nil
+	}
+	if l.Source == "" || l.Name == "" {
+		return fmt.Errorf("%w: a launcher needs both a Source and a Name", ErrStage)
+	}
+	src, err := SanitizeDst(l.Source)
+	if err != nil {
+		return fmt.Errorf("%w: launcher source: %w", ErrStage, err)
+	}
+	if src != l.Source {
+		return fmt.Errorf("%w: launcher source %q is not in clean form (%q)", ErrStage, l.Source, src)
+	}
+	if err := layout.ValidateLauncherName(l.Name); err != nil {
+		return fmt.Errorf("%w: %w", ErrStage, err)
+	}
+	return nil
 }
 
 // SanitizeDst validates an install-relative destination from a descriptor: it must
@@ -116,6 +163,9 @@ func (s *Stager) Stage(ctx context.Context, d *release.Descriptor, route Route) 
 	if d == nil {
 		return "", fmt.Errorf("%w: no descriptor", ErrStage)
 	}
+	if err := s.Launcher.Validate(); err != nil {
+		return "", err
+	}
 	versionDir, err := layout.VersionDir(s.Root, d.Version)
 	if err != nil {
 		return "", err
@@ -143,6 +193,10 @@ func (s *Stager) Stage(ctx context.Context, d *release.Descriptor, route Route) 
 	if err := s.FS.MkdirAll(stageDir, layout.DirMode); err != nil {
 		return "", fmt.Errorf("%w: create staging: %w", ErrStage, err)
 	}
+	// Likewise its pending launcher: this release may not ship one.
+	if err := layout.RemoveLauncherPending(s.FS, s.Root, d.Version); err != nil {
+		return "", fmt.Errorf("%w: clear staging: %w", ErrStage, err)
+	}
 
 	// Which installed versions may donate unchanged files. Computed once: the
 	// listing is the same for every file, and a release is thousands of them.
@@ -152,7 +206,7 @@ func (s *Stager) Stage(ctx context.Context, d *release.Descriptor, route Route) 
 		if err := ctx.Err(); err != nil {
 			return "", fmt.Errorf("%w: %w", ErrStage, err)
 		}
-		if err := s.stageFile(stageDir, &d.Files[i], sources, route); err != nil {
+		if err := s.stageFile(stageDir, d.Version, &d.Files[i], sources, route); err != nil {
 			// Leave the staging tree where it is; the transaction's rollback
 			// and the next recovery both remove it, and removing it here would
 			// destroy the evidence of what went wrong.
@@ -191,7 +245,12 @@ func (s *Stager) Stage(ctx context.Context, d *release.Descriptor, route Route) 
 // stageFile writes one payload file into the staging tree, taking its bytes from
 // an installed version when one holds exactly the signed content and from the
 // trust layer otherwise.
-func (s *Stager) stageFile(stageDir string, f *release.FileRef, sources []string, route Route) error {
+//
+// When the file is the host's launcher, the same verified bytes also become the
+// transaction's pending launcher (layout.WriteLauncherPending). Nothing re-reads
+// them from the staging tree for that: what is recorded is exactly what the trust
+// layer handed over or admitted.
+func (s *Stager) stageFile(stageDir, version string, f *release.FileRef, sources []string, route Route) error {
 	dst, err := SanitizeDst(f.Dst)
 	if err != nil {
 		return fmt.Errorf("%w: %s: %w", ErrStage, f.Target, err)
@@ -233,6 +292,11 @@ func (s *Stager) stageFile(stageDir string, f *release.FileRef, sources []string
 	}
 	if err := fsx.WriteFileAtomic(s.FS, full, data, mode(f)); err != nil {
 		return fmt.Errorf("%w: %w", ErrStage, err)
+	}
+	if s.Launcher.Enabled() && dst == s.Launcher.Source {
+		if err := layout.WriteLauncherPending(s.FS, s.Root, version, s.Launcher.Name, data); err != nil {
+			return fmt.Errorf("%w: %w", ErrStage, err)
+		}
 	}
 	return nil
 }

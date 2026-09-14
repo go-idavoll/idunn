@@ -140,6 +140,10 @@ func (u *Updater) ApplyRequested(ctx context.Context, version string) error {
 	if version == "" {
 		return fmt.Errorf("%w: no requested version", ErrConfig)
 	}
+	// Repaired here as well as in Apply: a request for the version that is
+	// already installed never reaches Apply, and a helper is exactly the process
+	// that can write a root whose launcher an interrupted swap left missing.
+	u.repairLauncher()
 
 	rel, err := u.CheckForUpdate(ctx)
 	if err != nil {
