@@ -167,6 +167,30 @@ where its data lives.
 pre-existing behaviour of an updater with no coordination at all — and says so
 through the Observer rather than pretending otherwise.
 
+### Install and restart
+
+The updater never restarts the application; the launcher does, when asked
+(backlog IDN-29). After `Apply` returns — committed, or `ErrDeferred` because the
+application itself holds its lock — the application releases what it holds and calls
+
+```go
+code, err := launch.Relaunch(launch.RelaunchOptions{
+    Launcher: filepath.Join(root, "launcher"), // the host's own layout
+    Root:     root,
+    Args:     os.Args[1:],
+})
+if err == nil {
+    os.Exit(code)
+}
+```
+
+Under `cmd/launcher` on Windows that returns 42 and the launcher, still the parent,
+finishes the deferred update and starts the application again. On POSIX the process
+is replaced by the launcher. On Windows without a launcher in front, a new launcher
+is started that waits for this process to exit before it touches anything. An
+application that exits with 42 on its own gets the same treatment from a supervising
+launcher; the code is reserved.
+
 ## 6. Crash recovery
 
 The journal is rewritten atomically on every append (write, fsync, rename): a torn

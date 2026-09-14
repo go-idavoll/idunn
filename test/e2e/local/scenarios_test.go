@@ -23,6 +23,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -40,6 +41,7 @@ const (
 	exitOK      = 0
 	exitError   = 1
 	exitRefused = 3 // cmd/installer: an install exists that it must not touch.
+	appNoUpdate = 3 // hostapp: already up to date.
 	appDeferred = 4 // hostapp: staged, waiting for the next start.
 )
 
@@ -421,4 +423,69 @@ func readFile(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(raw)
+}
+
+// ---------------------------------------------------------------------------
+// 7. Install and restart (IDN-29): a running application defers an update it
+//    cannot apply to itself, asks to be relaunched, and the launcher finishes
+//    the update and starts the new version.
+// ---------------------------------------------------------------------------
+
+func TestInstallAndRestart(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		// underLauncher runs the application through cmd/launcher, as a user
+		// starting it would; otherwise it is started directly.
+		underLauncher bool
+	}{
+		{"under the launcher", true},
+		{"started directly", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := newRepo(t)
+			r.publish("1.0.0")
+			in := newInstall(t, r)
+			in.mustInstall("1.0.0")
+			r.publish("1.1.0")
+
+			appArgs := in.selfUpdateArgs("--lock", in.lock, "--on-busy", "defer", "--quiesce", "1s",
+				"--hold-own-lock", "--relaunch-via", suite.launcher)
+			var code int
+			var out string
+			if tc.underLauncher {
+				code, out = in.runLauncher(append([]string{"--"}, appArgs...)...)
+			} else {
+				code, out = runProc(t, in.appPath(), appArgs...)
+			}
+
+			for _, want := range []string{
+				"deferred 1.1.0",                     // the running 1.0.0 could not apply it to itself,
+				"relaunching",                        // asked to be started again,
+				"applying the deferred update 1.1.0", // the launcher finished it with 1.0.0 gone,
+				"up to date at 1.1.0",                // and the new run is 1.1.0.
+			} {
+				if !strings.Contains(out, want) {
+					t.Errorf("output lacks %q:\n%s", want, out)
+				}
+			}
+			// The code the test sees is the last run's where a process carries on
+			// to the end (POSIX exec, the Windows launcher's loop), and the first
+			// instance's where it handed over to a new launcher and left (Windows,
+			// started directly).
+			want := appNoUpdate
+			if runtime.GOOS == "windows" && !tc.underLauncher {
+				want = exitOK
+			}
+			if code != want {
+				t.Errorf("exit = %d, want %d\n%s", code, want, out)
+			}
+			in.observe().settled(t, "1.1.0", "1.0.0", "1.1.0")
+			if _, err := os.Stat(in.lock); !errors.Is(err, fs.ErrNotExist) {
+				t.Errorf("the application lock survived the relaunch: %v", err)
+			}
+		})
+	}
 }

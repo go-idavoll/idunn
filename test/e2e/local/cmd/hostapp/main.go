@@ -27,6 +27,10 @@
 //	hostapp --hold-lock --lock L    take the lock, print "holding", keep it
 //	                                until stdin closes
 //	hostapp --self-update ...       check the channel and apply what it names
+//	  --hold-own-lock               hold --lock itself while updating, as a running
+//	                                application does, so the update defers
+//	  --relaunch-via <launcher>     afterwards, launch.Relaunch through that
+//	                                launcher and exit with its code (IDN-29)
 //
 // Exit codes: 0 ok, 1 error, 2 usage, 3 already up to date, 4 deferred to the
 // next start.
@@ -49,6 +53,7 @@ import (
 	"github.com/go-idavoll/idunn/core/fetch"
 	"github.com/go-idavoll/idunn/core/fsx"
 	"github.com/go-idavoll/idunn/core/hook"
+	"github.com/go-idavoll/idunn/core/launch"
 	"github.com/go-idavoll/idunn/core/trust"
 	"github.com/go-idavoll/idunn/core/updater"
 )
@@ -79,6 +84,10 @@ type config struct {
 	data        string
 	failMigrate bool
 	hangAt      string
+
+	holdOwnLock bool
+	relaunchVia string
+	args        []string // this run's own arguments, for the relaunch
 }
 
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
@@ -100,9 +109,12 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fs.StringVar(&c.data, "data", "", "host state directory the migration hook works on")
 	fs.BoolVar(&c.failMigrate, "fail-migrate", false, "make the migration fail after it changed host state")
 	fs.StringVar(&c.hangAt, "hang-at", "", "stop and wait to be killed the moment this phase is entered")
+	fs.BoolVar(&c.holdOwnLock, "hold-own-lock", false, "hold --lock while updating, as a running instance does")
+	fs.StringVar(&c.relaunchVia, "relaunch-via", "", "after the update, relaunch through this launcher")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
+	c.args = args
 
 	switch {
 	case *holdLock:
@@ -203,11 +215,45 @@ func doSelfUpdate(c config, stdout, stderr io.Writer) int {
 		o.Migrate = &migrator{dir: c.data, fail: c.failMigrate}
 	}
 
+	// A running application holds its own lock while it works, which is exactly
+	// why an update it applies to itself has to wait for a moment it is gone.
+	own := &fileLock{path: c.lockFile}
+	if c.holdOwnLock {
+		if held, err := own.TryLock(context.Background()); err != nil || !held {
+			_, _ = fmt.Fprintf(stderr, "hostapp: --hold-own-lock: held=%v err=%v\n", held, err)
+			return exitError
+		}
+	}
+
 	u, err := updater.New(o)
 	if err != nil {
+		_ = own.Unlock()
 		_, _ = fmt.Fprintf(stderr, "hostapp: %v\n", err)
 		return exitError
 	}
+	code := applyOnce(u, stdout, stderr)
+	// The instance is about to be gone: its lock goes first, so the launcher can
+	// prove nobody is writing before it finishes the update.
+	if err := own.Unlock(); err != nil {
+		_, _ = fmt.Fprintf(stderr, "hostapp: unlock: %v\n", err)
+		return exitError
+	}
+	if c.relaunchVia == "" || (code != exitOK && code != exitDeferred) {
+		return code
+	}
+	_, _ = fmt.Fprintln(stdout, "relaunching")
+	// The same arguments again: a restart, not a different program. The new run
+	// checks the channel once more and finds itself up to date.
+	relaunchCode, err := launch.Relaunch(launch.RelaunchOptions{Launcher: c.relaunchVia, Root: c.root, Args: c.args})
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "hostapp: relaunch: %v\n", err)
+		return exitError
+	}
+	return relaunchCode
+}
+
+// applyOnce checks the channel and applies what it names, returning the exit code.
+func applyOnce(u *updater.Updater, stdout, stderr io.Writer) int {
 	ctx := context.Background()
 	rel, err := u.CheckForUpdate(ctx)
 	if err != nil {
