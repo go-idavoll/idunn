@@ -75,6 +75,10 @@ type Config struct {
 	// payloads. Absent means the defaults.
 	Delta Delta `yaml:"delta"`
 
+	// Retention bounds how many releases the release line being published
+	// keeps. Absent means off: nothing is ever removed.
+	Retention Retention `yaml:"retention"`
+
 	// Targets lists one block per platform. The field is named after the TUF
 	// concept it produces, matching docs/design.md §9.
 	Targets []Platform `yaml:"targets"`
@@ -125,6 +129,31 @@ func (d Delta) settings() (against int, ratio float64) {
 	}
 	return against, ratio
 }
+
+// Retention configures step 4 of the publish flow (docs/packer.md §4): which
+// releases of the release line being published stay in its delegation, and so
+// which targets are still needed.
+//
+// It is off unless pack.yaml asks for it. Removing a published target is the one
+// thing a publish does that cannot be undone, so it happens because an operator
+// said so, never because they forgot to say otherwise.
+type Retention struct {
+	// Keep is how many releases per platform the release line keeps, newest
+	// first by SemVer precedence, the release being published included. Nil
+	// disables retention. An explicit value below MinRetain is refused rather
+	// than read as "off": "keep: 0" is as easily meant as "keep nothing", and
+	// a setting that can be read two ways is not one to delete files on.
+	Keep *int `yaml:"keep"`
+}
+
+// MinRetain is the smallest keep window retention runs with.
+//
+// One is not enough, and any of three reasons alone would do: a client that is
+// mid-update when a publish lands would lose the release it is walking from; a
+// migration floor (min_from_version) needs a predecessor to still resolve; and
+// delta patches are only usable from a release whose descriptor is still
+// published (release.Chain). Two is a floor, not a recommendation.
+const MinRetain = 2
 
 // Requirements are the app-level floors written into the descriptor.
 type Requirements struct {
@@ -228,6 +257,10 @@ func (c *Config) validate() error {
 	}
 	if c.Delta.MaxRatio < 0 || c.Delta.MaxRatio > 1 {
 		return fmt.Errorf("%w: delta.max_ratio %v outside [0,1]", ErrConfig, c.Delta.MaxRatio)
+	}
+	if k := c.Retention.Keep; k != nil && *k < MinRetain {
+		return fmt.Errorf("%w: retention.keep %d is below the minimum of %d; omit retention to keep everything",
+			ErrConfig, *k, MinRetain)
 	}
 	for _, r := range []struct{ name, val string }{
 		{"requirements.min_from_version", c.Requirements.MinFromVersion},

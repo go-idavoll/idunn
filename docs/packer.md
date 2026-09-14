@@ -1,11 +1,11 @@
 # The packer
 
-> **Status: implemented, except retention.** `cmd/packer publish` reads a
-> `pack.yaml`, emits payloads, descriptors and channel pointers as delegated TUF
-> targets, and re-signs `targets`, the delegations, `snapshot` and `timestamp`
-> (IDN-01, IDN-02). The engine lives in `internal/packer`; `cmd/packer` is flags,
-> exit codes and nothing else. What is still open is **retention** (IDN-03, §4
-> step 4): nothing is ever removed from a delegation yet.
+> **Status: implemented.** `cmd/packer publish` reads a `pack.yaml`, emits
+> payloads, descriptors and channel pointers as delegated TUF targets, re-signs
+> `targets`, the delegations, `snapshot` and `timestamp` (IDN-01, IDN-02), and —
+> when `pack.yaml` asks for it — retires releases beyond a keep window (IDN-03, §4
+> step 4). The engine lives in `internal/packer`; `cmd/packer` is flags, exit codes
+> and nothing else.
 >
 > The other producer of a TUF repository in this repo is the red-team harness
 > (`test/redteam/harness`, `make baseline`). It builds a *test* repository with
@@ -50,6 +50,8 @@ rollout: 0.1                 # optional staged rollout (10%)
 delta:                       # optional; these are the defaults
   patch_against: 3           # emit patches from the last 3 releases; 0 disables
   max_ratio: 0.5             # only publish a patch under half the file's size
+retention:                   # optional; absent means nothing is ever removed
+  keep: 5                    # newest releases per platform of this line (min 2)
 targets:
   - os: windows
     arch: amd64
@@ -141,9 +143,9 @@ name.
 2. **Write the release descriptor** and add it as a target in the same delegation.
 3. **Set the channel pointer** to the new version and add it as a target in the
    **channel delegation** (`stable`).
-4. **Retention:** remove targets of retired releases beyond the keep window,
-   respecting any delta patch sources that still reference them (§6.4).
-   *Not implemented — IDN-03.*
+4. **Retention** (only with `retention.keep`): drop releases beyond the keep window
+   from the release-line delegation, and every target no retained release still
+   needs. See *Retention* below.
 5. **Re-sign** the roles this publish touched (the two delegations with the
    offline/HSM key, then `snapshot` and `timestamp` with the CI keys). Consistent
    snapshots on.
@@ -155,6 +157,38 @@ mechanism that makes two runs over the same inputs byte-identical. Roles this
 publish does not touch (another channel, an older release line) keep their bytes,
 their version *and their key*; re-delegating them to the key at hand would be a
 silent key rotation for a role the operator did not mean to publish.
+
+### Retention
+
+Content addressing makes retention reference counting rather than path guessing.
+
+- **The window** is the newest `keep` releases per platform (SemVer precedence) of
+  the release line being published, the new release included. Other release lines
+  are never touched: retiring a major is an end-of-life decision and would need a
+  key this publish was not given.
+- **Payloads** stay while any retained descriptor, in any role, names them. Two
+  releases sharing a file share one target, which stays as long as either does.
+- **Patches** stay while the payload they start from *or* the payload they produce
+  is named by a retained descriptor. A client only patches along a walk between
+  releases that are still published (`release.Chain`), so every patch it can use
+  connects two retained payloads and survives.
+- **Refusals**, each leaving the repository untouched: `keep` below 2 (including an
+  explicit 0 — omit the block to turn retention off); a window that would drop a
+  release any channel pointer names, or the release being published; two releases
+  of equal precedence (no order to count); a target in the line that is neither
+  descriptor, payload nor patch; a retained descriptor or a pointer whose bytes do
+  not match what its role signs for.
+- **Order:** metadata is rebuilt over the reduced target set and signed in the normal
+  flow; the files behind retired targets are deleted only after `timestamp.json` is
+  written, so the served metadata never names a file that is already gone. Retired
+  targets are listed one by one in the command output.
+
+Two residual effects are inherent and accepted. A client holding metadata from
+before the publish may still ask for a retired file until its timestamp expires;
+it gets a 404, not wrong bytes. And a `min_from_version` floor naming a release
+outside the window is not protected: a client below it may be refused rather than
+walked forwards. Choose `keep` with both in mind; 2 is a floor, not a
+recommendation.
 
 `root` signatures — key rotation — deliberately run **outside** the normal publish, in
 a separate controlled ceremony (offline, m-of-n; `tuf-on-ci` is the recommendation).
@@ -290,8 +324,9 @@ scripts.
 
 - **Provenance / SLSA** alongside reproducible builds, as an additional supply-chain
   proof beside TUF (IDN-18).
-- **Retention** (§4 step 4, IDN-03): the one part of the flow above that is not
-  built. A delegation grows for the lifetime of the product until it is.
+- **End-of-life for a release line**: retention never touches a line other than
+  the one being published, so retiring a whole major (its delegation included)
+  is still a manual decision without tooling.
 - **Root bootstrapping** stays out: a repository must already contain a
   `<version>.root.json` from the ceremony. The packer refuses to create one, so the
   command that runs on every release can never mint a trust anchor.

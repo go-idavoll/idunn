@@ -81,6 +81,11 @@ type Result struct {
 	// Delegations maps each delegated role to the number of targets it holds
 	// after the publish.
 	Delegations map[string]int
+
+	// RetiredTargets lists the target paths retention removed, sorted. It is
+	// empty unless pack.yaml enables retention, and it is reported in full:
+	// these are the only files a publish ever deletes.
+	RetiredTargets []string
 }
 
 // blob is one target this publish emits: the bytes, where they live in the
@@ -380,6 +385,17 @@ func writeRelease(o Options, cfg *Config, st *state, keys *keyring, blobs []blob
 	}
 	sort.Strings(res.AddedTargets)
 
+	// Retention runs on the merged view, so the release being published counts
+	// towards the window, and before anything is signed, so each role is signed
+	// once over its final content (docs/packer.md §4 step 4).
+	retired, err := retire(cfg, st, blobs, roleTargets, lineRole(majorOf(cfg.Version)))
+	if err != nil {
+		return nil, err
+	}
+	if retired != nil {
+		res.RetiredTargets = retired.targets
+	}
+
 	roleNames := make([]string, 0, len(roleTargets))
 	for role := range roleTargets {
 		roleNames = append(roleNames, role)
@@ -478,6 +494,14 @@ func writeRelease(o Options, cfg *Config, st *state, keys *keyring, blobs []blob
 		if err := writeFile(filepath.Join(st.metaDir, "timestamp.json"), tsRaw); err != nil {
 			return nil, fmt.Errorf("%w: writing timestamp.json: %w", ErrRepo, err)
 		}
+	}
+
+	// Deletion comes last, once the metadata that no longer names these files
+	// is what is served. The reverse order would open a window in which the
+	// repository names files that are already gone — a failure a client cannot
+	// tell from an attack.
+	if err := removeRetired(st, retired); err != nil {
+		return nil, err
 	}
 	return res, nil
 }
