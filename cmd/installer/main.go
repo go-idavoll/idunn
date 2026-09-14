@@ -475,20 +475,28 @@ func wireElevation(o *installer.Options, c config) (int, error) {
 		return exitUnsafeRoot, fmt.Errorf("%s needs privileges, and it is not a directory only administrators "+
 			"control, so it will not be written with them: %w", c.root, err)
 	}
-	// Where the prompt is not built yet, newInteractive always answers with
-	// ErrNotImplemented, so staticcheck is right that this comparison is always
-	// true and that what follows it is unreachable — on that platform. On
-	// Windows the same call returns a working elevator, and this file is
-	// compiled for both. Restructuring to satisfy the analysis on one of them
-	// would mean writing as if the other did not exist.
+	// Where there is no prompt (macOS, by decision), newInteractive always
+	// answers with ErrNotImplemented, so staticcheck is right that this
+	// comparison is always true and that what follows it is unreachable — on
+	// that platform. On Windows and Linux the same call can return a working
+	// elevator, and this file is compiled for all of them. Restructuring to
+	// satisfy the analysis on one would mean writing as if the others did not
+	// exist.
 	//
 	//nolint:staticcheck // SA4023: true per platform, not per program.
 	el, err := elevate.NewInteractive(elevate.InteractiveOptions{})
 	//nolint:staticcheck // SA4023: as above.
 	if err != nil {
-		if errors.Is(err, elevate.ErrNotImplemented) {
-			return exitPrivileges, fmt.Errorf("%s needs privileges and this platform has no prompt yet (%w); "+
+		switch {
+		case errors.Is(err, elevate.ErrNotImplemented):
+			return exitPrivileges, fmt.Errorf("%s needs privileges and there is no prompt for them here (%w); "+
 				"re-run with those privileges", c.root, err)
+		case errors.Is(err, elevate.ErrRequest):
+			// This binary is its own helper. On Linux it has to be one only
+			// root can change before pkexec may run it as root; one in a user's
+			// download directory is not.
+			return exitPrivileges, fmt.Errorf("%s needs privileges, and this installer cannot run itself "+
+				"with them from where it is (%w); re-run with those privileges", c.root, err)
 		}
 		return exitError, err
 	}

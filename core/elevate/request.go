@@ -213,7 +213,29 @@ func checkInstallRoot(root string) error {
 // administrator hands whoever controls that server, or the path to it, the local
 // machine. On a domain-joined host that is a realistic reach, not a theoretical
 // one.
+//
+// On Linux the expensive half is checked as well, because there it can be
+// without a race: see checkPkexecHelper.
 func checkHelperPath(p string) error {
+	if err := checkHelperPathText(p); err != nil {
+		return err
+	}
+	st, err := os.Stat(p)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("%w: helper %q does not exist", ErrRequest, p)
+		}
+		return fmt.Errorf("%w: helper %q: %w", ErrRequest, p, err)
+	}
+	if !st.Mode().IsRegular() {
+		return fmt.Errorf("%w: helper %q is not a regular file", ErrRequest, p)
+	}
+	return nil
+}
+
+// checkHelperPathText is the part of checkHelperPath that reads no filesystem:
+// a bounded, absolute, local path without dot or empty elements.
+func checkHelperPathText(p string) error {
 	if p == "" {
 		return fmt.Errorf("%w: empty helper path", ErrRequest)
 	}
@@ -232,16 +254,6 @@ func checkHelperPath(p string) error {
 	}
 	if err := checkPathElements(rest); err != nil {
 		return fmt.Errorf("%w: helper path %q: %w", ErrRequest, p, err)
-	}
-	st, err := os.Stat(p)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("%w: helper %q does not exist", ErrRequest, p)
-		}
-		return fmt.Errorf("%w: helper %q: %w", ErrRequest, p, err)
-	}
-	if !st.Mode().IsRegular() {
-		return fmt.Errorf("%w: helper %q is not a regular file", ErrRequest, p)
 	}
 	return nil
 }

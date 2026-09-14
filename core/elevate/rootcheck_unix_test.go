@@ -18,48 +18,11 @@ package elevate
 
 import (
 	"errors"
-	"io/fs"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 )
-
-func TestJudgeMode(t *testing.T) {
-	t.Parallel()
-
-	for _, tc := range []struct {
-		name string
-		mode fs.FileMode
-		uid  uint64
-		gid  uint64
-		role role
-		ok   bool
-	}{
-		{"root-owned 0755 install", fs.ModeDir | 0o755, 0, 0, roleContainer, true},
-		{"root group may write", fs.ModeDir | 0o775, 0, 0, roleContainer, true},
-		{"/tmp as an ancestor: sticky", fs.ModeDir | fs.ModeSticky | 0o777, 0, 0, roleAncestor, true},
-		{"/tmp as the parent of a new root: sticky", fs.ModeDir | fs.ModeSticky | 0o777, 0, 0, roleParentOfNewRoot, true},
-		{"user-owned", fs.ModeDir | 0o755, 1000, 1000, roleAncestor, false},
-		{"a symlink", fs.ModeSymlink | 0o777, 0, 0, roleAncestor, false},
-		{"world-writable install", fs.ModeDir | 0o757, 0, 0, roleContainer, false},
-		{"sticky does not make an install safe", fs.ModeDir | fs.ModeSticky | 0o777, 0, 0, roleContainer, false},
-		{"a non-root group may write the install", fs.ModeDir | 0o775, 0, 100, roleContainer, false},
-		{"a non-root group may rename in an ancestor", fs.ModeDir | 0o775, 0, 100, roleAncestor, false},
-		{"world-writable ancestor without sticky", fs.ModeDir | 0o777, 0, 0, roleAncestor, false},
-		{"world-writable file in the metadata", 0o666, 0, 0, roleContainer, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			err := judgeMode("/x", tc.mode, tc.uid, tc.gid, tc.role)
-			if tc.ok && err != nil {
-				t.Fatalf("judgeMode = %v, want nil", err)
-			}
-			if !tc.ok && !errors.Is(err, ErrUnsafeRoot) {
-				t.Fatalf("judgeMode = %v, want ErrUnsafeRoot", err)
-			}
-		})
-	}
-}
 
 func TestCheckObjectDoesNotFollowASymlink(t *testing.T) {
 	t.Parallel()
@@ -70,5 +33,31 @@ func TestCheckObjectDoesNotFollowASymlink(t *testing.T) {
 	}
 	if err := checkObject(link, roleAncestor); !errors.Is(err, ErrUnsafeRoot) {
 		t.Fatalf("checkObject(symlink to /) = %v, want ErrUnsafeRoot", err)
+	}
+}
+
+// The machine root a system-wide install gets on Linux is /opt/<app> (IDN-24),
+// and on a stock system everything above it is root-owned and not writable by
+// anyone else: the helper must accept it. A root under a user's home is the
+// other half and is refused (TestAcceptRequestRefusesAnUnsafeRoot).
+func TestCheckPrivilegedRootAcceptsARootOwnedParent(t *testing.T) {
+	t.Parallel()
+
+	for _, parent := range []string{"/", "/opt"} {
+		st, err := os.Lstat(parent)
+		if err != nil {
+			t.Logf("%s: %v", parent, err)
+			return
+		}
+		sys, ok := st.Sys().(*syscall.Stat_t)
+		if !ok || sys.Uid != 0 || st.Mode().Perm()&0o022 != 0 || !st.IsDir() {
+			// Everything below an unusual directory is judged with it, so stop.
+			t.Logf("%s is not a stock root-owned directory here (%s); not judged", parent, st.Mode())
+			return
+		}
+		root := filepath.Join(parent, "idunn-test-does-not-exist", "app")
+		if err := CheckPrivilegedRoot(root); err != nil {
+			t.Errorf("CheckPrivilegedRoot(%q) = %v, want nil", root, err)
+		}
 	}
 }

@@ -177,9 +177,10 @@ func withRoot(args []string, stdout io.Writer, verb func(context.Context, update
 	if err := elevate.CheckPrivilegedRoot(abs); err != nil {
 		return err
 	}
-	// Where no prompt is built, NewInteractive always fails, so staticcheck is
-	// right that the comparison is constant on that platform — and wrong about
-	// Windows, where this is the path that elevates. See cmd/installer.
+	// Where there is no prompt (macOS), NewInteractive always fails, so
+	// staticcheck is right that the comparison is constant on that platform —
+	// and wrong about Windows and Linux, where this is the path that elevates.
+	// See cmd/installer.
 	//
 	//nolint:staticcheck // SA4023: true per platform, not per program.
 	el, err := elevate.NewInteractive(elevate.InteractiveOptions{})

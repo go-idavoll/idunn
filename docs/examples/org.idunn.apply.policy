@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/software/polkit/policyconfig-1.dtd">
+<!--
+  Example polkit action for idunn's interactive elevation on Linux (design.md
+  §14.2.2, backlog IDN-08). Install it as
+  /usr/share/polkit-1/actions/<your reverse-DNS id>.policy, owned by root, and
+  replace the action id, vendor, messages and helper path with your own.
+
+  It is optional. Without it pkexec uses its generic action
+  (org.freedesktop.policykit.exec), which already demands administrator
+  authentication; what this file adds is a message that names your application.
+
+  exec.path must be the helper's path with every symlink resolved: that is the
+  path idunn hands to pkexec (elevate.InteractiveOptions.HelperPath), and it
+  has to lie in directories only root can write or idunn refuses to elevate it.
+  If the helper's resolved path changes with every version (a helper inside a
+  version directory), point exec.path at a stable, root-owned helper instead —
+  or ship no policy and let the generic action apply.
+
+  Choices made here, deliberately:
+
+    * auth_admin, not auth_admin_keep. "keep" lets polkit remember the
+      authorization for a few minutes, so a second request in that window runs
+      the helper as root with no dialog at all. The dialog is the user's
+      decision about this apply; an update is rare enough that asking each time
+      costs little, and a remembered "yes" is exactly what a second, unrelated
+      request would ride on. A vendor who wants "keep" should make that
+      decision knowingly, not inherit it from an example.
+    * No allow_active="yes". That would let any logged-in user install into a
+      root that is root-owned precisely because not everyone may write it.
+    * No org.freedesktop.policykit.exec.argv1. The arguments are the request;
+      idunn validates them before pkexec starts, and the helper validates them
+      again (elevate.AcceptRequest). Moving that judgement into a policy file
+      adds a third place to keep in step, not a defence.
+    * No org.freedesktop.policykit.exec.allow_gui. The helper has no window and
+      needs no display variables.
+-->
+<policyconfig>
+  <vendor>Example</vendor>
+  <vendor_url>https://example.com/</vendor_url>
+
+  <action id="com.example.acme.apply-update">
+    <description>Install an update for Acme</description>
+    <message>Authentication is required to install an update for Acme.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/opt/acme/bin/acme-helper</annotate>
+  </action>
+</policyconfig>

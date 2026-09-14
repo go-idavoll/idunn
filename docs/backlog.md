@@ -83,20 +83,29 @@ that avoids both a second download and path-based TOCTOU.
 Done when: the helper installs only what it verified itself, never a caller-supplied
 path, and the corpus grows cases for a hostile caller.
 
-### IDN-08 — POSIX interactive elevation (§14.2)
-`ElevationInteractive` exists on Windows only; `interactive_other.go` returns
-`ErrNotImplemented`. Needs `pkexec`/polkit on Linux and Authorization Services /
-`SMAppService` on macOS, with the same three-scalar request grammar the Windows path
-already enforces.
+### IDN-08 — POSIX interactive elevation (§14.2) — **Linux done; macOS decided: service mode**
+**Linux** (§14.2.2): `NewInteractive` runs `pkexec <helper> apply --root R --channel
+C --version V` as an argument vector, with an empty environment, no controlling
+terminal and `/dev/null` streams. pkexec is taken from `/usr/bin/pkexec` or
+`/bin/pkexec` only, and must resolve to a root-owned setuid file nobody else can
+replace; the helper, symlinks resolved, and every directory above it must be
+root-owned and writable by nobody else, and the resolved path is what runs. pkexec
+126 is `ErrDeclined`, 127 and any other non-zero status `ErrHelper`; cancelling stops
+the wait, not the apply. The decisions are in `core/elevate/pkexec.go` behind an
+injected system seam, so their negative tests run on every OS; the real launcher is
+tested on Linux against a stand-in pkexec, and the real prompt behind
+`IDUNN_TEST_PKEXEC=1`. Example polkit action: `docs/examples/org.idunn.apply.policy`
+(`auth_admin`, not `auth_admin_keep`).
 
-On macOS the proven one-shot shape is Sparkle 2's: `AuthorizationCopyRights` for a
-custom right with `kAuthorizationRuleAuthenticateAsAdmin`, then the helper submitted
-as a run-once launchd job in the system domain (`SMJobSubmit`,
-`InstallerLauncher/SUInstallerLauncher.m`). That API is deprecated; its replacement,
-`SMAppService.daemon` (macOS 13+), registers a permanent daemon the user has to
-approve under Login Items, which fits the service mode (IDN-07) better than a prompt.
-Decide which one, and whether macOS 13 is the floor. Whatever runs elevated is the
-IDN-28 helper; `AuthorizationExecuteWithPrivileges` is not an option.
+Open on Linux: no e2e scenario drives a real polkit agent (CI has none); the helper
+runs with pkexec's scrubbed environment, so an environment-only proxy does not
+reach its download (IDN-13).
+
+**macOS**: no one-shot prompt. `NewInteractive` keeps failing closed with
+`ErrNotImplemented`, pointing at the service mode. The system-wide install is a
+launchd daemon registered with `SMAppService.daemon` (macOS 13+), approved once
+under Login Items — tracked with IDN-07. `AuthorizationExecuteWithPrivileges` and
+`SMJobSubmit` are not options. Whatever runs elevated is the IDN-28 helper.
 
 ### IDN-09 — Monotonic known-good time floor (§14.7, T22) — **done**
 `core/timefloor` persists `max(build time, clock at the last successful refresh)` in

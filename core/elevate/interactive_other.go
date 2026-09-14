@@ -12,18 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:build !windows
+//go:build !windows && !linux && !darwin
 
 package elevate
 
 import "fmt"
 
-// newInteractive fails closed everywhere the prompt is not built yet.
-//
-// pkexec (polkit) and Authorization Services / SMAppService are the counterparts
-// to the Windows path; until one of them is implemented, an updater configured
-// for interactive elevation must refuse to start rather than fall back to an
-// unprivileged apply that would die halfway through the swap.
+// newInteractive fails closed everywhere no prompt is built: Windows has UAC,
+// Linux has pkexec, and macOS refuses by decision (interactive_darwin.go). On
+// any other platform an updater configured for interactive elevation must
+// refuse to start rather than fall back to an unprivileged apply that would die
+// halfway through the swap.
 func newInteractive(InteractiveOptions) (Elevator, error) {
 	return nil, fmt.Errorf("%w: interactive elevation on this platform", ErrNotImplemented)
 }

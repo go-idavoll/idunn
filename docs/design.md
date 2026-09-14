@@ -973,8 +973,10 @@ Two deployment modes, controlled by `Policy.Elevation`:
 - **System-wide install (`C:\Program Files`, `/opt`):** the triggering user process has
   no write permission. Two strategies:
     - **`ElevationInteractive`:** an elevated apply helper is launched on demand —
-      Windows: `ShellExecute` verb `runas` (UAC); Linux: `pkexec` (polkit); macOS:
-      Authorization Services / `SMAppService` helper. Good for user-initiated updates.
+      Windows: `ShellExecute` verb `runas` (UAC); Linux: `pkexec` (polkit). Good for
+      user-initiated updates. macOS has no one-shot prompt by decision: its
+      system-wide install uses the service mode below, a launchd daemon registered
+      with `SMAppService` (IDN-07, IDN-08).
     - **`ElevationService`:** a **privileged system service/daemon** owns the install
       directory and performs applies; the unprivileged user process only triggers checks
       and shows UI, communicating via **IPC** (Windows: named pipe; Linux: systemd service
@@ -1066,6 +1068,55 @@ here is that the path is absolute, local (never UNC), existing, and a regular fi
 > TrustedInstaller could change — by owner, by ACL including inheritable ACEs, by
 > reparse points on the path, and by drive kind — before it writes anything
 > (`elevate.AcceptRequest`, IDN-22). Callers run the same check before the prompt.
+
+#### 14.2.2 Linux `ElevationInteractive` (implemented)
+
+`elevate.NewInteractive` runs the helper through `pkexec`, exec'd with an argument
+vector — no shell, no command line to re-split:
+
+```text
+pkexec <helper> apply --root <install root> --channel <channel> --version <version>
+```
+
+The request, the helper verb and the helper side (`AcceptRequest`,
+`PrivilegedCacheDir`, `Updater.ApplyRequested`) are the Windows ones unchanged. On
+Linux `CheckPrivilegedRoot` judges owner and mode bits: `/opt/<app>` under a
+root-owned `/opt` passes, a root under a user's home is refused.
+
+What differs, and why:
+
+- **pkexec is found at `/usr/bin/pkexec` or `/bin/pkexec` only**, never through
+  `PATH`: a planted `pkexec` would collect the administrator's password. The file
+  it resolves to must be root-owned, setuid, and neither it nor a directory above
+  it writable by anyone but root. A candidate that exists and fails is refused, not
+  skipped. No pkexec at all is `ErrNotImplemented`.
+- **The helper is vetted fully, not only its path.** With every symlink resolved,
+  the file and each directory above it must be owned by root and writable by
+  nobody else (root's group excepted, as for a root; the sticky bit does not
+  help). Unlike a Windows ACL, that cannot change between the check and the
+  launch without root, so the check does not race. The resolved path is what
+  pkexec runs. A binary in a user's download directory is therefore refused
+  (`ErrRequest`; `cmd/installer` answers "re-run with those privileges").
+- **Nothing is inherited.** The environment is empty (pkexec substitutes its own
+  minimal one), standard streams are `/dev/null`, and pkexec starts in a new
+  session with no controlling terminal. Without a polkit agent for the session —
+  a headless or SSH login — pkexec cannot fall back to prompting on a terminal,
+  which from a GUI or background process would hang; it exits 127 instead.
+
+Outcomes: pkexec status 126 (dialog dismissed) is `ErrDeclined`; 127 (no agent,
+authentication failed or refused by policy, helper not executable) is `ErrHelper`;
+any other non-zero status is the helper's own and `ErrHelper` with that status; a
+process ended by a signal is `ErrHelper`. pkexec reports the helper's status as its
+own, so a helper must not exit 126 or 127 itself. Cancelling the context stops the
+wait, never the apply, exactly as on Windows.
+
+An example polkit action, with `auth_admin` rather than `auth_admin_keep` and the
+reasons, is `docs/examples/org.idunn.apply.policy`. Without one, pkexec's generic
+action already demands administrator authentication.
+
+Residual: the helper runs with pkexec's scrubbed environment, so a proxy
+configured only through environment variables does not reach its download
+(§14.4). POSIX ACLs on the helper's path are not read, as for the root.
 
 `ElevationService` (the privileged helper and its authenticated IPC, 14.8) is not
 built yet and fails closed.
