@@ -32,7 +32,7 @@ piece of the section is missing; **open** — contract only, or nothing.
 | §14.1 | GC / retention | **done** — `stage.GC`, soft-fails on locked dirs |
 | §14.2 | Elevation | **partial** — Windows `ElevationInteractive` done for installs and updates: the unprivileged side writes nothing under the root, the helper (`cmd/installer apply`, or a host verb on `Updater.ApplyRequested`) re-resolves and runs the transaction; tested end to end through real UAC prompts (`elevated` e2e scenario). `ElevationService` fails closed everywhere; POSIX interactive (`pkexec`, Authorization Services) not built; the helper refuses a root anyone but an administrator controls (IDN-22); recovery and deferral in a system root are open (IDN-23) |
 | §14.3 | Quiesce, app lock, `OnBusy` | **done** — lock + coordinator + all three policies; `BusyDeferToRestart` keeps the staged tree in a resting `DEFERRED` journal state and the launcher finishes it at the next start. `BusyAbort` is the zero value and is not promoted; deferral is a recommendation to the host, which the design now says in those words (IDN-21) |
-| §14.4 | Enterprise proxy / CA | **partial** — system trust store + `ExtraCAs` + env proxy, now under test; no PAC/WPAD resolution, no ranged resume, no mTLS |
+| §14.4 | Enterprise proxy / CA | **partial** — system trust store, `ExtraCAs`, env proxy, resumable ranged downloads with offset checks, proxy authentication, mTLS client certificates, and a `ProxyResolver` seam; the OS-native resolvers (PAC/WPAD, WinHTTP, `SCDynamicStore`, GSettings) are the remainder of IDN-13 |
 | §14.5 | Telemetry + staged rollout | **done** — `Reporter` with a closed error-class vocabulary; local rollout bucketing |
 | §14.6 | Installer downgrade preflight | **done** |
 | §14.7 | Clock skew | **done** — expiry is classified as `clock_skew`, and `core/timefloor` persists the monotonic known-good time floor that refuses a rolled-back clock |
@@ -59,8 +59,10 @@ Not yet enforced:
   its TUF cache inside the root rather than in the user's. It refuses a
   caller-chosen root that anyone but an administrator could change — owner, ACL,
   inheritable ACEs, reparse points, drive kind (IDN-22).
-- **T18** (enterprise DPI) — tolerated by design, but PAC and resumable downloads are
-  missing, so the *availability* half is incomplete.
+- **T18** (enterprise DPI) — tolerated by design, and the availability half now has
+  resumable downloads, proxy authentication and mTLS (IDN-13). OS-native proxy
+  resolution including PAC is still missing, so a machine whose proxy is configured
+  only in the OS (not the environment) needs the host to supply a `ProxyResolver`.
 
 ## Test state
 
@@ -76,7 +78,7 @@ Not yet enforced:
 | `core/installer` | 86.8% |
 | `core/txn` | 86.6% |
 | `core/trust` | direct unit tests of the resolve layer (New 91.7%, LatestRelease 94.7%, `ReleaseVersion` 90.9%), plus the red-team corpus end to end |
-| `core/fetch` | `New` 95.2% — TLS trust store, user agent, timeout, and the refusals |
+| `core/fetch` | 97% — TLS trust store, user agent, timeout, the refusals, and the enterprise path: resume across dropped links, every inconsistent partial response refused, restart on 200/416, mutual TLS against a real handshake, proxy credentials on a real CONNECT and forwarded request, and a refused proxy login |
 | `core/hook` | no test files (interface definitions only) |
 | `core/launch` | 87.5% — deferred updates applied, skipped, failed, and nothing to do |
 | `core/timefloor` | 94.0% — the floor, its refusals, and a damaged or unwritable floor file |

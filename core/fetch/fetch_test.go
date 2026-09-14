@@ -186,18 +186,21 @@ func TestTimeoutBoundsARequest(t *testing.T) {
 	}
 }
 
-// Options.Resume is accepted and ignored until there is a fetcher that issues
-// ranged requests (the TODO in fetch.go). It is pinned here so the field cannot
-// quietly start meaning something else: a flag that is documented as ignored and
-// then silently honoured is worse than either.
-func TestResumeIsAcceptedAndIgnored(t *testing.T) {
+// Options.Resume selects the resuming fetcher; an uninterrupted download through
+// it is indistinguishable from one through go-tuf's default. The interrupted
+// cases are in resume_test.go.
+func TestResumeDownloadsAnUninterruptedFile(t *testing.T) {
 	url := serve(t, "body")
 	f, err := fetch.New(fetch.Options{Resume: true})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if _, err := f.DownloadFile(url, maxLen, 0); err != nil {
+	got, err := f.DownloadFile(url, maxLen, 0)
+	if err != nil {
 		t.Fatalf("DownloadFile: %v", err)
+	}
+	if string(got) != "body" {
+		t.Errorf("body = %q, want %q", got, "body")
 	}
 }
 
