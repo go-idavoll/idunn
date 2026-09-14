@@ -83,13 +83,21 @@ Not yet enforced:
 | `internal/packer` | 86.1% — publish end to end against `core/trust`, plus golden metadata |
 | `cmd/installer` | not in the coverage universe, but tested: a real install against a served repository |
 
-The adversarial corpus (`make redteam-corpus`, build tag `redteam`) holds 25 cases
-across clock rollback, expiry, malformed descriptors, mix-and-match, path traversal,
-resolve (pointer/descriptor disagreement), unknown key, wrong hash, wrong key, wrong
-length, and delta patches. Most attack the repository; the clock case attacks the
-machine, and the three delta cases attack an update in progress — all of these are
-driven through the real install path, because a time floor and a patch base both only
-exist where there is an installation.
+The adversarial corpus (`make redteam-corpus`, build tag `redteam`) holds 28 cases
+across clock rollback, downgrade, expiry, freeze, malformed descriptors, mix-and-match,
+path traversal, resolve (pointer/descriptor disagreement), rollback, unknown key, wrong
+hash, wrong key, wrong length, and delta patches. Most attack the repository; the clock
+case attacks the machine, and the three delta cases attack an update in progress — all
+of these are driven through the real install path, because a time floor and a patch
+base both only exist where there is an installation.
+
+The rollback, freeze and downgrade cases attack the client's *memory*: the metadata it
+already trusts and the release it already has installed. Each runs in two phases
+against one URL — an honest publish the client comes to trust, then different bytes —
+and each carries a control that shows the refusal is that memory at work: a client
+with no cache accepts the replayed repository, the same client accepts fresh metadata
+at the clock where withheld metadata is refused, and a machine with nothing installed
+installs the older release the installed machine's updater refuses (T3, T4, T5).
 
 The delta cases are the ones that do not expect a refusal: a patch is untrusted input
 whose result is checked against a signed hash, so they assert something stricter —

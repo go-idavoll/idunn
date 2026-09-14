@@ -1,0 +1,26 @@
+# Copyright 2026 The idunn Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+description: "an older, still validly signed repository is replayed to a client that already trusts a newer one"
+class: rollback
+expect: reject
+error_class: verify
+history: rollback
+notes: >-
+  The client first trusts a repository at role version 5; the same URL then
+  serves the baseline at version 1. Nothing in the replay is forged or expired —
+  it is exactly what the publisher once signed — so the defence can only be the
+  version the client remembers. The case proves that rather than asserting it: a
+  client with no cache resolves the replay successfully, and the client with a
+  past refuses it without overwriting the timestamp it trusts.
