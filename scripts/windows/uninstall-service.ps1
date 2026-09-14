@@ -107,3 +107,7 @@ if ($RemoveState) {
 elseif (Test-Path -LiteralPath $state) {
     Write-Output "kept the state directory $state (pass -RemoveState to delete it)"
 }
+
+# Every failure above throws. The exit code of the last native command (signtool,
+# sc.exe, the helper) must not become this script's: callers read $LASTEXITCODE.
+exit 0

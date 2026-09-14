@@ -324,3 +324,7 @@ Write-Output "    Restart-Service -Name $Label"
 Write-Output ''
 Write-Output "($me is the account running this script. Another account's SID:"
 Write-Output "    (New-Object System.Security.Principal.NTAccount('DOMAIN\user')).Translate([System.Security.Principal.SecurityIdentifier]).Value )"
+
+# Every failure above throws. The exit code of the last native command (signtool,
+# sc.exe, the helper) must not become this script's: callers read $LASTEXITCODE.
+exit 0

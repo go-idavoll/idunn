@@ -160,9 +160,18 @@ check_daemon_plist() {
   [ -n "$found" ] || die "plist AssociatedBundleIdentifiers does not contain the app's CFBundleIdentifier '$bundle_id'"
 }
 
-# is_signed <path>: the bundle or file carries a code signature.
+# is_signed <path>: the bundle or file carries a signature that changing the
+# bundle would break: a sealed bundle (_CodeSignature), or an executable signed by
+# codesign. The ad-hoc "linker-signed" signature ld and the Go linker put on every
+# arm64 binary is not one: it covers that binary alone, and sign.sh replaces it.
 is_signed() {
-  [ -d "$1/Contents/_CodeSignature" ] || codesign --display "$1" >/dev/null 2>&1
+  local info
+  [ -d "$1/Contents/_CodeSignature" ] && return 0
+  info=$(codesign --display --verbose=2 "$1" 2>&1) || return 1
+  case "$info" in
+    *linker-signed*) return 1 ;;
+  esac
+  return 0
 }
 
 # find_label <app>: the label of the one helper this bundle carries, derived

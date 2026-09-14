@@ -272,3 +272,7 @@ foreach ($file in $files) {
         Write-Output "verified: $file (signer $thumb)"
     }
 }
+
+# Every failure above throws. The exit code of the last native command (signtool,
+# sc.exe, the helper) must not become this script's: callers read $LASTEXITCODE.
+exit 0

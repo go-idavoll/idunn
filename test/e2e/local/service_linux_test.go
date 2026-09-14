@@ -584,10 +584,22 @@ func assertRootOnly(t *testing.T, dir string) {
 	}
 }
 
+// fileDigest identifies what is at p: a file's contents, or, for a symlink such as
+// the `current` pointer, where it points.
 func fileDigest(t *testing.T, p string) string {
 	t.Helper()
-	raw, err := os.ReadFile(p)
+	st, err := os.Lstat(p)
 	if err != nil {
+		t.Fatal(err)
+	}
+	var raw []byte
+	if st.Mode()&fs.ModeSymlink != 0 {
+		target, err := os.Readlink(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw = []byte("symlink:" + target)
+	} else if raw, err = os.ReadFile(p); err != nil {
 		t.Fatal(err)
 	}
 	sum := sha256.Sum256(raw)
