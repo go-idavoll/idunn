@@ -1125,6 +1125,22 @@ this Fetcher, so the hardening sits in *one* place:
 - **Resumable ranged downloads** (HTTP Range) + exponential backoff for flaky corporate
   links; proxy-auth support.
 
+> **As built (IDN-13):** `fetch.Options` carries `Resume`/`ResumeAttempts`,
+> `ProxyUser`/`ProxyPassword`, `ClientCertPEM`/`ClientKeyPEM` and a `ProxyResolver`.
+> Resume widens *how* bytes are obtained, not *what* is acceptable: a different second
+> half produces the wrong hash and go-tuf refuses it. The offset, however, is this
+> layer's responsibility, so a 206 is appended only if its single `Content-Range`
+> starts exactly at the requested byte and agrees with its `Content-Length`, the total
+> length and strong ETag seen before; anything else fails closed. A 200 or 416 to a
+> range request starts over from zero, never splices. Proxy credentials are attached
+> only to a proxy the resolver chose (never to a direct request), and a 407 on CONNECT is
+> `ErrProxyAuth` and not retried, so an updater cannot lock an enterprise account. A
+> resolver error fails the request rather than going direct.
+>
+> The OS-native resolvers named above — WinHTTP/WinINET with PAC, `SCDynamicStore`,
+> GSettings — are not built. `ProxyResolver` is the seam they slot into;
+> `http.ProxyFromEnvironment` is the default.
+
 **Signature independence as a feature:** because authenticity rests on the TUF roles,
 **TLS-terminating DPI proxies are tolerable by design** — even if the corporate proxy
 breaks TLS, TUF guarantees the content. We never *disable* verification; we leave TLS
