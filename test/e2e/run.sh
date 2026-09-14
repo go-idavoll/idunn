@@ -52,7 +52,15 @@
 #   E2E_KEEP        if set, releases are left in place after a successful run.
 #   E2E_WORK        parent of the scratch directory (default RUNNER_TEMP or TMPDIR).
 #   E2E_PORT        local mode listen port (default 18765).
-#   GH_TOKEN        github mode: token with contents:write on E2E_REPO.
+#   E2E_UPDATE_TRIES  checks an update case may make while the release still
+#                   serves the previous timestamp (default 5, see update_attempts).
+#   E2E_UPDATE_DELAY  seconds before the second check, growing linearly (default 20).
+#   GH_TOKEN        github mode: token with contents:write on E2E_REPO (default:
+#                   gh auth token).
+#
+# On a failed case the full output of the command behind it (bounded) is
+# printed to the log and its tail goes into the report, and a failed GitHub API
+# call prints its status, rate-limit headers and body.
 #
 # Exit status is 0 only if every case of every scenario passed.
 set -euo pipefail
@@ -72,6 +80,16 @@ now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 step() { printf '\n==> %s\n' "$*"; }
 die() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 oneline() { tr '\t\r\n' '   ' | sed 's/  */ /g; s/^ //; s/ $//'; }
+# show <label> <file>: a command's output in the log, bounded to its last bytes.
+show() {
+  printf '    --- %s (last 8000 bytes) ---\n' "$1"
+  tail -c 8000 "$2" | tr -d '\r' | sed 's/^/    | /'
+  printf '    ---\n'
+}
+# brief <file>: the tail of a command's output as one line, for the report.
+brief() { tail -c 1500 "$1" | oneline; }
+update_tries="${E2E_UPDATE_TRIES:-5}"
+update_delay="${E2E_UPDATE_DELAY:-20}"
 
 if [ -n "${E2E_WORK:-}" ]; then mkdir -p "$E2E_WORK"; fi
 work="$(native "$(mktemp -d "${E2E_WORK:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}}/idunn-e2e.XXXXXX")")"
@@ -86,6 +104,10 @@ case "$mode" in
   github|local) ;;
   *) die "E2E_MODE must be github or local, not $mode" ;;
 esac
+if [ "$mode" = github ] && [ -z "${GH_TOKEN:-}" ]; then
+  GH_TOKEN="$(gh auth token)" || die "github mode needs GH_TOKEN or a gh login"
+  export GH_TOKEN
+fi
 
 server_pid=""
 cleanup() {
@@ -115,7 +137,7 @@ fi
 
 # --- scenario state -----------------------------------------------------------
 
-scen="" stag="" url="" stuf="" sassets="" sroot="" slauncher="" results=""
+scen="" stag="" url="" stuf="" sassets="" slast="" sroot="" slauncher="" results="" case_out=""
 
 begin() {
   scen="$1"
@@ -130,6 +152,7 @@ begin() {
   sroot="$work/$scen/install"
   slauncher="$sroot/launcher$exe"
   results="$work/$scen/results.tsv"
+  slast=""
   mkdir -p "$stuf/metadata" "$sassets"
   cp "$work/root/metadata/1.root.json" "$stuf/metadata/1.root.json"
   : >"$results"
@@ -145,8 +168,15 @@ record() {
 # publish <version> [min_from_version]: build e2eapp at that version, publish it
 # into the scenario's repository, and put the repository where the client
 # looks. A failure is recorded as a case of its own.
+#
+# Only assets that are new or whose bytes changed since the scenario's previous
+# publish are uploaded (the flat copy of that publish is kept as $slast), and
+# assets that disappeared are deleted; see e2etool release-publish. Every asset
+# replaced under an existing name, and the timestamp in any case, must then be
+# served fresh on consecutive reads before the publish counts as done.
 publish() {
   local version="$1" min_from="${2:-}" dir="$work/$scen/build/$1" log="$work/$scen/publish-$1.log"
+  local flat="$work/$scen/flat-$1" replaced="$work/$scen/replaced-$1" waitrc=0
   mkdir -p "$dir/bin"
   {
     go build -ldflags "-X main.version=$version -X main.buildTime=$(now) -X main.releaseURL=$url" \
@@ -158,27 +188,30 @@ publish() {
         printf '      - { src: bin/e2eapp%s, dst: bin/e2eapp%s, kind: exe, mode: "0755" }\n' "$exe" "$exe"
       } >"$dir/pack.yaml" &&
       "$bin/packer$exe" publish --config "$dir/pack.yaml" --repo "$stuf" --now "$(now)" &&
-      rm -rf "$sassets" && mkdir -p "$sassets" &&
-      "$bin/e2etool$exe" flatten "$stuf" "$sassets" &&
+      rm -rf "$flat" &&
+      "$bin/e2etool$exe" flatten "$stuf" "$flat" &&
       if [ "$mode" = github ]; then
-        if gh release view "$stag" --repo "$repo" >/dev/null 2>&1; then
-          gh release upload "$stag" --repo "$repo" --clobber "$sassets"/*
-        else
-          gh release create "$stag" --repo "$repo" --prerelease --title "$stag" \
-            --notes "idunn e2e update test, scenario $scen (${GITHUB_SERVER_URL:-local}/${GITHUB_REPOSITORY:-}/actions/runs/${GITHUB_RUN_ID:-}). Throwaway; deleted after a successful run." \
-            "$sassets"/*
-        fi
+        "$bin/e2etool$exe" release-publish --repo "$repo" --tag "$stag" --dir "$flat" --prev "$slast" --replaced "$replaced" \
+          --notes "idunn e2e update test, scenario $scen (${GITHUB_SERVER_URL:-local}/${GITHUB_REPOSITORY:-}/actions/runs/${GITHUB_RUN_ID:-}). Throwaway; deleted after a successful run."
+      else
+        "$bin/e2etool$exe" release-publish --local "$sassets" --dir "$flat" --prev "$slast" --replaced "$replaced"
       fi &&
-      # The timestamp is what a client reads first and the file a --clobber
-      # upload replaces; once it is served, the rest of this publish is too.
-      "$bin/e2etool$exe" wait-asset --url "$url/metadata__timestamp.json" --file "$sassets/metadata__timestamp.json"
+      # The timestamp is what a client reads first; a replaced asset is what a
+      # cache can still serve in its old form.
+      { echo metadata__timestamp.json; cat "$replaced"; } | tr -d '\r' | sort -u >"$replaced.wait" &&
+      while IFS= read -r name; do
+        "$bin/e2etool$exe" wait-asset --url "$url/$name" --file "$flat/$name" || { waitrc=1; break; }
+      done <"$replaced.wait" &&
+      [ "$waitrc" -eq 0 ]
   } >"$log" 2>&1
   local rc=$?
   if [ "$rc" -ne 0 ]; then
-    record "publish $version" "published and served" FAIL "rc=$rc $(tail -n 5 "$log")"
+    show "publish $version" "$log"
+    record "publish $version" "published and served" FAIL "rc=$rc output: $(brief "$log")"
     return 1
   fi
-  printf '  published %s%s\n' "$version" "${min_from:+ (min_from_version $min_from)}"
+  slast="$flat"
+  printf '  published %s%s: %s\n' "$version" "${min_from:+ (min_from_version $min_from)}" "$(grep '^release: uploaded' "$log" | oneline)"
 }
 
 launch() { "$slauncher" --quiet --root "$sroot" -- "$@"; }
@@ -206,11 +239,21 @@ want() { if [ "$2" != "$3" ]; then why="${why}$1='$2' want '$3'; "; fi; }
 contains() { case "$2" in *"$3"*) ;; *) why="${why}$1 lacks '$3'; " ;; esac; }
 
 # verdict <case> <expected> <extra attestation>: record PASS if $why is empty.
+# A failed case that set $case_out (the output of the command it judged) gets
+# that output in the log and its tail in the report.
 verdict() {
   if [ -z "$why" ]; then
     record "$1" "$2" PASS "$3 $attestation"
+    case_out=""
   else
-    record "$1" "$2" FAIL "$why| $3 $attestation"
+    local tail=""
+    if [ -n "$case_out" ]; then
+      printf '%s\n' "$case_out" >"$work/$scen/failed-case.out"
+      show "$1" "$work/$scen/failed-case.out"
+      tail=" | output: $(brief "$work/$scen/failed-case.out")"
+    fi
+    case_out=""
+    record "$1" "$2" FAIL "$why| $3 $attestation$tail"
     return 1
   fi
 }
@@ -231,6 +274,7 @@ install_case() {
   rc=$?
   if [ "$slauncher" = "$sroot/launcher$exe" ]; then cp "$bin/launcher$exe" "$slauncher" 2>/dev/null || true; fi
   observe
+  case_out="$out"
   why=""
   want rc "$rc" 0
   contains output "$out" "installed $v"
@@ -238,18 +282,63 @@ install_case() {
   verdict "install $v" "installs $v from the release" "rc=$rc"
 }
 
+# update_attempts <from>: check for an update the way the application does,
+# into out, rc and attempts.
+#
+# Right after a publish, GitHub can still hand a client the previous
+# metadata__timestamp.json by name for a while, even after wait-asset read the
+# new one. The client then correctly finds nothing newer and says "up to date at
+# <from>". A real client simply checks again later; so does this, up to
+# $update_tries checks with growing pauses, but only while an attempt reports
+# exactly that and leaves the install byte-for-byte as attested before the
+# first one. Any other outcome ends the attempts and is judged as it is, and
+# every attempt (with whether the timestamp was being served fresh at the
+# time) is part of the attestation. A case whose update never happens still
+# fails.
+update_attempts() {
+  local from="$1" before n=1 served log="$work/$scen/attempt.out"
+  observe
+  before="$attestation"
+  attempts=""
+  case_out=""
+  while :; do
+    out="$(launch update --root "$sroot" 2>&1)"
+    rc=$?
+    out="${out//$'\r'/}"
+    observe
+    case_out="${case_out}--- check $n: rc=$rc
+$out
+"
+    attempts="${attempts}check $n: rc=$rc $(printf '%s' "$out" | tail -n 1 | oneline); "
+    if [ "$rc" -eq 0 ] && printf '%s\n' "$out" | grep -qxF "up to date at $from" &&
+      [ "$attestation" = "$before" ] && [ "$n" -lt "$update_tries" ]; then
+      if "$bin/e2etool$exe" wait-asset --url "$url/metadata__timestamp.json" --file "$slast/metadata__timestamp.json" \
+        --reads 1 --timeout 0 >"$log" 2>&1; then
+        served="fresh"
+      else
+        served="stale"
+      fi
+      # The report gets the verdict and the hashes; the log gets the whole probe.
+      attempts="${attempts}served timestamp now: $served $(grep -o 'served [0-9]* bytes sha256 [0-9a-f]*' "$log" | head -n 1); "
+      printf '  check %d found nothing newer than %s; served timestamp now: %s: %s; checking again in %ds\n' \
+        "$n" "$from" "$served" "$(oneline <"$log")" "$((update_delay * n))"
+      sleep "$((update_delay * n))"
+      n=$((n + 1))
+      continue
+    fi
+    break
+  done
+}
+
 # update_case <case> <from> <to> <versions after>
 update_case() {
-  local out rc
-  out="$(launch update --root "$sroot" 2>&1)"
-  rc=$?
-  out="${out//$'\r'/}"
-  observe
+  local out rc attempts
+  update_attempts "$2"
   why=""
   want rc "$rc" 0
   contains output "$out" "updated $2 -> $3"
   settled "$3" "$4"
-  verdict "$1" "$2 -> $3 applied, $3 runs, previous kept for rollback" "rc=$rc"
+  verdict "$1" "$2 -> $3 applied, $3 runs, previous kept for rollback" "rc=$rc [$attempts]"
 }
 
 # uptodate_case <version>
@@ -259,6 +348,7 @@ uptodate_case() {
   rc=$?
   out="${out//$'\r'/}"
   observe
+  case_out="$out"
   why=""
   want rc "$rc" 0
   contains output "$out" "up to date at $1"
@@ -269,18 +359,16 @@ uptodate_case() {
 
 # refuse_case <case> <from> <to> <min_from>
 refuse_case() {
-  local out rc
-  out="$(launch update --root "$sroot" 2>&1)"
-  rc=$?
-  out="${out//$'\r'/}"
-  observe
+  local out rc attempts
+  # The refusal needs the new timestamp as much as an update does.
+  update_attempts "$2"
   why=""
   want rc "$rc" 3
   contains output "$out" "migration floor"
   contains output "$out" "$3 migrates only from $4 or newer, this install is $2"
   settled "$2" "$2"
   verdict "$1" "refused by policy (exit 3), $2 untouched and still runs" \
-    "rc=$rc error=$(printf '%s' "$out" | grep 'e2eapp:' | oneline)"
+    "rc=$rc error=$(printf '%s' "$out" | grep 'e2eapp:' | oneline) [$attempts]"
 }
 
 # user_owned_readonly <dir>: create dir so that this user may only read it and
@@ -465,7 +553,11 @@ done
 if [ "$mode" = github ]; then
   for s in $scenarios; do
     if [ "$failed" -eq 0 ] && [ -z "${E2E_KEEP:-}" ]; then
-      gh release delete "$tag-$s" --repo "$repo" --cleanup-tag --yes >/dev/null 2>&1 || true
+      # Cleanup never fails the run, but a failure to clean up is shown.
+      if ! "$bin/e2etool$exe" release-delete --repo "$repo" --tag "$tag-$s" >"$work/delete-$s.log" 2>&1; then
+        printf 'release not deleted: https://github.com/%s/releases/tag/%s\n' "$repo" "$tag-$s"
+        show "release-delete $tag-$s" "$work/delete-$s.log"
+      fi
     else
       printf 'release kept: https://github.com/%s/releases/tag/%s\n' "$repo" "$tag-$s"
     fi

@@ -17,7 +17,9 @@
 //
 //	init-repo       generate throwaway role keys and sign a 1.root.json
 //	flatten         copy a TUF repository tree to flat release asset names
-//	wait-asset      poll a URL until it serves the bytes of a local file
+//	wait-asset      poll a URL until it serves the bytes of a local file, repeatedly
+//	release-publish publish flat assets as a release, uploading only what changed
+//	release-delete  delete a release and its tag
 //	serve           serve flat assets locally, for a run without GitHub
 //	report          turn one run's recorded cases into JSON and Markdown
 //	summary         merge the reports of every job into one matrix
@@ -28,11 +30,12 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"crypto"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"flag"
@@ -47,6 +50,7 @@ import (
 	"github.com/sigstore/sigstore/pkg/signature"
 	"github.com/theupdateframework/go-tuf/v2/metadata"
 
+	"github.com/go-idavoll/idunn/core/fetch"
 	"github.com/go-idavoll/idunn/internal/packer"
 	"github.com/go-idavoll/idunn/test/e2e/ghfetch"
 )
@@ -60,7 +64,7 @@ func main() {
 
 func run(args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("usage: e2etool init-repo|flatten|wait-asset|serve|report|summary [flags]")
+		return errors.New("usage: e2etool init-repo|flatten|wait-asset|release-publish|release-delete|serve|report|summary [flags]")
 	}
 	switch args[0] {
 	case "init-repo":
@@ -68,7 +72,11 @@ func run(args []string, stdout io.Writer) error {
 	case "flatten":
 		return flatten(args[1:])
 	case "wait-asset":
-		return waitAsset(args[1:])
+		return waitAsset(args[1:], stdout)
+	case "release-publish":
+		return releasePublish(args[1:], stdout, time.Sleep)
+	case "release-delete":
+		return releaseDelete(args[1:], stdout, time.Sleep)
 	case "serve":
 		return serve(args[1:])
 	case "report":
@@ -162,8 +170,8 @@ func initRepo(args []string, stdout io.Writer) error {
 }
 
 // flatten copies every file below src into dst under its flat asset name. The
-// copy is complete on every run: the packer rewrites timestamp and snapshot in
-// place, and uploading with --clobber replaces exactly those.
+// copy is complete on every run; release-publish compares it byte by byte with
+// the previous publish's copy to decide what to upload.
 func flatten(args []string) error {
 	if len(args) != 2 {
 		return errors.New("usage: e2etool flatten <repo> <out>")
@@ -213,54 +221,93 @@ func validAssetName(rel string) bool {
 	return rel[0] != '.' && !bytes.Contains([]byte(rel), []byte(ghfetch.Separator))
 }
 
-// waitAsset polls url until it serves exactly the bytes of file. After a
-// --clobber upload, GitHub can briefly keep serving the replaced asset; a client
-// that refreshes in that window sees the old timestamp and correctly reports
-// "up to date", which would fail the test for a reason that is not idunn's.
-func waitAsset(args []string) error {
+// waitAsset polls url until it serves exactly the bytes of file on --reads
+// consecutive reads. After an asset is replaced, GitHub can keep serving the
+// old one for a while, and not from every edge at once: one fresh read proves
+// little. A client that refreshes in that window sees the old timestamp and
+// correctly reports "up to date", which would fail the test for a reason that
+// is not idunn's.
+//
+// Every read goes through core/fetch exactly as the client's does — no
+// Cache-Control request header (the client sends none, and a cache that honours
+// one would show this tool bytes the client does not get), no cache-busting
+// query (GitHub does redirect with one, but it is a different cache entry from
+// the URL the client asks for) — on a new connection each time, so the reads do
+// not all land on one edge.
+func waitAsset(args []string, stdout io.Writer) error {
 	fl := flag.NewFlagSet("wait-asset", flag.ContinueOnError)
 	url := fl.String("url", "", "asset download URL")
 	file := fl.String("file", "", "local file the asset must match")
-	timeout := fl.Duration("timeout", 2*time.Minute, "give up after")
+	timeout := fl.Duration("timeout", 5*time.Minute, "give up after (0: read until --reads reads, no waiting)")
+	reads := fl.Int("reads", 3, "consecutive reads that must serve the file")
+	spacing := fl.Duration("spacing", 2*time.Second, "pause between reads")
 	if err := fl.Parse(args); err != nil {
 		return err
+	}
+	if *reads < 1 {
+		return errors.New("wait-asset: --reads must be at least 1")
 	}
 	want, err := os.ReadFile(*file)
 	if err != nil {
 		return err
 	}
-	client := &http.Client{Timeout: 30 * time.Second}
 	deadline := time.Now().Add(*timeout)
+	streak, total, stale := 0, 0, 0
 	for {
-		got, err := get(context.Background(), client, *url)
+		got, err := readAsset(*url, int64(len(want))+1<<20)
+		total++
 		if err == nil && bytes.Equal(got, want) {
-			return nil
-		}
-		if time.Now().After(deadline) {
-			if err == nil {
-				err = errors.New("content differs")
+			streak++
+			if streak >= *reads {
+				_, _ = fmt.Fprintf(stdout, "wait-asset: %s fresh on %d consecutive reads (%d reads, %d stale)\n", *url, streak, total, stale)
+				return nil
 			}
-			return fmt.Errorf("wait-asset: %s after %s: %w", *url, *timeout, err)
+		} else {
+			streak = 0
+			stale++
+			if time.Now().After(deadline) {
+				if err == nil {
+					err = fmt.Errorf("content differs: served %d bytes sha256 %s, want %d bytes sha256 %s",
+						len(got), shortSum(got), len(want), shortSum(want))
+				}
+				return fmt.Errorf("wait-asset: %s after %s (%d reads, %d stale): %w; %s", *url, *timeout, total, stale, err, probe(*url))
+			}
 		}
-		time.Sleep(3 * time.Second)
+		if streak > 0 {
+			time.Sleep(*spacing)
+		} else {
+			time.Sleep(3 * time.Second)
+		}
 	}
 }
 
-func get(ctx context.Context, client *http.Client, url string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+// readAsset downloads url the way the client under test does, on a fresh
+// transport.
+func readAsset(url string, maxLength int64) ([]byte, error) {
+	f, err := fetch.New(fetch.Options{UserAgent: "idunn-e2etool/wait-asset", Timeout: 30 * time.Second})
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Cache-Control", "no-cache")
-	res, err := client.Do(req)
+	return f.DownloadFile(url, maxLength, 30*time.Second)
+}
+
+func shortSum(b []byte) string {
+	s := sha256.Sum256(b)
+	return hex.EncodeToString(s[:6])
+}
+
+// probe describes where a stale read came from: the object the redirect named
+// (its path, never the signed query) and the cache headers along the way.
+func probe(url string) string {
+	res, err := (&http.Client{Timeout: 30 * time.Second}).Get(url)
 	if err != nil {
-		return nil, err
+		return "probe: " + err.Error()
 	}
 	defer func() { _ = res.Body.Close() }()
-	if res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d", res.StatusCode)
-	}
-	return io.ReadAll(res.Body)
+	body, _ := io.ReadAll(io.LimitReader(res.Body, 16<<20))
+	return fmt.Sprintf("probe: HTTP %d from %s%s, %d bytes sha256 %s, last-modified %q, age %q, x-cache %q, x-served-by %q",
+		res.StatusCode, res.Request.URL.Host, res.Request.URL.Path, len(body), shortSum(body),
+		res.Header.Get("Last-Modified"), res.Header.Get("Age"), res.Header.Get("X-Cache"), res.Header.Get("X-Served-By"))
 }
 
 // serve stands in for a release download: it serves the flat assets of dir
