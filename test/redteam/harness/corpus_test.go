@@ -17,6 +17,8 @@
 package harness_test
 
 import (
+	"bytes"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -137,6 +139,13 @@ func TestAdversarialCorpus(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.Class+"/"+c.Name, func(t *testing.T) {
+			// A history case publishes twice, so it owns the build as well and
+			// is dispatched before anything is written.
+			if c.History != harness.HistoryNone {
+				runHistoryCase(t, c, keys, t.TempDir())
+				return
+			}
+
 			opts := harness.DefaultBuildOptions(keys)
 			opts.Mutator = harness.Mutators[c.Mutator]
 			if opts.Mutator != nil {
@@ -311,5 +320,207 @@ func runClockCase(t *testing.T, c harness.Case, srv *harness.Server, rootBytes [
 	after, err := harness.InstalledVersion(first.InstallRoot)
 	if err != nil || after != opts.Version {
 		t.Fatalf("after the refusal the install is %q (%v), want the untouched %s", after, err, opts.Version)
+	}
+}
+
+// runHistoryCase drives an attack that only exists against a client with a past.
+//
+// The shape is always the same, and it is the attack as it happens: one URL, an
+// honest publish the client comes to trust, then different bytes behind the
+// same URL. The first phase is asserted to succeed — a case whose setup quietly
+// broke would otherwise pass while testing nothing — and every runner also
+// carries a control showing that what refuses is the client's memory and not
+// something about the repository alone.
+func runHistoryCase(t *testing.T, c harness.Case, keys *harness.KeySet, dir string) {
+	t.Helper()
+	repoDir := filepath.Join(dir, "repo")
+	srv := harness.Serve(repoDir)
+	defer srv.Close()
+
+	switch c.History {
+	case harness.HistoryRollback:
+		runRollbackCase(t, c, srv, keys, dir)
+	case harness.HistoryFreeze:
+		runFreezeCase(t, c, srv, keys, dir)
+	case harness.HistoryDowngrade:
+		runDowngradeCase(t, c, srv, keys, dir)
+	default:
+		t.Fatalf("unhandled history attack %q", c.History)
+	}
+}
+
+// republish replaces what the server at dir/repo answers with a fresh build of
+// opts. The directory is cleared first, so the second phase is exactly what the
+// attacker offers, with nothing of the first left behind to fall back on.
+func republish(t *testing.T, dir string, opts harness.BuildOptions) *harness.Build {
+	t.Helper()
+	repoDir := filepath.Join(dir, "repo")
+	if err := os.RemoveAll(repoDir); err != nil {
+		t.Fatalf("clearing the served repository: %v", err)
+	}
+	build, err := harness.BuildRepo(repoDir, opts)
+	if err != nil {
+		t.Fatalf("publishing: %v", err)
+	}
+	return build
+}
+
+// trustedTimestamp is the timestamp a client run in workDir currently trusts —
+// the freshest thing it remembers, and what an attack on its memory must not
+// overwrite.
+func trustedTimestamp(t *testing.T, workDir string) []byte {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(workDir, "cache", "metadata", "timestamp.json"))
+	if err != nil {
+		t.Fatalf("reading the trusted timestamp: %v", err)
+	}
+	return raw
+}
+
+// refuseAndForgetNothing asserts the refusal every trust-layer history case
+// ends in: the expected class, nothing installed, and the client's memory
+// exactly as it was before the attack.
+func refuseAndForgetNothing(t *testing.T, c harness.Case, res harness.Result, client string, remembered []byte, attack string) {
+	t.Helper()
+	if res.Err == nil {
+		t.Fatalf("VULNERABILITY: %s was ACCEPTED (resolved %v)", attack, res.Descriptor)
+	}
+	if res.Class != c.ErrorClass {
+		t.Fatalf("rejected as %q, case expects %q: %v", res.Class, c.ErrorClass, res.Err)
+	}
+	if err := harness.NoOnDiskChange(res.InstallRoot); err != nil {
+		t.Fatalf("fail-closed violated: %v", err)
+	}
+	if !bytes.Equal(trustedTimestamp(t, client), remembered) {
+		t.Fatalf("fail-closed violated: the refused run replaced the timestamp the client trusts")
+	}
+}
+
+// runRollbackCase: the client trusts version 5, and the server replays version 1.
+func runRollbackCase(t *testing.T, c harness.Case, srv *harness.Server, keys *harness.KeySet, dir string) {
+	t.Helper()
+	client := filepath.Join(dir, "client")
+
+	// Phase one: a publisher that has been at work for a while.
+	ahead := harness.DefaultBuildOptions(keys)
+	ahead.Mutator = harness.AdvancedMetadataVersions
+	rootBytes := republish(t, dir, ahead).RootBytes
+	if res := harness.Run(srv, rootBytes, client, refTime(ahead), ahead); res.Err != nil {
+		t.Fatalf("the honest publish was rejected, so the case proves nothing: %v", res.Err)
+	}
+	remembered := trustedTimestamp(t, client)
+
+	// The attacker replays an older repository. Nothing in it is forged and
+	// nothing in it has expired — it is exactly what the publisher once signed,
+	// which is why the only defence is the version the client remembers.
+	replay := harness.DefaultBuildOptions(keys)
+	republish(t, dir, replay)
+
+	// A client with no memory takes the replay without complaint. That is what
+	// makes the refusal below about memory rather than about the bytes.
+	if naive := harness.Run(srv, rootBytes, filepath.Join(dir, "naive"), refTime(replay), replay); naive.Err != nil {
+		t.Fatalf("the case is not testing what it claims: the replayed repository is refused "+
+			"even on first contact (%v)", naive.Err)
+	}
+
+	res := harness.Run(srv, rootBytes, client, refTime(replay), replay)
+	refuseAndForgetNothing(t, c, res, client, remembered, "metadata older than what the client already trusts")
+}
+
+// runFreezeCase: the server stops publishing and keeps answering with what the
+// client already has.
+func runFreezeCase(t *testing.T, c harness.Case, srv *harness.Server, keys *harness.KeySet, dir string) {
+	t.Helper()
+	client := filepath.Join(dir, "client")
+
+	first := harness.DefaultBuildOptions(keys)
+	rootBytes := republish(t, dir, first).RootBytes
+	if res := harness.Run(srv, rootBytes, client, refTime(first), first); res.Err != nil {
+		t.Fatalf("the honest publish was rejected, so the case proves nothing: %v", res.Err)
+	}
+	remembered := trustedTimestamp(t, client)
+
+	// A month later, a publisher that did its job has signed new metadata. This
+	// is the clock both runs below are judged at.
+	honest := harness.DefaultBuildOptions(keys)
+	honest.Now = first.Now.AddDate(0, 0, 30)
+	honest.Mutator = harness.AdvancedMetadataVersions
+	later := refTime(honest)
+
+	// The attacker republishes nothing. Its whole power is to withhold — to pin
+	// the client to the last state it saw, so a fixed release never reaches it —
+	// and expiry is what bounds how long that works.
+	res := harness.Run(srv, rootBytes, client, later, first)
+	refuseAndForgetNothing(t, c, res, client, remembered, "metadata withheld past its expiry")
+
+	// The same client, at the same clock, against a publisher that kept
+	// publishing, is fine. So the refusal above is staleness — not the clock in
+	// disguise, and not a client the first refusal left unable to recover.
+	republish(t, dir, honest)
+	if ok := harness.Run(srv, rootBytes, client, later, honest); ok.Err != nil {
+		t.Fatalf("the case is not testing what it claims: fresh metadata is refused at the same clock (%v)", ok.Err)
+	}
+}
+
+// runDowngradeCase: every document is authentic and current, and the channel
+// head names a release older than the one installed.
+func runDowngradeCase(t *testing.T, c harness.Case, srv *harness.Server, keys *harness.KeySet, dir string) {
+	t.Helper()
+	machine := filepath.Join(dir, "machine")
+
+	first := harness.DefaultBuildOptions(keys)
+	build := republish(t, dir, first)
+	rootBytes := build.RootBytes
+	installed := harness.RunInstall(srv, rootBytes, machine, refTime(first), first)
+	if installed.Err != nil {
+		t.Fatalf("the honest install failed, so the case proves nothing: %v", installed.Err)
+	}
+	if v, err := harness.InstalledVersion(installed.InstallRoot); err != nil || v != first.Version {
+		t.Fatalf("installed %q (%v), want %s", v, err, first.Version)
+	}
+
+	// The channel moves backwards while the metadata moves forwards: every role
+	// version rises, so this is no rollback and TUF has nothing to object to.
+	back := harness.DefaultBuildOptions(keys)
+	back.Version = "1.1.0"
+	back.Mutator = harness.AdvancedMetadataVersions
+	older := republish(t, dir, back)
+
+	// A machine with nothing installed takes that very release, all the way
+	// through the real install path. The refusal below is therefore the
+	// installation's version floor and nothing about the repository.
+	naive := harness.RunInstall(srv, rootBytes, filepath.Join(dir, "naive"), refTime(back), back)
+	if naive.Err != nil {
+		t.Fatalf("the case is not testing what it claims: the older release is refused "+
+			"even by a machine with nothing installed (%v)", naive.Err)
+	}
+
+	res := harness.RunUpdate(srv, rootBytes, machine, refTime(back), back)
+	if res.Err == nil {
+		t.Fatalf("VULNERABILITY: a release older than the installed one was ACCEPTED (installed %q)", res.Version)
+	}
+	if res.Class != c.ErrorClass {
+		t.Fatalf("rejected as %q, case expects %q: %v", res.Class, c.ErrorClass, res.Err)
+	}
+
+	// The install root is not empty — it holds a good installation — so fail
+	// closed means the refusal changed nothing, and none of the older release's
+	// bytes arrived.
+	if v, err := harness.InstalledVersion(installed.InstallRoot); err != nil || v != first.Version {
+		t.Fatalf("after the refusal the install is %q (%v), want the untouched %s", v, err, first.Version)
+	}
+	for _, f := range build.Descriptor.Files {
+		got, err := harness.InstalledBytes(installed.InstallRoot, f.Dst)
+		if err != nil {
+			t.Fatalf("reading the installed %s: %v", f.Dst, err)
+		}
+		if !bytes.Equal(got, build.Payloads[f.Target]) {
+			t.Fatalf("fail-closed violated: the installed %s is no longer the %s payload", f.Dst, first.Version)
+		}
+	}
+	for _, f := range older.Descriptor.Files {
+		if err := harness.NoTraceOf(installed.InstallRoot, older.Payloads[f.Target]); err != nil {
+			t.Fatalf("fail-closed violated: %v", err)
+		}
 	}
 }

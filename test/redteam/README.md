@@ -28,7 +28,7 @@ test/redteam/
     unknown-key/             # unknown key id / threshold not met
     path-traversal/          # descriptor Dst escapes the install root (.., abs, symlink)
     malformed-descriptor/    # unparseable / unknown-schema release descriptor
-    downgrade/               # target version <= installed (app-level floor)
+    downgrade/               # channel head older than installed (updater policy)
     patch-poison/            # delta patches: poisoned, foreign-base, tampered
     cache-poison/            # elevated-mode: user-writable cache swapped/symlinked
     _proposed/               # staging area for agent-generated candidates (git-ignored)
@@ -51,10 +51,8 @@ test/redteam/
     main.go                  # runs client vs. proposed repos, reports acceptances
 ```
 
-Classes that exist as directories but hold no case yet — `rollback`, `freeze`,
-`downgrade`, `cache-poison` — need client-side prior state (a previously trusted
-metadata version, an installed version, a populated cache) or code that is not written
-yet (`core/elevate`). They land as the harness grows; the corpus only ever grows.
+`cache-poison` is listed but holds no case yet: it needs a populated elevated-mode
+cache to attack. It lands as the harness grows; the corpus only ever grows.
 
 ## Two expectations, both hard
 
@@ -120,8 +118,9 @@ error_class: clock
 clock: rollback              # no mutator: the repository is the honest baseline
 ```
 
-A case has to attack something — the loader refuses one with neither a mutator nor a
-clock attack — but it may attack the repository, the clock, or both.
+A case has to attack something — the loader refuses one with neither a mutator, a
+clock attack nor a history attack — but it may attack the repository, the clock, or
+both.
 
 A clock case is driven by `harness.RunInstall`, which runs the real first-install path
 (`core/installer`, and through it the updater, the time floor and the apply
@@ -130,8 +129,41 @@ time floor lives with the *installation*, so only a run that owns an install roo
 one at all. Calling it twice with the same work directory is the point — that is one
 machine, running twice.
 
+### The history axis
+
+Some attacks only exist against a client with a past: version 1 metadata is only a
+rollback to a client that has seen version 5, an older release is only a downgrade
+where something newer is installed, and a server that stops publishing only freezes a
+client that had something to be frozen on. A case names such an attack instead of a
+mutator:
+
+```yaml
+# corpus/rollback/older-metadata-replayed/case.yaml
+class: rollback
+expect: reject
+error_class: verify
+history: rollback            # also: freeze, downgrade
+```
+
+The runner builds both phases itself from the honest baseline and serves them from one
+URL — publish, let the client come to trust it, then change what the URL answers — so a
+history case takes no mutator and no clock attack, and the loader refuses one that
+names either. The first phase is asserted to succeed, and each attack carries a control
+that proves the refusal is the client's memory:
+
+| `history` | the client first… | then the server… | control |
+|---|---|---|---|
+| `rollback` | trusts every role at version 5 (`harness.AdvancedMetadataVersions`) | replays the version 1 baseline | a client with no cache accepts the replay |
+| `freeze` | trusts the baseline | serves it unchanged, 30 days later | the same client accepts fresh metadata at that clock |
+| `downgrade` | has 1.2.0 installed (`RunInstall`) | points the channel at 1.1.0, with every role version raised | a machine with nothing installed installs it |
+
+A rollback or freeze refusal must also leave the timestamp the client trusts byte for
+byte as it was. A downgrade is driven through the installed machine's updater
+(`harness.RunUpdate`: check, then apply what is offered), and must leave the
+installation on 1.2.0 with none of 1.1.0's bytes under its root.
+
 `error_class` is checked, not just recorded — a case that is rejected for the wrong
-reason fails. The four classes:
+reason fails. The five classes:
 
 - `verify` — the TUF trust layer refused: signature, threshold, expiry, freshness, or a
   target that does not match its signed hash/length.
@@ -142,6 +174,10 @@ reason fails. The four classes:
 - `clock` — the monotonic known-good time floor refused: the local clock is below a
   point this installation has already passed (§14.7, T22). The repository may be
   flawless; the attack is on the machine.
+- `policy` — the updater's app-level policy refused (`updater.ErrPolicy`): every
+  document is authentic and current, and this installation still may not take the
+  release — it is older than what is installed (T3). TUF cannot catch this, and should
+  not: a publisher may point a channel anywhere.
 
 `TestBaselineIsAccepted` is the control: a suite that rejects a *valid* repository too
 would be green and worthless.

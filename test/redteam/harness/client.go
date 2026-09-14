@@ -106,6 +106,32 @@ func RunInstall(srv *Server, rootBytes []byte, workDir string, at time.Time, opt
 	installRoot := filepath.Join(workDir, "install")
 	res := Result{InstallRoot: installRoot}
 
+	c, err := machineClient(srv, rootBytes, workDir, at)
+	if err != nil {
+		res.Err, res.Class = err, classify(err)
+		return res
+	}
+
+	err = installer.Install(context.Background(), installer.Options{
+		Updater: machineUpdater(c, workDir, at, opts),
+	})
+	res.Err, res.Class = err, classify(err)
+	return res
+}
+
+// UpdateResult is the outcome of running the updater of a machine that already
+// has an installation: the delta story, or a downgrade offered to it.
+type UpdateResult struct {
+	Result
+
+	// Version is what is installed when the dust settles.
+	Version string
+}
+
+// machineClient is the trust client of one run of the client on the machine at
+// workDir. Two runs share the local cache, as two runs on one machine do, but
+// never a client: a go-tuf workflow runs once per process.
+func machineClient(srv *Server, rootBytes []byte, workDir string, at time.Time) (*trust.Client, error) {
 	c, err := trust.New(trust.Options{
 		Root:        rootBytes,
 		MetadataURL: srv.MetadataURL(),
@@ -114,99 +140,42 @@ func RunInstall(srv *Server, rootBytes []byte, workDir string, at time.Time, opt
 		Now:         func() time.Time { return at },
 	})
 	if err != nil {
-		res.Err, res.Class = err, classify(err)
-		return res
+		return nil, err
 	}
 	c.UnsafeSetRefTime(at)
-
-	err = installer.Install(context.Background(), installer.Options{
-		Updater: updater.Options{
-			Trust:   c,
-			FS:      fsx.OS(),
-			Root:    installRoot,
-			Channel: opts.Channel,
-			OS:      opts.OS,
-			Arch:    opts.Arch,
-			Now:     func() time.Time { return at },
-		},
-	})
-	res.Err, res.Class = err, classify(err)
-	return res
+	return c, nil
 }
 
-// PatchedResult is the outcome of the delta story: a machine installed on the
-// older release, updated to the newer one against a repository whose patches
-// may be anything at all.
-type PatchedResult struct {
-	Result
-
-	// Version is what is installed when the dust settles.
-	Version string
+// machineUpdater is the updater configuration of the machine at workDir.
+func machineUpdater(c *trust.Client, workDir string, at time.Time, opts BuildOptions) updater.Options {
+	return updater.Options{
+		Trust:   c,
+		FS:      fsx.OS(),
+		Root:    filepath.Join(workDir, "install"),
+		Channel: opts.Channel,
+		OS:      opts.OS,
+		Arch:    opts.Arch,
+		Now:     func() time.Time { return at },
+	}
 }
 
-// RunPatchedUpdate installs the previous release of a delta build and then
-// updates to the head, driving the real path: core/installer, core/updater, the
-// route through the releases in between, and core/stage applying whatever
-// patches the repository offers.
+// RunUpdate runs the updater of the machine at workDir once, the way an
+// installed application does: check the channel, and apply what it offers.
 //
-// It is the only driver that can exercise a patch at all, because a patch needs
-// a base — an installation that already exists. What it proves is not that a bad
-// patch is refused: a patch is not trusted in the first place, so the client is
-// free to try it and throw the result away. What it proves is that the bytes
-// that end up installed are the signed ones either way.
-func RunPatchedUpdate(srv *Server, rootBytes []byte, workDir string, at time.Time, opts BuildOptions) PatchedResult {
+// It is the driver for attacks that need an installation to be attacking at
+// all. A channel that offers nothing is reported as an error rather than as
+// success: every caller asks it for an update it expects to arrive or to be
+// refused, and a run that did neither has not exercised anything.
+func RunUpdate(srv *Server, rootBytes []byte, workDir string, at time.Time, opts BuildOptions) UpdateResult {
 	installRoot := filepath.Join(workDir, "install")
-	res := PatchedResult{Result: Result{InstallRoot: installRoot}}
+	res := UpdateResult{Result: Result{InstallRoot: installRoot}}
 
-	// One client per run of the client, because that is what the story is: the
-	// machine installs today and updates later, and a go-tuf workflow runs once
-	// per process. They share the local cache, as two runs on one machine do.
-	newClient := func() (*trust.Client, error) {
-		c, err := trust.New(trust.Options{
-			Root:        rootBytes,
-			MetadataURL: srv.MetadataURL(),
-			TargetsURL:  srv.TargetsURL(),
-			LocalDir:    filepath.Join(workDir, "cache"),
-			Now:         func() time.Time { return at },
-		})
-		if err != nil {
-			return nil, err
-		}
-		c.UnsafeSetRefTime(at)
-		return c, nil
-	}
-	updaterOpts := func(c *trust.Client) updater.Options {
-		return updater.Options{
-			Trust:   c,
-			FS:      fsx.OS(),
-			Root:    installRoot,
-			Channel: opts.Channel,
-			OS:      opts.OS,
-			Arch:    opts.Arch,
-			Now:     func() time.Time { return at },
-		}
-	}
-
-	// The machine starts out on the older release. Everything the attack is
-	// about happens on top of this.
-	c, err := newClient()
+	c, err := machineClient(srv, rootBytes, workDir, at)
 	if err != nil {
 		res.Err, res.Class = err, classify(err)
 		return res
 	}
-	if err := installer.Install(context.Background(), installer.Options{
-		Updater: updaterOpts(c),
-		Version: opts.Previous,
-	}); err != nil {
-		res.Err, res.Class = fmt.Errorf("installing %s: %w", opts.Previous, err), classify(err)
-		return res
-	}
-
-	if c, err = newClient(); err != nil {
-		res.Err, res.Class = err, classify(err)
-		return res
-	}
-	u, err := updater.New(updaterOpts(c))
+	u, err := updater.New(machineUpdater(c, workDir, at, opts))
 	if err != nil {
 		res.Err, res.Class = err, classify(err)
 		return res
@@ -217,7 +186,7 @@ func RunPatchedUpdate(srv *Server, rootBytes []byte, workDir string, at time.Tim
 		return res
 	}
 	if rel == nil {
-		res.Err = errors.New("the update to the head release was not offered")
+		res.Err = errors.New("the channel head was not offered as an update")
 		return res
 	}
 	if err := u.Apply(context.Background(), rel); err != nil {
@@ -230,6 +199,37 @@ func RunPatchedUpdate(srv *Server, rootBytes []byte, workDir string, at time.Tim
 		res.Err, res.Class = err, classify(err)
 	}
 	return res
+}
+
+// RunPatchedUpdate installs the previous release of a delta build and then
+// updates to the head, driving the real path: core/installer, core/updater, the
+// route through the releases in between, and core/stage applying whatever
+// patches the repository offers.
+//
+// It is the only driver that can exercise a patch at all, because a patch needs
+// a base — an installation that already exists. What it proves is not that a bad
+// patch is refused: a patch is not trusted in the first place, so the client is
+// free to try it and throw the result away. What it proves is that the bytes
+// that end up installed are the signed ones either way.
+func RunPatchedUpdate(srv *Server, rootBytes []byte, workDir string, at time.Time, opts BuildOptions) UpdateResult {
+	// The machine starts out on the older release. Everything the attack is
+	// about happens on top of this.
+	c, err := machineClient(srv, rootBytes, workDir, at)
+	if err != nil {
+		return UpdateResult{Result: Result{InstallRoot: filepath.Join(workDir, "install"), Err: err, Class: classify(err)}}
+	}
+	if err := installer.Install(context.Background(), installer.Options{
+		Updater: machineUpdater(c, workDir, at, opts),
+		Version: opts.Previous,
+	}); err != nil {
+		return UpdateResult{Result: Result{
+			InstallRoot: filepath.Join(workDir, "install"),
+			Err:         fmt.Errorf("installing %s: %w", opts.Previous, err),
+			Class:       classify(err),
+		}}
+	}
+
+	return RunUpdate(srv, rootBytes, workDir, at, opts)
 }
 
 // InstalledBytes reads a file out of the running installation.
@@ -290,6 +290,9 @@ func classify(err error) ErrorClass {
 	}
 	if errors.Is(err, release.ErrInvalid) {
 		return ClassDescriptor
+	}
+	if errors.Is(err, updater.ErrPolicy) {
+		return ClassPolicy
 	}
 	if errors.Is(err, trust.ErrResolve) {
 		return ClassResolve

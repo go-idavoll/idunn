@@ -289,6 +289,31 @@ func init() {
 // than DefaultBuildOptions.Version, which is what makes the update an update.
 const previousVersion = "1.1.0"
 
+// AdvancedMetadataVersions is not an attack, and is deliberately not in
+// Mutators, so no case.yaml can name it as one. It is the honest half of a
+// history case: a repository whose publisher has been at work for a while, with
+// every role at version 5.
+//
+// A rollback needs it as the state the client comes to trust, so that serving
+// version 1 afterwards goes backwards rather than being a first contact. A
+// downgrade needs it as the state the attacker serves, so that the metadata
+// moves forward while the release goes back. Every cross-reference moves with
+// the versions, because a repository that disagreed with itself would be caught
+// as mix-and-match and prove nothing about either.
+var AdvancedMetadataVersions = &Mutator{
+	Name: "advanced_metadata_versions",
+	Desc: "an honest repository whose targets, snapshot and timestamp are all at version 5",
+	Metadata: func(b *Build) error {
+		const v = 5
+		b.Targets.Signed.Version = v
+		b.Snapshot.Signed.Version = v
+		b.Snapshot.Signed.Meta["targets.json"].Version = v
+		b.Timestamp.Signed.Version = v
+		b.Timestamp.Signed.Meta["snapshot.json"].Version = v
+		return nil
+	},
+}
+
 // AttackerMarker is what a poisoned patch tries to smuggle onto the machine. A
 // delta case passes only if it is nowhere on disk afterwards.
 var AttackerMarker = []byte("idunn redteam: attacker payload")
