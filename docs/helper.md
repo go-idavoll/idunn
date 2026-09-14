@@ -125,6 +125,13 @@ go build -trimpath -ldflags "-X main.version=1.3.0 -X main.buildTime=$(git log -
 dist/com.acme.app.helper check   # on the target machine: exit 0 only if serve would start
 ```
 
+Verified by (end to end, once green in CI): `TestServiceModeInstallsAndUpdatesThroughTheHelper` in
+`test/e2e/local` (Linux, as root; CI job `helper service mode`). It builds this
+helper with a generated anchor, runs `check`, `allow` and `serve` as root, and
+installs and updates a root under `/usr/local` for an application running as
+uid 65534. A caller that is not allowed is denied, and a request for anything
+but the channel head is refused.
+
 Under the Windows service control manager `helper serve` speaks the service
 protocol and logs to `<state dir>\helper.log`; under launchd and systemd it logs to
 stderr, which both collect.

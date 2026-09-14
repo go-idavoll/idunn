@@ -25,6 +25,7 @@ and about two and a half minutes cold.
 | `TestInstallerRefusesDowngrade` | `installer --version 1.0.0` over 2.0.0 exits 3 with the preflight's own message. The journal is not written and no payload is downloaded. `--allow-downgrade` does install 1.0.0, and retention keeps the newer 2.0.0 tree (§14.6, T19). |
 | `TestTamperedPayloadIsRefused` | One byte of a payload is flipped, keeping its length. The installer exits 1 and nothing is installed. The reason is pinned too (see below). A control step then restores the byte, and the same client with the same cache installs. |
 | `TestRetentionCollectsOldVersions` | Four self-updates with `--retain 3` and then `--retain 2`. After each commit, exactly the configured window of version directories remains. The retained rollback target still runs (§14.1). |
+| `TestServiceModeInstallsAndUpdatesThroughTheHelper` | Linux, as root only (see [Service mode](#service-mode)). `cmd/helper` serves as root and the application runs as uid 65534. A uid nobody allowed is denied (`elevate.ErrDenied`, exit 5) and nothing is created. 1.0.0 is installed and 1.1.0 updated only through the helper's socket: pointer, state and a committed journal agree, everything under the root is owned by root, the helper's TUF cache is `<root>/.updater/tuf`, the application's own cache holds nothing of root's, uid 65534 can write nothing in the root, and it can run the installed application. The helper logs `applied` for each. A bare request for 1.2.0 while the channel names 1.3.0 is refused (`error apply`, exit 6) and nothing changes (§14.2, §14.8, T16, T23). |
 
 Scenarios that `run.sh` already attests are left out on purpose: install, minor
 and major self-update, sequential updates and the migration floor.
@@ -87,9 +88,54 @@ things; none of these changes is committed:
 If this scenario ever passes for the wrong reason, treat it as the
 highest-priority bug class in the project (AGENTS.md §7).
 
+## Service mode
+
+`TestServiceModeInstallsAndUpdatesThroughTheHelper` is the reference helper
+(`docs/helper.md`) as a publisher would deploy it on Linux. It needs root for
+three things no stand-in can fake: `helper allow` and `helper serve` refuse to
+run otherwise, the helper's state directory and socket are `/etc/<label>/` and
+`/run/<label>/helper.sock`, and the application has to be a *different* user,
+so that the kernel's peer credentials on the socket are what the helper
+decides on. Without root, and on Windows and macOS, it skips.
+
+- **Label and root.** Unique per run: `io.idunn-e2e.h<pid>` and
+  `/usr/local/idunn-e2e-<pid>/app`. `/usr/local` because it is root's and
+  0755; `/opt` is world-writable on GitHub's runners and is refused by
+  `CheckPrivilegedRoot`, correctly. If any of these paths already exists the
+  scenario stops rather than touch it. They are removed afterwards, pass or
+  fail, and the helper is stopped first.
+- **The helper's anchor.** `root.json`, `repository.json` and `helper.json`
+  are generated into the scenario directory and laid over `cmd/helper/anchor/`
+  with `go build -overlay`. The tree's anchor directory is never written, and
+  the scenario checks that its listing is unchanged after the build.
+- **The application's user.** The app runs as uid 65534 (and the refused
+  caller as uid 1), with the credentials set by the kernel between fork and
+  exec (`SysProcAttr.Credential`, no supplementary groups). Its binary, anchor
+  and cache live in a directory other users can traverse next to the run
+  directory, which is root's and 0700. The work directory must therefore be
+  reachable by other users; `/tmp` is.
+- **Refusals are not assumed.** Before anything is installed, uid 65534 must
+  fail to create the root. After each apply it must fail to create, append to or
+  delete the pointer, an installed file, a version directory, the metadata
+  directory and the helper's TUF metadata, and each of those must be unchanged.
+
+CI runs it in the `helper service mode (Linux, root)` job of `ci.yml`. The test
+binary is compiled as the runner user, so module downloads stay unprivileged,
+and then run with sudo:
+
+```
+go test -tags=e2e -c -o e2elocal.test ./test/e2e/local/
+sudo env "PATH=$PATH" "GOMODCACHE=$(go env GOMODCACHE)" GOPROXY=off \
+  "GOFLAGS=-mod=readonly -buildvcs=false" \
+  ./e2elocal.test -test.run '^TestServiceModeInstallsAndUpdatesThroughTheHelper$' -test.v
+```
+
+The scenario still builds its binaries, now as root, so `go` must be on root's
+PATH. VCS stamping is off because git refuses a checkout owned by another user.
+
 ## Not in CI (yet)
 
-This suite has only been run on Windows so far. A job in `ci.yml` would be cheap:
+Apart from the service scenario, this suite has only been run on Windows so far. A job in `ci.yml` would be cheap:
 one `go test -tags=e2e ./test/e2e/local/...` step on each of the three runners,
 one to three minutes each. It would not overlap `e2e-update.yml`, which needs
 GitHub releases and a token. It is proposed rather than added until it has

@@ -119,6 +119,49 @@ jobs:
           IDUNN_E2E_WORK: ${{ runner.temp }}/e2e-local
         run: go test -tags=e2e -count=1 -timeout 15m ./test/e2e/local/...
 
+  # The reference helper in service mode (docs/helper.md), as real processes:
+  # cmd/helper serves as root, the application runs as uid 65534, and a
+  # system-wide root under /usr/local changes only through the helper's socket
+  # (test/e2e/local/service_linux_test.go). Only Linux: it is the one runner
+  # where a daemon and a second user need no signed bundle and no approval.
+  #
+  # The test binary is compiled as the runner user, so every module download
+  # happens unprivileged. Only running it needs root, and as root the toolchain
+  # stays offline (GOPROXY=off, -mod=readonly) with its own build cache. VCS
+  # stamping is off because git refuses a checkout owned by another user.
+  helper-service:
+    name: helper service mode (Linux, root)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+
+      - name: Build the scenario (unprivileged)
+        run: |
+          go mod download
+          go test -tags=e2e -c -o "$RUNNER_TEMP/e2elocal.test" ./test/e2e/local/
+
+      - name: Run the scenario as root
+        working-directory: test/e2e/local
+        run: |
+          sudo env \
+            "PATH=$PATH" \
+            "GOMODCACHE=$(go env GOMODCACHE)" \
+            "GOCACHE=$RUNNER_TEMP/gocache-root" \
+            GOPROXY=off \
+            GOTOOLCHAIN=local \
+            "GOFLAGS=-mod=readonly -buildvcs=false" \
+            "$RUNNER_TEMP/e2elocal.test" \
+            -test.run '^TestServiceModeInstallsAndUpdatesThroughTheHelper$' \
+            -test.count=1 -test.v -test.timeout=15m
+
   # Reproducible builds (IDN-18): the shipped commands, for every released
   # platform, built twice -- from two source directories, with two empty build
   # caches -- and compared byte for byte (scripts/repro.sh). TUF says the bytes

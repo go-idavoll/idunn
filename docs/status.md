@@ -147,6 +147,18 @@ downgrade preflight; a same-length tampered payload, refused for the hash with t
 bytes attested as served whole (so a 404 or truncation cannot pass it); and
 retention windows of three and two.
 
+One of them runs in CI: `TestServiceModeInstallsAndUpdatesThroughTheHelper`, job
+`helper service mode (Linux, root)`, skipped anywhere but Linux as root. It uses
+the reference `cmd/helper`, built with a generated anchor through
+`go build -overlay`, as a real daemon. `allow` and `serve` run as root, and the
+application runs as uid 65534. A system-wide root under `/usr/local` is
+installed at 1.0.0 and updated to 1.1.0 only through the helper's socket.
+Pointer, state and a committed journal agree; everything under the root is
+root's; the helper's TUF cache is `PrivilegedCacheDir`; and the application's
+user can write nothing in the root. A uid nobody allowed is denied (`ErrDenied`),
+and a request for a release behind the channel head is refused with nothing
+changed.
+
 ## Supply chain
 
 | Property | State |
