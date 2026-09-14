@@ -1,0 +1,473 @@
+# Copyright 2026 The idunn Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The Windows and Linux helper scripts (scripts/windows, scripts/linux,
+# docs/helper.md): lint them, run them against a real cmd/helper build with a
+# throwaway anchor, and check that they refuse what they exist to refuse.
+#
+# What this proves:
+#   Windows -- PSScriptAnalyzer is clean (default rules plus 5.1/7 syntax
+#     compatibility); the scripts parse under Windows PowerShell 5.1; sign.ps1
+#     signs with a certificate from the store and verifies signer and hash;
+#     install-service.ps1 registers the helper as a LocalSystem service with the
+#     restrictive service DACL, the helper starts under the SCM and creates its
+#     pipe, `allow` + restart keep it running; uninstall-service.ps1 removes it.
+#   Linux -- shellcheck is clean; the rendered unit passes systemd-analyze verify
+#     with no unknown keys; install.sh installs a helper that runs, with its
+#     socket, under the unit's full hardening; `check`, `allow` + restart work;
+#     uninstall.sh removes everything.
+#
+# What it cannot prove: a trusted Authenticode chain or an RFC 3161 timestamp
+# (no publisher certificate exists here, by design: the certificate is a
+# self-signed throwaway and sign.ps1 runs in its CI mode, see
+# scripts/windows/README.md); SmartScreen; an update actually applied through
+# either service (needs a served repository and a client; that is the e2e
+# suite's). The runners are already elevated / have passwordless sudo, so
+# "refuses when not elevated / not root" is only checked on Linux.
+name: Helper (Windows, Linux)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "cmd/helper/**"
+      - "core/elevate/**"
+      - "scripts/windows/**"
+      - "scripts/linux/**"
+      - ".github/workflows/helper-scripts.yml"
+  pull_request:
+    paths:
+      - "cmd/helper/**"
+      - "core/elevate/**"
+      - "scripts/windows/**"
+      - "scripts/linux/**"
+      - ".github/workflows/helper-scripts.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: helper-scripts-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: stable
+  LABEL: org.idunn.ci.helper
+  PSSCRIPTANALYZER_VERSION: 1.25.0
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  windows:
+    name: windows scripts (lint, sign, service)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      PRODUCT_DIR: C:\Program Files\IdunnCI
+      CI_ROOT: C:\Program Files\idunn-ci-root
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+
+      - name: PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          Install-Module PSScriptAnalyzer -RequiredVersion $env:PSSCRIPTANALYZER_VERSION -Scope CurrentUser -Repository PSGallery -Force
+          Import-Module PSScriptAnalyzer -RequiredVersion $env:PSSCRIPTANALYZER_VERSION
+          $found = @(Invoke-ScriptAnalyzer -Path scripts/windows -Recurse -Severity Warning, Error `
+              -Settings scripts/windows/PSScriptAnalyzerSettings.psd1)
+          $found | Format-Table -AutoSize RuleName, Severity, ScriptName, Line, Message | Out-String -Width 250
+          if ($found.Count -gt 0) { throw "PSScriptAnalyzer: $($found.Count) finding(s)" }
+
+      - name: Parse under Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          "PowerShell $($PSVersionTable.PSVersion)"
+          $bad = 0
+          foreach ($f in Get-ChildItem scripts/windows -Filter *.ps1) {
+            $tokens = $null; $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$tokens, [ref]$errors)
+            foreach ($e in @($errors)) { "$($f.Name): $e"; $bad++ }
+          }
+          if ($bad) { throw "$bad parse error(s)" }
+
+      # A throwaway root, as test/e2e/run.sh makes one; the private keys are
+      # deleted at once. The anchor exists in this workspace only.
+      - name: Throwaway anchor
+        run: |
+          work="$RUNNER_TEMP/helper-ci"
+          mkdir -p "$work"
+          go run ./test/e2e/cmd/e2etool init-repo --repo "$work/root" --keys "$work/keys" >/dev/null
+          rm -rf "$work/keys"
+          cp "$work/root/metadata/1.root.json" cmd/helper/anchor/root.json
+          cat >cmd/helper/anchor/repository.json <<'EOF'
+          {
+            "metadata_url": "https://updates.invalid/metadata/",
+            "channel": "stable"
+          }
+          EOF
+          cat >cmd/helper/anchor/helper.json <<EOF
+          {
+            "label": "$LABEL",
+            "allowed_roots": ["C:\\\\Program Files\\\\idunn-ci-root"]
+          }
+          EOF
+          cat cmd/helper/anchor/helper.json
+
+      - name: Build the helper
+        run: |
+          go build -trimpath -ldflags "-X main.version=0.0.0-ci" -o "$RUNNER_TEMP/helper-ci/$LABEL.exe" ./cmd/helper
+          "$RUNNER_TEMP/helper-ci/$LABEL.exe" version
+          cp "$RUNNER_TEMP/helper-ci/$LABEL.exe" "$RUNNER_TEMP/helper-ci/unsigned.exe"
+
+      - name: Sign (self-signed, CI mode) and verify
+        shell: powershell
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $exe = Join-Path $env:RUNNER_TEMP "helper-ci\$env:LABEL.exe"
+          $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject 'CN=idunn CI throwaway code signing' `
+            -CertStoreLocation Cert:\CurrentUser\My -KeyExportPolicy NonExportable -NotAfter (Get-Date).AddDays(1)
+          $thumb = $cert.Thumbprint
+          Set-Content -Path (Join-Path $env:RUNNER_TEMP 'helper-ci\thumbprint.txt') -Value $thumb
+
+          .\scripts\windows\sign.ps1 -Path $exe -CertificateThumbprint $thumb -NoTimestampForCI
+
+          # The relaxed rule accepts an untrusted root, and nothing else.
+          $sig = Get-AuthenticodeSignature -LiteralPath $exe
+          "status: $($sig.Status) ($($sig.StatusMessage))"
+          if ($sig.SignerCertificate.Thumbprint -ne $thumb) { throw "signed by $($sig.SignerCertificate.Thumbprint), not $thumb" }
+          if (@('Valid', 'UnknownError', 'NotTrusted') -notcontains [string]$sig.Status) { throw "unexpected status $($sig.Status)" }
+          .\scripts\windows\sign.ps1 -Path $exe -CertificateThumbprint $thumb -VerifyOnly -NoTimestampForCI
+
+      - name: sign.ps1 refusals
+        shell: powershell
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $exe = Join-Path $env:RUNNER_TEMP "helper-ci\$env:LABEL.exe"
+          $thumb = (Get-Content (Join-Path $env:RUNNER_TEMP 'helper-ci\thumbprint.txt')).Trim()
+          function Assert-Refused([string]$Want, [scriptblock]$Block) {
+            try { & $Block *> $null } catch {
+              if ($_.Exception.Message -like "*$Want*") { "refused as expected: $Want"; return }
+              throw "refused for the wrong reason (want '$Want'): $($_.Exception.Message)"
+            }
+            throw "NOT REFUSED: $Want"
+          }
+          Assert-Refused '-TimestampUrl is required' { .\scripts\windows\sign.ps1 -Path $exe -CertificateThumbprint $thumb }
+          Assert-Refused 'not an absolute http or https URL' { .\scripts\windows\sign.ps1 -Path $exe -CertificateThumbprint $thumb -TimestampUrl 'file:///c:/x' }
+          Assert-Refused 'no certificate with thumbprint' { .\scripts\windows\sign.ps1 -Path $exe -CertificateThumbprint ('0' * 40) -NoTimestampForCI }
+          # Outside CI mode the untrusted self-signed chain must fail verification.
+          Assert-Refused 'did not verify' { .\scripts\windows\sign.ps1 -Path $exe -CertificateThumbprint $thumb -VerifyOnly }
+          Assert-Refused 'not by' { .\scripts\windows\sign.ps1 -Path $exe -CertificateThumbprint ('A' * 40) -VerifyOnly -NoTimestampForCI }
+          $unsigned = Join-Path $env:RUNNER_TEMP 'helper-ci\unsigned.exe'
+          Assert-Refused 'carries no signature' { .\scripts\windows\sign.ps1 -Path $unsigned -CertificateThumbprint $thumb -VerifyOnly -NoTimestampForCI }
+          # A byte changed inside the signed image: HashMismatch, refused even in CI mode.
+          $tampered = Join-Path $env:RUNNER_TEMP 'helper-ci\tampered.exe'
+          $bytes = [System.IO.File]::ReadAllBytes($exe)
+          $bytes[0x2000] = $bytes[0x2000] -bxor 0xFF
+          [System.IO.File]::WriteAllBytes($tampered, $bytes)
+          Assert-Refused 'HashMismatch' { .\scripts\windows\sign.ps1 -Path $tampered -CertificateThumbprint $thumb -VerifyOnly -NoTimestampForCI }
+          # CI mode itself is refused outside CI.
+          $out = powershell -NoProfile -Command "`$env:CI=''; `$env:GITHUB_ACTIONS=''; try { .\scripts\windows\sign.ps1 -Path '$exe' -CertificateThumbprint $thumb -NoTimestampForCI; 'NOT REFUSED' } catch { `$_.Exception.Message }"
+          "$out"
+          if ("$out" -notlike '*only accepted in CI*') { throw 'CI mode was not refused outside CI' }
+
+      # The helper and the install root where the scripts require them: below
+      # Program Files, owned by Administrators (set explicitly, so the result
+      # does not depend on the runner's default-owner policy).
+      - name: Place the signed helper
+        shell: powershell
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          foreach ($d in @($env:PRODUCT_DIR, $env:CI_ROOT)) {
+            New-Item -ItemType Directory -Path $d -Force | Out-Null
+          }
+          Copy-Item (Join-Path $env:RUNNER_TEMP "helper-ci\$env:LABEL.exe") $env:PRODUCT_DIR
+          foreach ($d in @($env:PRODUCT_DIR, $env:CI_ROOT)) {
+            icacls $d /setowner '*S-1-5-32-544' /T /C /Q
+            if ($LASTEXITCODE -ne 0) { throw "icacls /setowner $d failed" }
+          }
+          & (Join-Path $env:PRODUCT_DIR "$env:LABEL.exe") check
+          if ($LASTEXITCODE -ne 0) { throw "helper check failed ($LASTEXITCODE)" }
+
+      - name: install-service.ps1 refusals
+        shell: powershell
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          function Assert-Refused([string]$Want, [scriptblock]$Block) {
+            try { & $Block *> $null } catch {
+              if ($_.Exception.Message -like "*$Want*") { "refused as expected: $Want"; return }
+              throw "refused for the wrong reason (want '$Want'): $($_.Exception.Message)"
+            }
+            throw "NOT REFUSED: $Want"
+          }
+          $good = Join-Path $env:PRODUCT_DIR "$env:LABEL.exe"
+          Assert-Refused 'invalid helper label' { .\scripts\windows\install-service.ps1 -HelperPath $good -Label 'org_idunn' }
+          Assert-Refused 'is not below' { .\scripts\windows\install-service.ps1 -HelperPath (Join-Path $env:RUNNER_TEMP "helper-ci\$env:LABEL.exe") -Label $env:LABEL }
+          Assert-Refused 'must be named' { .\scripts\windows\install-service.ps1 -HelperPath $good -Label org.idunn.ci.other }
+          Assert-Refused 'not in normalized form' { .\scripts\windows\install-service.ps1 -HelperPath "$env:PRODUCT_DIR\..\IdunnCI\$env:LABEL.exe" -Label $env:LABEL }
+
+          # A product directory Users may modify: a DLL planted next to the
+          # helper, or the helper replaced, would run as SYSTEM.
+          $weak = 'C:\Program Files\IdunnCIWeak'
+          New-Item -ItemType Directory -Path $weak -Force | Out-Null
+          Copy-Item $good $weak
+          icacls $weak /setowner '*S-1-5-32-544' /T /C /Q
+          icacls $weak /grant '*S-1-5-32-545:(OI)(CI)(M)' /T /C /Q
+          Assert-Refused 'only SYSTEM, Administrators and TrustedInstaller may change it' {
+            .\scripts\windows\install-service.ps1 -HelperPath "$weak\$env:LABEL.exe" -Label $env:LABEL
+          }
+          # Owned by an ordinary account.
+          $owned = 'C:\Program Files\IdunnCIOwned'
+          New-Item -ItemType Directory -Path $owned -Force | Out-Null
+          Copy-Item $good $owned
+          icacls "$owned\$env:LABEL.exe" /setowner "$env:USERDOMAIN\$env:USERNAME" /C /Q
+          Assert-Refused 'the owner must be' {
+            .\scripts\windows\install-service.ps1 -HelperPath "$owned\$env:LABEL.exe" -Label $env:LABEL
+          }
+          if (Get-Service -Name $env:LABEL -ErrorAction SilentlyContinue) { throw 'a refused install left a service behind' }
+          Remove-Item -Recurse -Force $weak, $owned
+
+      - name: Install, exercise, uninstall the service
+        shell: powershell
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $helper = Join-Path $env:PRODUCT_DIR "$env:LABEL.exe"
+          .\scripts\windows\install-service.ps1 -HelperPath $helper -Label $env:LABEL
+
+          $svc = Get-CimInstance Win32_Service -Filter "Name='$env:LABEL'"
+          "service: state $($svc.State), start $($svc.StartMode), account $($svc.StartName), path $($svc.PathName)"
+          if ($svc.State -ne 'Running' -or $svc.StartMode -ne 'Auto' -or $svc.StartName -ne 'LocalSystem') { throw 'service not as registered' }
+          if ($svc.PathName -ne ('"{0}" serve' -f $helper)) { throw "unexpected image path $($svc.PathName)" }
+          $sd = (sc.exe sdshow $env:LABEL | Where-Object { $_.Trim() }) -join ''
+          "sd: $sd"
+          # Exactly three allow ACEs; only Administrators may stop, reconfigure,
+          # delete or re-permission.
+          $dacl = (New-Object System.Security.AccessControl.RawSecurityDescriptor($sd.Trim())).DiscretionaryAcl
+          $grants = @{}
+          foreach ($ace in $dacl) { $grants[$ace.SecurityIdentifier.Value] = $ace.AccessMask }
+          $stopOrChange = 0x0020 -bor 0x0002 -bor 0x10000 -bor 0x40000 -bor 0x80000 # STOP, CHANGE_CONFIG, DELETE, WRITE_DAC, WRITE_OWNER
+          if (@($dacl).Count -ne 3 -or -not $grants.ContainsKey('S-1-5-18') -or -not $grants.ContainsKey('S-1-5-32-544') -or -not $grants.ContainsKey('S-1-5-11')) {
+            throw 'service DACL does not hold exactly SYSTEM, Administrators and Authenticated Users'
+          }
+          if (($grants['S-1-5-11'] -band ($stopOrChange -bor 0x0010 -bor 0x0040 -bor 0x0100)) -ne 0) { # also START, PAUSE_CONTINUE, USER_DEFINED_CONTROL
+            throw ('Authenticated Users may start, stop or change the service (mask 0x{0:x})' -f $grants['S-1-5-11'])
+          }
+          if (($grants['S-1-5-18'] -band (0x0002 -bor 0x10000 -bor 0x40000 -bor 0x80000)) -ne 0) {
+            throw 'SYSTEM holds more than the Windows default'
+          }
+          if (-not (Test-Path -LiteralPath "\\.\pipe\$env:LABEL")) { throw 'pipe missing' }
+
+          $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+          & $helper allow --sid $me
+          if ($LASTEXITCODE -ne 0) { throw "allow failed ($LASTEXITCODE)" }
+          Restart-Service -Name $env:LABEL
+          Start-Sleep -Seconds 3
+          if ((Get-Service -Name $env:LABEL).Status -ne 'Running') { throw 'service did not survive allow + restart' }
+          & $helper check
+          if ($LASTEXITCODE -ne 0) { throw "check failed after allow ($LASTEXITCODE)" }
+          $state = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) $env:LABEL
+          if ((Get-Content -Raw (Join-Path $state 'callers.json')) -notlike "*$me*") { throw 'callers.json does not list the caller' }
+
+          .\scripts\windows\uninstall-service.ps1 -Label $env:LABEL -RemoveState
+          if (Get-Service -Name $env:LABEL -ErrorAction SilentlyContinue) { throw 'service still present' }
+          if (Test-Path -LiteralPath $state) { throw 'state directory still present' }
+
+      - name: Diagnostics
+        if: failure()
+        shell: powershell
+        run: |
+          $log = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) "$env:LABEL\helper.log"
+          if (Test-Path $log) { Get-Content $log -Tail 100 }
+          Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Service Control Manager' } -MaxEvents 30 -ErrorAction SilentlyContinue |
+            Format-List TimeCreated, Id, Message
+
+      - name: Remove the throwaway certificate
+        if: always()
+        shell: powershell
+        run: |
+          $f = Join-Path $env:RUNNER_TEMP 'helper-ci\thumbprint.txt'
+          if (Test-Path $f) {
+            $t = (Get-Content $f).Trim()
+            Remove-Item -LiteralPath "Cert:\CurrentUser\My\$t" -DeleteKey -ErrorAction SilentlyContinue
+          }
+
+  linux:
+    name: linux scripts (lint, unit, service)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CI_ROOT: /opt/idunn-ci-root
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+
+      # scripts/linux/.shellcheckrc makes the sourced common.sh part of the check.
+      - name: shellcheck
+        run: |
+          shellcheck --version
+          for f in scripts/linux/*.sh; do bash -n "$f"; done
+          shellcheck scripts/linux/*.sh
+
+      - name: systemd-analyze verify (rendered unit)
+        run: |
+          systemctl --version | head -1
+          dir="$RUNNER_TEMP/unit"
+          mkdir -p "$dir"
+          scripts/linux/install.sh --render-unit --label "$LABEL" --rw "$CI_ROOT" >"$dir/$LABEL.service"
+          # verify requires ExecStart's binary to exist; the helper is not
+          # installed yet, so point it at one that is.
+          sed -i "s|^ExecStart=/usr/libexec/$LABEL serve\$|ExecStart=/usr/bin/true serve|" "$dir/$LABEL.service"
+          grep -qx 'ExecStart=/usr/bin/true serve' "$dir/$LABEL.service"
+          cat "$dir/$LABEL.service"
+          out="$(systemd-analyze verify "$dir/$LABEL.service" 2>&1)" || { printf '%s\n' "$out"; exit 1; }
+          printf '%s\n' "$out"
+          # An unknown key is only a warning to systemd, and a silently missing
+          # hardening line is exactly what must not pass.
+          if printf '%s\n' "$out" | grep -i "$LABEL.service" | grep -Ei 'unknown|ignoring|invalid|failed'; then
+            echo "systemd did not accept every line of the unit"
+            exit 1
+          fi
+
+      # A throwaway root, as test/e2e/run.sh makes one; the private keys are
+      # deleted at once. The anchor exists in this workspace only.
+      - name: Throwaway anchor
+        run: |
+          work="$RUNNER_TEMP/helper-ci"
+          mkdir -p "$work"
+          go run ./test/e2e/cmd/e2etool init-repo --repo "$work/root" --keys "$work/keys" >/dev/null
+          rm -rf "$work/keys"
+          cp "$work/root/metadata/1.root.json" cmd/helper/anchor/root.json
+          cat >cmd/helper/anchor/repository.json <<'EOF'
+          {
+            "metadata_url": "https://updates.invalid/metadata/",
+            "channel": "stable"
+          }
+          EOF
+          cat >cmd/helper/anchor/helper.json <<EOF
+          {
+            "label": "$LABEL",
+            "allowed_roots": ["$CI_ROOT"]
+          }
+          EOF
+          cat cmd/helper/anchor/helper.json
+
+      - name: Build the helper
+        run: |
+          go build -trimpath -ldflags "-X main.version=0.0.0-ci" -o "$RUNNER_TEMP/helper-ci/$LABEL" ./cmd/helper
+          "$RUNNER_TEMP/helper-ci/$LABEL" version
+
+      # Each case must fail, for its own reason, and leave nothing behind.
+      - name: install.sh refusals
+        run: |
+          helper="$RUNNER_TEMP/helper-ci/$LABEL"
+          refused() { # refused <expected message part> <command...>
+            local want="$1" out
+            shift
+            if out="$("$@" 2>&1)"; then
+              printf 'NOT REFUSED: %s\n%s\n' "$*" "$out"
+              exit 1
+            fi
+            case "$out" in
+              *"$want"*) printf 'refused as expected: %s\n' "$want" ;;
+              *) printf 'refused for the wrong reason (want "%s"): %s\n%s\n' "$want" "$*" "$out"; exit 1 ;;
+            esac
+          }
+          sudo install -d -o root -g root -m 0755 "$CI_ROOT"
+          sudo install -d -o root -g root -m 0777 /opt/idunn-ci-weak
+          sudo install -d -o root -g root -m 0755 /opt/idunn-ci-other
+
+          refused "must run as root" scripts/linux/install.sh --helper "$helper" --label "$LABEL" --rw "$CI_ROOT"
+          refused "not reverse-DNS" sudo scripts/linux/install.sh --helper "$helper" --label org_idunn --rw "$CI_ROOT"
+          refused "longer than 62 bytes" sudo scripts/linux/install.sh --helper "$helper" \
+            --label "a.$(printf '%061d' 0 | tr 0 b)" --rw "$CI_ROOT"
+          refused "system or per-user tree" sudo scripts/linux/install.sh --helper "$helper" --label "$LABEL" --rw /tmp/idunn-ci
+          refused "writable by other users" sudo scripts/linux/install.sh --helper "$helper" --label "$LABEL" --rw /opt/idunn-ci-weak
+          refused "does not equal the helper's allowed_roots" sudo scripts/linux/install.sh --helper "$helper" \
+            --label "$LABEL" --rw "$CI_ROOT" /opt/idunn-ci-other
+          refused "built for label" sudo scripts/linux/install.sh --helper "$helper" --label org.idunn.ci.other --rw "$CI_ROOT"
+
+          for p in "/usr/libexec/$LABEL" "/etc/systemd/system/$LABEL.service" /usr/libexec/org.idunn.ci.other; do
+            if sudo test -e "$p"; then echo "a refused install left $p behind"; exit 1; fi
+          done
+          if sudo find /usr/libexec /etc/systemd/system -maxdepth 1 -name '.org.idunn.ci.*' | grep .; then
+            echo "a refused install left a temporary file behind"; exit 1
+          fi
+          sudo rmdir /opt/idunn-ci-weak /opt/idunn-ci-other
+
+      - name: Install, exercise, uninstall the service
+        run: |
+          helper="$RUNNER_TEMP/helper-ci/$LABEL"
+          sudo scripts/linux/install.sh --helper "$helper" --label "$LABEL" --rw "$CI_ROOT"
+
+          systemctl is-active "$LABEL.service"
+          test -S "/run/$LABEL/helper.sock"
+          test "$(stat -c '%U %a' "/run/$LABEL")" = "root 755"
+          test "$(stat -c '%U:%G %a' "/usr/libexec/$LABEL")" = "root:root 755"
+          sudo "/usr/libexec/$LABEL" check
+          "/usr/libexec/$LABEL" check
+          sudo systemd-analyze verify "/etc/systemd/system/$LABEL.service"
+          {
+            echo '### systemd-analyze security'
+            echo
+            echo '```'
+            systemd-analyze security --no-pager "$LABEL.service" | tail -n 1
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+
+          sudo "/usr/libexec/$LABEL" allow --uid "$(id -u)"
+          sudo systemctl restart "$LABEL.service"
+          for _ in $(seq 1 20); do test -S "/run/$LABEL/helper.sock" && break; sleep 0.5; done
+          sleep 2
+          systemctl is-active "$LABEL.service"
+          sudo "/usr/libexec/$LABEL" check | grep "uids \[$(id -u)\]"
+
+          refused_again="$(sudo scripts/linux/install.sh --helper "$helper" --label "$LABEL" --rw "$CI_ROOT" 2>&1)" && {
+            echo "a second install was not refused"; exit 1; }
+          printf '%s\n' "$refused_again" | grep -q "already exists"
+
+          sudo scripts/linux/uninstall.sh --label "$LABEL" --remove-state
+          if systemctl is-active --quiet "$LABEL.service"; then echo "still active"; exit 1; fi
+          for p in "/usr/libexec/$LABEL" "/etc/systemd/system/$LABEL.service" "/etc/$LABEL" "/run/$LABEL"; do
+            if sudo test -e "$p"; then echo "uninstall left $p behind"; exit 1; fi
+          done
+          test -d "$CI_ROOT"
+
+      - name: Diagnostics
+        if: failure()
+        run: |
+          sudo systemctl status --no-pager "$LABEL.service" || true
+          sudo journalctl -u "$LABEL.service" --no-pager -n 200 || true
