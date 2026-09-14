@@ -1,0 +1,136 @@
+# Copyright 2026 The idunn Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# systemd unit template for an idunn privileged helper (docs/helper.md).
+# Rendered by install.sh into /etc/systemd/system/@LABEL@.service; do not edit
+# the rendered copy by hand. Placeholders:
+#
+#   @LABEL@             the helper label (checked by install.sh as by
+#                       elevate.CheckHelperLabel)
+#   @READ_WRITE_PATHS@  the install roots, space-separated; install.sh requires
+#                       them to equal the helper's embedded allowed_roots
+#
+# Needs systemd 247 or newer (ProtectProc=); install.sh refuses older ones
+# rather than let unknown hardening keys be skipped with a warning.
+
+[Unit]
+Description=@LABEL@ privileged update helper
+Documentation=https://github.com/go-idavoll/idunn/blob/main/docs/helper.md
+# The helper fetches releases itself (privilege boundary == trust boundary).
+Wants=network-online.target
+After=network-online.target
+# Refuses to start (bad state directory, name taken) are retried a few times,
+# then left failed for an administrator to look at.
+StartLimitIntervalSec=10min
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/@LABEL@ serve
+Restart=on-failure
+RestartSec=5s
+
+# root: it writes install roots only root may write. Group root as well, so
+# nothing it creates is group-owned by anyone else.
+User=root
+Group=root
+# Nothing it creates is group- or world-writable, whatever systemd's default.
+UMask=0022
+
+# /run/@LABEL@ for helper.sock, created by systemd as root:root 0755 before
+# start and removed after stop. That is exactly what elevate's socket checks
+# require: the socket's directory owned by the helper's own uid and writable
+# by nobody else, /run above it root-owned and not group/other-writable.
+# 0755 and not 0700: callers must reach the socket; who may ask is decided per
+# connection from SO_PEERCRED and callers.json, not by the mode.
+RuntimeDirectory=@LABEL@
+RuntimeDirectoryMode=0755
+
+# --- Sandbox ---------------------------------------------------------------
+# Each line narrows what a compromised helper could do. None of them may stop
+# the one thing it exists for: replacing files under its install roots.
+
+# No setuid/setgid or file capabilities can raise privileges of anything it
+# executes (it executes nothing, by design).
+NoNewPrivileges=yes
+
+# The whole file system read-only for this service, except /dev, /proc, /sys
+# (further restricted below), its RuntimeDirectory and the install roots.
+# The state directory /etc/@LABEL@ stays read-only on purpose: serve only
+# reads callers.json from it; `helper allow`/`deny` are run by an
+# administrator outside this unit. The TUF cache lives inside each root
+# (<root>/.updater/tuf), so no further writable path is needed.
+ProtectSystem=strict
+ReadWritePaths=@READ_WRITE_PATHS@
+
+# /home, /root and /run/user are invisible. An install root there is refused
+# by the helper anyway (a user could change it).
+ProtectHome=yes
+# Private /tmp and /var/tmp: nothing it stages is visible to, or plantable by,
+# other processes. (Staging is inside the root in any case.)
+PrivateTmp=yes
+# Only pseudo-devices (/dev/null, /dev/urandom, ...); no disks, no raw I/O.
+PrivateDevices=yes
+
+# Kernel and system state it never needs to change.
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+# Other users' processes are hidden in /proc.
+ProtectProc=invisible
+
+# AF_UNIX for its own socket, AF_INET/AF_INET6 to fetch releases. No netlink,
+# packet or other families. Go's resolver reads /etc/resolv.conf and speaks
+# UDP/TCP; a cgo build whose glibc probes interfaces over netlink for
+# AI_ADDRCONFIG gets EAFNOSUPPORT and falls back.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+# It cannot create setuid/setgid files, even if a package asked for such a mode.
+RestrictSUIDSGID=yes
+LockPersonality=yes
+# No memory that is both writable and executable. Go compiles ahead of time and
+# its runtime never maps W+X pages (no JIT), with or without cgo.
+MemoryDenyWriteExecute=yes
+# The native syscall ABI only, and the syscall groups an ordinary system service
+# uses (file operations including rename and fsync, networking, process and
+# signal handling). A syscall outside them fails with EPERM instead of killing
+# the process, so Go's runtime probes (for example pidfd) degrade gracefully.
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+# Capabilities: root without capabilities still owns everything in a root-owned
+# install root (mode 0755), so creating, writing, renaming and removing there
+# needs none. The one it keeps:
+#
+#   CAP_DAC_OVERRIDE  a package may ship read-only files or directories (0444,
+#                     0555); replacing their contents on a re-stage, or removing
+#                     entries below a read-only directory when an old version is
+#                     collected, is a permission check root passes only with it.
+#
+# Left out because no helper code path needs them: CAP_CHOWN and CAP_FOWNER
+# (the helper never changes ownership, and never changes modes or times of
+# files it does not own), CAP_FSETID (no setuid/setgid bits, see above),
+# CAP_SETUID/CAP_SETGID (it switches to no other user), CAP_NET_BIND_SERVICE and
+# CAP_NET_RAW (it binds no port), CAP_SYS_ADMIN, CAP_SYS_PTRACE, CAP_KILL and
+# the rest. A root with all bits cleared in the bounding set cannot regain them.
+CapabilityBoundingSet=CAP_DAC_OVERRIDE
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target
