@@ -15,7 +15,7 @@ piece of the section is missing; **open** — contract only, or nothing.
 | §3.1 | Payload files as TUF targets | **done** |
 | §3.2 | Release descriptor & channel pointer | **done** — `core/release`, strict parse, fuzzed |
 | §4 | TUF roles & key management (client side) | **done** — embedded root, `Refresh`, resolve |
-| §4.1 | Delegations, dedup, retention | **partial** — the packer delegates per channel and per release line from the first publish, and content-addressed payload targets deduplicate; retention is open (IDN-03) |
+| §4.1 | Delegations, dedup, retention | **partial** — the packer delegates per channel and per release line from the first publish, and content-addressed payload targets deduplicate; retention (`retention.keep`) retires releases beyond a per-platform window of the line being published by reference counting (IDN-03). Retiring a whole major at end of life is not built |
 | §5 | Installer flow | **done** — `core/installer` plus the `cmd/installer` binary: embedded anchor, flags, elevation decision, exit codes |
 | §6.1 | Blue/green layout + pointer | **done** — `internal/layout`, symlink (POSIX) / pointer file (Windows), plus the launcher shim (`core/launch`, `cmd/launcher`) |
 | §6.2 | Transaction flow, journal, recovery | **done** — `core/txn`, crash-injection tests |
@@ -24,7 +24,7 @@ piece of the section is missing; **open** — contract only, or nothing.
 | §6.4 | Delta stage 2 (binary patches) | **done** — the format on both sides (`stage.ApplyPatch`, `internal/delta`), the walk a skipped-releases client follows (`release.Chain`, `trust.Versions`), staging that rebuilds a changed file from the cheapest published patches and verifies every hop, a packer that emits patch targets against the last N releases (`delta:` in pack.yaml), and a `MinFromVersion` floor that is now walked rather than refused where the repository publishes releases that bridge it. Three corpus cases attack the patches (IDN-14) |
 | §7 | Hook system | **done** — all six hooks defined and wired |
 | §8 | Headless default, UI sidecars | **done** in `core` (no UI dependency); `idunn-fyne` is the first out-of-tree sidecar and exercises the `Observer`/`Prompter` surface end to end (IDN-19) |
-| §9 | Packer | **partial** — `cmd/packer publish` builds and signs a release end to end (`internal/packer`); retention (step 4) is open |
+| §9 | Packer | **done** — `cmd/packer publish` builds and signs a release end to end (`internal/packer`), including retention (step 4, IDN-03) |
 | §10 | TUF repository layout | **done** — the packer produces it, the client resolves it, a golden test pins the emitted bytes |
 | §11 | Security concept | **done** as a document; per-threat coverage below |
 | §12 | Test concept | **partial** — see coverage below; no mutation testing, one fuzz target missing |

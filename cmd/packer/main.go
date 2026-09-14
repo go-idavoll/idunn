@@ -87,6 +87,10 @@ never from pack.yaml and never as key material:
 The reference time (--now, or `+envSourceDateEpoch+`) is an input, not the wall
 clock: two runs over the same inputs must produce a byte-identical repository.
 
+Retention (retention.keep in pack.yaml) is off unless configured. It keeps the
+newest N releases per platform of the release line being published, removes
+every target no retained release still needs, and refuses to drop a channel head.
+
 root is never signed, written, or created here. Key rotation is a separate,
 offline, m-of-n ceremony.
 `)
@@ -172,6 +176,11 @@ func report(w io.Writer, res *packer.Result) {
 		_, _ = fmt.Fprintf(w, "  delegation %-6s holds %d targets\n", role, res.Delegations[role])
 	}
 	_, _ = fmt.Fprintf(w, "  %d new targets\n", len(res.AddedTargets))
+	// Retired targets are named one by one, not counted: they are the only
+	// files a publish deletes, and the operator is entitled to see which.
+	for _, target := range res.RetiredTargets {
+		_, _ = fmt.Fprintf(w, "  retired %s\n", target)
+	}
 }
 
 func sortedKeys[V any](m map[string]V) []string {

@@ -311,6 +311,9 @@ many releases into a flat giant list that the client must fetch and parse on eve
 > target path deliberately carries no channel and the two pattern sets would
 > otherwise overlap. Payload targets are content-addressed, which is what makes the
 > dedup above literal. Both are argued in [`packer.md`](packer.md) §3 and §5.
+> Retention is `retention.keep` in `pack.yaml`: the newest N releases per platform of
+> the line being published, with payloads and patches kept by reference count
+> ([`packer.md`](packer.md) §4). Retiring an entire major is not built.
 
 **Escalation path for extreme target counts:** TUF's **hash-bin delegations** (succinct
 delegations) distribute targets deterministically over N bounded bins — the approach with
@@ -760,8 +763,8 @@ if targetsKey == "" || snapshotKey == "" || timestampKey == "" {
 }
 ```
 
-> **As built:** steps 1–3 and 5 exist in `internal/packer`; step 4 (retention) does
-> not yet (IDN-03). Two details differ from the sketch above and are argued in
+> **As built:** all five steps exist in `internal/packer`; retention (step 4, IDN-03)
+> is opt-in via `retention.keep` in `pack.yaml`. Two details differ from the sketch above and are argued in
 > [`packer.md`](packer.md): payload targets are named by content hash, and `custom`
 > is not used — `dst`, `mode` and `kind` describe a release's *use* of a target, not
 > the target, and the descriptor already carries them where the client validates
