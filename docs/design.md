@@ -1118,8 +1118,18 @@ Residual: the helper runs with pkexec's scrubbed environment, so a proxy
 configured only through environment variables does not reach its download
 (§14.4). POSIX ACLs on the helper's path are not read, as for the root.
 
-`ElevationService` (the privileged helper and its authenticated IPC, 14.8) is not
-built yet and fails closed.
+> **As built — `ElevationService` on POSIX.** The helper listens on a Unix socket in a
+> directory only its own user may write (every ancestor likewise, unless sticky) and
+> decides per connection, in this order: the peer's uid from the kernel
+> (`SO_PEERCRED`, `LOCAL_PEERCRED`; empty allow-list = root only), a rate limit, the
+> request parsed by a fixed, fuzzed line grammar carrying the same three scalars, the
+> root against `AllowedRoots` and `CheckPrivilegedRoot`, and only then the `Applier` —
+> `updater.RequestApplier`, which builds this side's own trust client per root with
+> `PrivilegedCacheDir` and calls `ApplyRequested`. The answer is `ok` or an error
+> class, never text. On Windows the service fails closed until the named-pipe
+> transport (go-winio, pipe DACL + client token) lands; on macOS the helper is meant to
+> run as an `SMAppService` daemon (IDN-08). The read-only fd hand-off of §14.8 is not
+> built: the helper downloads again into its privileged cache.
 
 ### 14.3 Graceful shutdown & external file locks
 

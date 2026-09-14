@@ -162,3 +162,54 @@ func (u *Updater) ApplyRequested(ctx context.Context, version string) error {
 	}
 	return u.Apply(ctx, rel)
 }
+
+// RequestApplier answers the privileged helper service's requests
+// (elevate.Applier) with ApplyRequested, so a host's helper daemon does not have
+// to assemble that path itself.
+//
+// Everything that decides what gets installed stays on the privileged side:
+// Options builds this side's own trust client, with the anchor the host's build
+// embeds, for the one root the request names; the channel is the helper's, not
+// the caller's; and ApplyRequested resolves the channel head itself and refuses
+// any other version (AGENTS.md §1.4).
+type RequestApplier struct {
+	// Channel is the only channel this helper installs. A request for another
+	// one is refused before any options are built: which stream of releases a
+	// machine follows is the host's configuration, not a choice the unprivileged
+	// caller gets to make for root.
+	Channel string
+
+	// Options returns the updater options for one install root. cacheDir is
+	// elevate.PrivilegedCacheDir(root): the trust client built here must keep
+	// its metadata and targets there, never in a directory the caller can write
+	// (§14.8, T23). Root and Channel are set from the request and from Channel
+	// afterwards; an elevation mode or Elevator in the result is a
+	// misconfiguration, not something to strip silently.
+	Options func(root, cacheDir string) (Options, error)
+}
+
+var _ elevate.Applier = RequestApplier{}
+
+// Apply installs the requested version into the requested root, or refuses.
+func (a RequestApplier) Apply(ctx context.Context, req elevate.Request) error {
+	if a.Options == nil || a.Channel == "" {
+		return fmt.Errorf("%w: a RequestApplier needs a Channel and an Options function", ErrConfig)
+	}
+	if req.Channel != a.Channel {
+		return fmt.Errorf("%w: channel %q was requested, this helper installs %q", ErrPolicy, req.Channel, a.Channel)
+	}
+	o, err := a.Options(req.Root, elevate.PrivilegedCacheDir(req.Root))
+	if err != nil {
+		return err
+	}
+	if o.Policy.Elevation != ElevationNone || o.Elevator != nil {
+		return fmt.Errorf("%w: the privileged side of an elevated update must not elevate again", ErrConfig)
+	}
+	o.Root = req.Root
+	o.Channel = a.Channel
+	u, err := New(o)
+	if err != nil {
+		return err
+	}
+	return u.ApplyRequested(ctx, req.Version)
+}

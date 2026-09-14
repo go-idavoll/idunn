@@ -92,6 +92,13 @@ func CheckPrivilegedRoot(root string) error {
 	if isUNC(root) {
 		return fmt.Errorf("%w: %q is a network path", ErrUnsafeRoot, root)
 	}
+	// The request grammar is the same on every OS, so it accepts `C:\app` on
+	// Linux and `/opt/app` on Windows. Here the path meets this machine's
+	// filesystem, where each of those is relative — resolved against whatever
+	// working directory the privileged process has — and is refused.
+	if !filepath.IsAbs(root) {
+		return fmt.Errorf("%w: %q is not an absolute path on this system", ErrUnsafeRoot, root)
+	}
 	root = filepath.Clean(root)
 
 	existing, err := nearestExistingDir(root)

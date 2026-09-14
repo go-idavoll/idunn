@@ -72,16 +72,31 @@ lost one. The launcher completes it at the next start. Applying the same version
 while it waits is a no-op rather than a re-download; a *different* version supersedes
 it, so a machine that never restarts cannot wedge the updater.
 
-### IDN-07 — Privileged helper service and its IPC (§14.2, §14.8, T16, T23)
-`elevate.NewService` fails closed. This is the largest remaining piece and the one
-with the most attack surface: peer-credential authentication (Windows named-pipe
-client token, Linux `SO_PEERCRED`, macOS audit token), a full TUF `Refresh` +
-verification inside the privileged context, request-shape validation, rate limiting,
-and the read-only fd hand-off (`SCM_RIGHTS` / `DuplicateHandle` pulled by the helper)
-that avoids both a second download and path-based TOCTOU.
+### IDN-07 — Privileged helper service and its IPC (§14.2, §14.8, T16, T23) — **POSIX done**
+`elevate.NewHelper` (privileged side) and `elevate.NewService` (the `Elevator` for
+`ElevationService`) speak a line protocol over a Unix socket that carries exactly the
+three scalars of the request grammar. The helper, in this order: authenticates the
+peer from the kernel (`SO_PEERCRED` on Linux, `LOCAL_PEERCRED` on macOS; an empty
+`AllowedUIDs` means root only), rate-limits, parses (fixed keys and order, length
+bounds, no CR, nothing buffered after the terminator; fuzzed), checks the root against
+`AllowedRoots` **and** `CheckPrivilegedRoot` — at start and again per request — and
+only then calls its `Applier`. The answer is a class, never an error text.
+`updater.RequestApplier` is that applier: the helper's own channel, options built per
+root with `PrivilegedCacheDir`, then `ApplyRequested`. The socket's directory must
+belong to the helper's user and be writable by nobody else, and so must every
+directory above it unless sticky; an overlong socket path (macOS: 103 bytes) is refused
+by name. The exchange deadline bounds reading and answering, never the apply;
+cancelling the caller stops its wait, not the apply.
 
-Done when: the helper installs only what it verified itself, never a caller-supplied
-path, and the corpus grows cases for a hostile caller.
+Still open:
+
+- **Windows transport**: a named pipe via go-winio (maintainer decision: take the
+  dependency), with the pipe DACL and the client token as the authentication, on the
+  same `Applier`/protocol.
+- **macOS daemon registration**: the helper as an `SMAppService.daemon` (IDN-08
+  decision), with the audit token (`LOCAL_PEERTOKEN`) as the stronger peer identity.
+- **fd hand-off** (`SCM_RIGHTS` / `DuplicateHandle` pulled by the helper) to avoid the
+  second download; today the helper downloads again, into its privileged cache.
 
 ### IDN-08 — POSIX interactive elevation (§14.2) — **Linux done; macOS decided: service mode**
 **Linux** (§14.2.2): `NewInteractive` runs `pkexec <helper> apply --root R --channel

@@ -121,3 +121,18 @@ func TestAcceptRequestRefusesAnUnsafeRoot(t *testing.T) {
 		t.Fatalf("AcceptRequest(bad channel) = %v, want ErrRequest", err)
 	}
 }
+
+// The request grammar accepts both spellings of an absolute path everywhere; the
+// privileged side judges them against its own filesystem, where the foreign one
+// is relative.
+func TestCheckPrivilegedRootRefusesAForeignAbsolutePath(t *testing.T) {
+	t.Parallel()
+
+	foreign := `C:\Program Files\app`
+	if runtime.GOOS == "windows" {
+		foreign = "/opt/app"
+	}
+	if err := CheckPrivilegedRoot(foreign); !errors.Is(err, ErrUnsafeRoot) {
+		t.Fatalf("CheckPrivilegedRoot(%q) = %v, want ErrUnsafeRoot", foreign, err)
+	}
+}

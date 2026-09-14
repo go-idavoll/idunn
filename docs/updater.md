@@ -246,8 +246,16 @@ scrubbed environment, so proxy variables do not reach it.
 
 macOS has no interactive elevation by decision: `NewInteractive` fails with
 `elevate.ErrNotImplemented`, and a system-wide install there is the service mode
-(`SMAppService`). `ElevationService` fails closed with `elevate.ErrNotImplemented`
-everywhere — see backlog IDN-07/IDN-08.
+(`SMAppService`).
+
+`ElevationService` on POSIX: `elevate.NewService(ServiceOptions{Endpoint})` on the
+unprivileged side, and a daemon on the privileged side running
+`elevate.NewHelper(HelperOptions{Endpoint, Applier, AllowedRoots, AllowedUIDs})` with
+`updater.RequestApplier{Channel, Options}` as its applier. The helper authenticates the
+caller from the kernel, allows only listed roots that also pass `CheckPrivilegedRoot`
+(at start and per request), rate-limits, and answers with a class only. On Windows the
+service fails closed with `elevate.ErrNotImplemented` until its named-pipe transport
+lands (backlog IDN-07).
 
 Cancelling the context stops the *wait*, never the apply: the elevated process owns
 the swap once it starts, and killing it mid-write is the half-installed state the
