@@ -285,7 +285,7 @@ func TestReleasePublishHonoursRateLimits(t *testing.T) {
 
 func TestReleasePublishFailsFastOnAForbiddenToken(t *testing.T) {
 	f := newFakeGitHub(t)
-	f.fail = func(key string, n int) (int, http.Header, string, bool) {
+	f.fail = func(string, int) (int, http.Header, string, bool) {
 		return http.StatusForbidden, http.Header{
 			"X-Accepted-Github-Permissions":          {"contents=read"},
 			"Github-Authentication-Token-Expiration": {"2026-09-14 09:00:00 UTC"},
@@ -308,7 +308,7 @@ func TestReleasePublishFailsFastOnAForbiddenToken(t *testing.T) {
 
 func TestReleasePublishGivesUpWithinItsBudget(t *testing.T) {
 	f := newFakeGitHub(t)
-	f.fail = func(key string, n int) (int, http.Header, string, bool) {
+	f.fail = func(string, int) (int, http.Header, string, bool) {
 		return http.StatusForbidden, http.Header{"Retry-After": {"3600"}}, `{"message":"secondary rate limit"}`, true
 	}
 	v1 := writeFlat(t, map[string]string{timestampAsset: "ts1"})

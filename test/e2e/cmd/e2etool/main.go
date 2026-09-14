@@ -30,6 +30,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -299,7 +300,11 @@ func shortSum(b []byte) string {
 // probe describes where a stale read came from: the object the redirect named
 // (its path, never the signed query) and the cache headers along the way.
 func probe(url string) string {
-	res, err := (&http.Client{Timeout: 30 * time.Second}).Get(url)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+	if err != nil {
+		return "probe: " + err.Error()
+	}
+	res, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
 	if err != nil {
 		return "probe: " + err.Error()
 	}

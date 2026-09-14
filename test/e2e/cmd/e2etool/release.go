@@ -16,6 +16,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -340,7 +341,7 @@ func (g *github) do(method, rawURL string, mk func() (io.Reader, int64, string, 
 				return 0, nil, err
 			}
 		}
-		req, err := http.NewRequest(method, rawURL, body)
+		req, err := http.NewRequestWithContext(context.Background(), method, rawURL, body)
 		if err != nil {
 			return 0, nil, err
 		}
