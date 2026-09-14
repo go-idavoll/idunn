@@ -1,5 +1,5 @@
 .PHONY: all build test cover vet fmt lint license license-fix vuln tidy \
-	e2e-local mutate mutate-survivors mutate-tools \
+	e2e-local mutate mutate-survivors mutate-tools repro \
 	redteam redteam-corpus redteam-fuzz redteam-agent test-keys baseline clean
 
 GO              ?= go
@@ -94,6 +94,12 @@ mutate-survivors:
 		echo ">> $$pkg"; \
 		gremlins unleash --config .gremlins.yaml -S lc $$pkg; \
 	done
+
+## reproducible builds: the shipped commands, built twice, must be byte-identical
+## (IDN-18). Two source directories, two empty build caches; see the script for
+## what is pinned and why. REPRO_TARGETS="windows/amd64" narrows it locally.
+repro:
+	scripts/repro.sh
 
 ## run the full adversarial suite (corpus + fuzzers)
 redteam: redteam-corpus redteam-fuzz

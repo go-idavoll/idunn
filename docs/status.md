@@ -139,6 +139,15 @@ downgrade preflight; a same-length tampered payload, refused for the hash with t
 bytes attested as served whole (so a 404 or truncation cannot pass it); and
 retention windows of three and two.
 
+## Supply chain
+
+| Property | State |
+|---|---|
+| Reproducible packer output | pinned by `internal/packer`'s golden test (IDN-01) |
+| Reproducible binaries | `scripts/repro.sh`: `cmd/installer`, `cmd/launcher`, `cmd/packer` for linux/windows/darwin × amd64/arm64, built twice from two directories with two empty caches, gated in CI (`reproducible builds`), digests and Go version in the job summary (IDN-18) |
+| Build provenance | `Release provenance` workflow on `v*` tags, `actions/attest-build-provenance`; binaries kept as a workflow artifact, no GitHub release is published yet (IDN-18, partly done) |
+| Trust anchor | embedded `root.json`, never fetched |
+
 ## Mutation score
 
 `make mutate` (gremlins v0.6.0, configured by `.gremlins.yaml`) over the lifecycle packages,

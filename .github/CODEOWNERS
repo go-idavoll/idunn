@@ -25,5 +25,7 @@
 /test/redteam/                      @go-idavoll/security
 /.github/                           @go-idavoll/security
 /Makefile                           @go-idavoll/security
+# The reproducible-build check behind CI and release provenance.
+/scripts/repro.sh                   @go-idavoll/security
 # The mutation-testing gate: lowering a threshold here weakens a check.
 /.gremlins.yaml                     @go-idavoll/security
