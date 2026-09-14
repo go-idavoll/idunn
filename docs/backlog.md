@@ -113,12 +113,13 @@ Still open:
   squatter while the helper is down cannot install anything — the helper is the one
   that re-verifies — but can answer `ok` for an apply that never happened (the updater
   reads the pointer back) and learn the caller's identity at identification level.
-- **macOS daemon registration**: the helper as an `SMAppService.daemon` (IDN-08
-  decision), with the audit token (`LOCAL_PEERTOKEN`) as the stronger peer identity.
+- ~~**macOS daemon registration**~~ — built under IDN-08: `SMAppService` registration,
+  the LaunchDaemon plist, and the audit token (`LOCAL_PEERTOKEN`) with an optional
+  code-signing `PeerRequirement` on top of the uid allow-list.
 - **fd hand-off** (`SCM_RIGHTS` / `DuplicateHandle` pulled by the helper) to avoid the
   second download; today the helper downloads again, into its privileged cache.
 
-### IDN-08 — POSIX interactive elevation (§14.2) — **Linux done; macOS decided: service mode**
+### IDN-08 — POSIX interactive elevation (§14.2) — **Linux done; macOS service mode built**
 **Linux** (§14.2.2): `NewInteractive` runs `pkexec <helper> apply --root R --channel
 C --version V` as an argument vector, with an empty environment, no controlling
 terminal and `/dev/null` streams. pkexec is taken from `/usr/bin/pkexec` or
@@ -136,11 +137,42 @@ Open on Linux: no e2e scenario drives a real polkit agent (CI has none); the hel
 runs with pkexec's scrubbed environment, so an environment-only proxy does not
 reach its download (IDN-13).
 
-**macOS**: no one-shot prompt. `NewInteractive` keeps failing closed with
-`ErrNotImplemented`, pointing at the service mode. The system-wide install is a
-launchd daemon registered with `SMAppService.daemon` (macOS 13+), approved once
-under Login Items — tracked with IDN-07. `AuthorizationExecuteWithPrivileges` and
-`SMJobSubmit` are not options. Whatever runs elevated is the IDN-28 helper.
+**Decided (maintainer): macOS uses `SMAppService`, as service mode** — the IDN-07
+helper registered as a LaunchDaemon — not a one-shot prompt. Sparkle's `SMJobSubmit`
+and `AuthorizationExecuteWithPrivileges` are not options.
+
+Done on macOS (design §14.2, "the macOS helper daemon"):
+- `elevate.DaemonStatus` / `RegisterDaemon` / `UnregisterDaemon` /
+  `OpenLoginItemsSettings` over `SMAppService`, with a strictly validated plist name
+  and `SMAppServiceStatus` mapped to `DaemonState` (unknown values fail closed).
+  `ErrNotImplemented` off darwin, in `CGO_ENABLED=0` builds, and below macOS 13.
+- `elevate.DaemonPlist`: a deterministic LaunchDaemon plist from validated fields
+  (`Label`, `BundleProgram` below `Contents/`, `ProgramArguments`,
+  `AssociatedBundleIdentifiers`, `RunAtLoad`, `KeepAlive{SuccessfulExit:false}`),
+  golden-tested; no environment, user, `Program` or extra keys can be expressed.
+- `HelperOptions.PeerRequirement`: the peer's audit token (`LOCAL_PEERTOKEN`) judged
+  with `SecCodeCopyGuestWithAttributes` + `SecCodeCheckValidity` against the
+  requirement, in addition to the uid. Refused at start where it cannot be checked
+  or does not compile. The decision (`admitPeer`) is pure Go and tested everywhere.
+- Socket location guidance for the daemon (`/Library/Application Support/<label>/`;
+  `/var/run` fails the unchanged ancestor rule), recorded by a darwin test.
+- CI: the macOS job asserts cgo is on, runs the bridge's tests by name, and the
+  `CGO_ENABLED=0` fail-closed tests.
+
+Still open on macOS:
+- The signed, notarized bundle that carries `Contents/Library/LaunchDaemons/<label>.plist`
+  and the helper (IDN-26, IDN-27), and an end-to-end run of registration, approval
+  and a real update through the daemon — which needs that bundle and a person to
+  approve, so it cannot run unattended in CI.
+- The host's approval UX: when to register, how to explain `DaemonRequiresApproval`,
+  and what the updater does while approval is outstanding.
+- Maintainer decisions: macOS 13 as the floor for system-wide installs; who signs the
+  helper (same Team ID as the app is assumed by the example requirement); whether
+  the shipped darwin commands, today `CGO_ENABLED=0` for reproducibility, need a cgo
+  build to register the daemon or whether only the host application does.
+- Unverified until the macOS runner reports: the positive real-peer test (the Go
+  linker's ad-hoc signature passing `SecCodeCheckValidity`) and the socket-parent
+  verdicts.
 
 ### IDN-09 — Monotonic known-good time floor (§14.7, T22) — **done**
 `core/timefloor` persists `max(build time, clock at the last successful refresh)` in

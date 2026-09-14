@@ -19,7 +19,6 @@ package elevate
 import (
 	"fmt"
 	"net"
-	"slices"
 )
 
 // checkPrincipals refuses the Windows half of the caller allow-list here.
@@ -39,26 +38,19 @@ func checkPrincipals(o HelperOptions) ([]string, error) {
 // attached to the connection. They are the kernel's answer about the process at
 // the other end, not a claim the caller made, which is what makes them worth
 // deciding on at all.
+//
+// The decision itself is admitPeer: the uid, and — where a PeerRequirement is
+// configured, which only a darwin cgo build accepts — the peer's code signature
+// as well.
 func authorizeConn(h *Helper, conn net.Conn) (string, error) {
 	p, err := peerOf(conn)
 	if err != nil {
 		return "", err
 	}
-	if !h.permits(p) {
-		return "", fmt.Errorf("%w: uid %d may not ask this helper", ErrDenied, p.uid)
+	if err := admitPeer(p.uid, h.uids, h.peerRequirement, func() error {
+		return h.checkPeerCode(conn, h.peerRequirement)
+	}); err != nil {
+		return "", err
 	}
 	return fmt.Sprintf("uid %d (pid %d)", p.uid, p.pid), nil
-}
-
-// permits reports whether this peer may ask at all.
-//
-// An empty list reads as "the superuser and nobody else". "Not configured" must
-// never read as "everyone": a helper deployed without its allowlist filled in is
-// a mistake, and the shape of that mistake should be a helper that answers no one
-// rather than one that answers anyone.
-func (h *Helper) permits(p peer) bool {
-	if len(h.uids) == 0 {
-		return p.uid == 0
-	}
-	return slices.Contains(h.uids, p.uid)
 }

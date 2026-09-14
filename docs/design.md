@@ -934,7 +934,8 @@ an external audit — not on the coverage number.
   process). A symlink swap of `current` is atomic via `rename()`. System- vs. per-user
   install (permissions) via policy/root.
 - **macOS:** `.dylib`, notarization/quarantine to consider; this system's signature is
-  orthogonal to Apple code signing.
+  orthogonal to Apple code signing. The privileged helper is an `SMAppService`
+  LaunchDaemon (macOS 13+); the only cgo in the repository is its bridge (§14.2).
 
 idunn's own signature is OS-independent and **in addition** to native code signing.
 
@@ -1126,8 +1127,8 @@ configured only through environment variables does not reach its download
 > root against `AllowedRoots` and `CheckPrivilegedRoot`, and only then the `Applier` —
 > `updater.RequestApplier`, which builds this side's own trust client per root with
 > `PrivilegedCacheDir` and calls `ApplyRequested`. The answer is `ok` or an error
-> class, never text. On macOS the helper is meant to run as an `SMAppService` daemon
-> (IDN-08). The read-only fd hand-off of §14.8 is not built: the helper downloads again
+> class, never text. On macOS the helper runs as an `SMAppService` daemon
+> (below, IDN-08). The read-only fd hand-off of §14.8 is not built: the helper downloads again
 > into its privileged cache.
 
 > **As built — `ElevationService` on Windows.** Same `Applier`, same wire protocol, same
@@ -1150,6 +1151,53 @@ configured only through environment variables does not reach its download
 > (`GetNamedPipeClientProcessId`) is logged, never decided on. `AllowedUIDs` on Windows
 > and `AllowedSIDs` on POSIX are refused at `NewHelper`. A client does not yet verify
 > that the pipe it reached belongs to SYSTEM (open in IDN-07).
+
+> **As built — the macOS helper daemon (IDN-08, service mode).** Decided: macOS uses
+> `SMAppService` (macOS 13+), not a one-shot prompt; `SMJobSubmit` and
+> `AuthorizationExecuteWithPrivileges` are not used. The helper is the same
+> `elevate.NewHelper` as on Linux, registered as a LaunchDaemon of the host's bundle.
+>
+> - **Registration** — `elevate.DaemonStatus`, `RegisterDaemon`, `UnregisterDaemon`
+>   take a plist *name* (`<reverse-DNS>.plist`, no separators) and call
+>   `+[SMAppService daemonServiceWithPlistName:]` with `status`,
+>   `registerAndReturnError:`, `unregisterAndReturnError:`; `OpenLoginItemsSettings`
+>   calls `+openSystemSettingsLoginItems`. `SMAppServiceStatus` maps to
+>   `DaemonNotRegistered`/`Enabled`/`RequiresApproval`/`NotFound`; any other value is
+>   `DaemonStateUnknown` and an error. Registration is not approval: a host checks
+>   the status afterwards and, on `DaemonRequiresApproval`, explains and opens Login
+>   Items. Nothing approves on the user's behalf.
+> - **The plist** — `elevate.DaemonPlist(DaemonConfig)` renders it deterministically
+>   from validated fields only: `Label`, `BundleProgram` (a plain relative path below
+>   `Contents/`), `ProgramArguments` (argv[0] the program's base name, then arguments
+>   in `[A-Za-z0-9 ._/=:@+,-]`, no `..` component), `AssociatedBundleIdentifiers` (at
+>   least one), `RunAtLoad` and `KeepAlive = {SuccessfulExit: false}`. The last two
+>   because the helper binds its own socket, so launchd has nothing to activate it
+>   on; a crash restarts it, a clean stop does not. There is no way to express
+>   `EnvironmentVariables`, `UserName`, `Program`, `WorkingDirectory`, `MachServices`
+>   or `Sockets`. It ships at `Contents/Library/LaunchDaemons/<Label>.plist`.
+> - **Peer identity** — the uid from `LOCAL_PEERCRED` as before, and, when
+>   `HelperOptions.PeerRequirement` is set, the connecting process's code signature
+>   too: the audit token from `getsockopt(LOCAL_PEERTOKEN)` (it carries the pid
+>   version, so it names that process and not a successor on the same pid),
+>   `SecCodeCopyGuestWithAttributes` with `kSecGuestAttributeAudit`, and
+>   `SecCodeCheckValidity` against `SecRequirementCreateWithString`. The decision is
+>   `admitPeer`, plain Go: uid first and alone, then the requirement; both must pass.
+>   A requirement that does not compile stops the helper at start; one configured on
+>   any build without Security.framework (not darwin, or `CGO_ENABLED=0`) is
+>   `ErrNotImplemented` at start, never silently ignored.
+> - **Socket location** — `checkSocketDir` is unchanged. The daemon creates a
+>   directory of its own, root-owned 0755, below a tree only root can write, e.g.
+>   `/Library/Application Support/<label>/helper.sock`. `/var/run` is usually
+>   `root:daemon 0775` on macOS and fails the ancestor rule; a darwin test records
+>   what the CI runner has.
+> - **cgo** — the whole surface is `core/elevate/framework_darwin.go`
+>   (`darwin && cgo`; Foundation, ServiceManagement, Security, CoreFoundation).
+>   Everything else in this list is pure Go and tested on every OS. The reproducible
+>   release builds are `CGO_ENABLED=0` and therefore have neither registration nor
+>   the code-signing check; a host that needs them builds with cgo on macOS.
+>
+> Not built: the signed and notarized bundle that carries the plist and helper
+> (IDN-26/27), and the host's approval UX. Registration cannot be tested unattended.
 
 ### 14.3 Graceful shutdown & external file locks
 

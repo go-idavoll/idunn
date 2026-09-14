@@ -67,6 +67,15 @@ type HelperOptions struct {
 	// helper's own user and be writable by nobody else, and so must every
 	// directory above it (see listenLocal).
 	//
+	// For a launchd daemon on macOS, give the socket a directory of its own that
+	// the daemon creates as root with mode 0755, below a root-owned tree nobody
+	// else can write — for example
+	// "/Library/Application Support/<label>/helper.sock". /var/run is the
+	// conventional place, but /private/var/run is usually root:daemon 0775 on
+	// macOS, which fails the ancestor rule; the rule is not relaxed for it (the
+	// darwin tests record what the CI runner actually has). The path must fit in
+	// 103 bytes.
+	//
 	// On Windows it is a named pipe, `\\.\pipe\<name>`, where name is 1 to 128
 	// letters, digits, '.', '_' or '-', beginning and ending with a letter or
 	// digit. The helper creates the pipe with a security descriptor it builds
@@ -116,6 +125,23 @@ type HelperOptions struct {
 	// Windows only. On POSIX a non-empty AllowedSIDs is refused.
 	AllowedSIDs []string
 
+	// PeerRequirement, if set, is a code-signing requirement in Apple's
+	// requirement language that the connecting process must also satisfy, for
+	// example
+	//
+	//	anchor apple generic and identifier "com.acme.app" and certificate leaf[subject.OU] = "TEAMID"
+	//
+	// It is checked after the uid and in addition to it — never instead: a peer
+	// must be an allowed user AND running code that meets the requirement. The
+	// process is identified by its audit token (LOCAL_PEERTOKEN), not by pid, and
+	// judged with SecCodeCopyGuestWithAttributes and SecCodeCheckValidity.
+	//
+	// Empty means the uid check alone. It needs macOS and a build with cgo; in any
+	// other build a non-empty requirement makes NewHelper fail with
+	// ErrNotImplemented rather than start a helper weaker than configured. A
+	// requirement that does not compile is refused at start, too.
+	PeerRequirement string
+
 	// MinInterval is the shortest gap between two accepted requests. Zero
 	// selects DefaultMinInterval.
 	MinInterval time.Duration
@@ -143,6 +169,9 @@ type Helper struct {
 	now       func() time.Time
 	onEvent   func(string)
 	checkRoot func(string) error
+
+	peerRequirement string
+	checkPeerCode   func(conn net.Conn, requirement string) error
 
 	mu   sync.Mutex
 	last time.Time
@@ -174,6 +203,17 @@ func newHelper(o HelperOptions, checkRoot func(string) error) (*Helper, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Judged before the roots, so a helper told to check code signatures where
+	// it cannot is refused for exactly that.
+	if o.PeerRequirement != "" {
+		// Fails always without Security.framework (peercode_other.go), which
+		// staticcheck can prove per build and not per program.
+		//
+		//nolint:staticcheck // SA4023: true per platform, not per program.
+		if err := checkPeerRequirement(o.PeerRequirement); err != nil {
+			return nil, err
+		}
+	}
 	if len(o.AllowedRoots) == 0 {
 		return nil, fmt.Errorf("%w: no allowed install roots; a helper that would write anywhere is a local root exploit", ErrRequest)
 	}
@@ -194,6 +234,9 @@ func newHelper(o HelperOptions, checkRoot func(string) error) (*Helper, error) {
 		now:       o.Now,
 		onEvent:   o.OnEvent,
 		checkRoot: checkRoot,
+
+		peerRequirement: o.PeerRequirement,
+		checkPeerCode:   peerCodeCheck,
 	}
 	if h.interval <= 0 {
 		h.interval = DefaultMinInterval

@@ -262,6 +262,20 @@ platform's allow-list is refused. On Windows the helper builds the pipe's DACL i
 (SYSTEM and Administrators full; the listed accounts read/write only), refuses to start
 if the pipe name is already taken, and refuses remote (SMB) clients (backlog IDN-07).
 
+On macOS that daemon is an `SMAppService` LaunchDaemon of the host's bundle (IDN-08).
+The host ships `elevate.DaemonPlist(DaemonConfig{Label, BundleProgram,
+AssociatedBundleIdentifiers, Arguments})` at
+`Contents/Library/LaunchDaemons/<Label>.plist`, calls `elevate.RegisterDaemon("<Label>.plist")`
+and then `elevate.DaemonStatus`; on `DaemonRequiresApproval` it tells the user why and
+offers `elevate.OpenLoginItemsSettings()`. Until the status is `DaemonEnabled` there
+is no helper to ask. Give the socket a directory the daemon creates as root, mode
+0755, e.g. `/Library/Application Support/<Label>/helper.sock` — `/var/run` fails the
+socket-directory check. Set `HelperOptions.PeerRequirement` (for example
+`anchor apple generic and identifier "com.acme.app" and certificate leaf[subject.OU] = "TEAMID"`)
+to require the caller's code signature as well as its uid. All of this needs a darwin
+build with cgo and macOS 13; elsewhere the calls return `ErrNotImplemented` and a
+non-empty `PeerRequirement` stops `NewHelper`.
+
 Cancelling the context stops the *wait*, never the apply: the elevated process owns
 the swap once it starts, and killing it mid-write is the half-installed state the
 journal exists to prevent.

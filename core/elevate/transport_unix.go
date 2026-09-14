@@ -133,7 +133,17 @@ func checkSocketDir(dir string) error {
 			ErrRequest, real, st.mode.Perm())
 	}
 
-	for p := filepath.Dir(real); ; p = filepath.Dir(p) {
+	return checkSocketAncestors(filepath.Dir(real), euid)
+}
+
+// checkSocketAncestors applies the rule for the directories above the socket's
+// own to start and everything above it: owned by root or euid, and writable by
+// nobody else unless sticky. start must already be free of symlinks.
+//
+// It is split out of checkSocketDir so a platform's recommended socket location
+// can be judged by the same rule, in a test, without running as root.
+func checkSocketAncestors(start string, euid int64) error {
+	for p := start; ; p = filepath.Dir(p) {
 		a, err := statOwner(p)
 		if err != nil {
 			return err

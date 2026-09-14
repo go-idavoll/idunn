@@ -39,7 +39,7 @@ func (c *countingApplier) Apply(context.Context, Request) error {
 	return nil
 }
 
-func startHelper(t *testing.T, a Applier, checkRoot func(string) error) string {
+func startHelper(t *testing.T, a Applier, checkRoot func(string) error, adjust ...func(*Helper)) string {
 	t.Helper()
 	dir, err := os.MkdirTemp("/tmp", "idn")
 	if err != nil {
@@ -57,6 +57,9 @@ func startHelper(t *testing.T, a Applier, checkRoot func(string) error) string {
 	}, checkRoot)
 	if err != nil {
 		t.Fatalf("newHelper: %v", err)
+	}
+	for _, f := range adjust {
+		f(h)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
