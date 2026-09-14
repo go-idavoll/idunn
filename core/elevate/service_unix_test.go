@@ -78,7 +78,7 @@ func helper(t *testing.T, adjust func(*elevate.HelperOptions)) (*recorder, strin
 	o := elevate.HelperOptions{
 		Endpoint:     endpoint,
 		Applier:      rec,
-		AllowedRoots: []string{"/opt/acme"},
+		AllowedRoots: []string{"/usr/idunn-test-acme"},
 		AllowedUIDs:  []uint32{uint32(os.Getuid())}, //nolint:gosec // a uid fits.
 		MinInterval:  time.Nanosecond,
 	}
@@ -124,14 +124,14 @@ func TestTheHelperAppliesAPermittedRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := el.Apply(t.Context(), "/opt/acme", descriptor("stable", "1.3.0")); err != nil {
+	if err := el.Apply(t.Context(), "/usr/idunn-test-acme", descriptor("stable", "1.3.0")); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 	calls := rec.calls()
 	if len(calls) != 1 {
 		t.Fatalf("the applier ran %d times, want 1", len(calls))
 	}
-	if got := calls[0]; got.Root != "/opt/acme" || got.Channel != "stable" || got.Version != "1.3.0" {
+	if got := calls[0]; got.Root != "/usr/idunn-test-acme" || got.Channel != "stable" || got.Version != "1.3.0" {
 		t.Errorf("the applier was asked for %+v", got)
 	}
 }
@@ -189,7 +189,7 @@ func TestAnUnpermittedUIDIsDenied(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = el.Apply(t.Context(), "/opt/acme", descriptor("stable", "1.3.0"))
+	err = el.Apply(t.Context(), "/usr/idunn-test-acme", descriptor("stable", "1.3.0"))
 	if !errors.Is(err, elevate.ErrDenied) {
 		t.Fatalf("VULNERABILITY: err = %v, want ErrDenied", err)
 	}
@@ -210,7 +210,7 @@ func TestAnEmptyUIDListMeansSuperuserOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = el.Apply(t.Context(), "/opt/acme", descriptor("stable", "1.3.0"))
+	err = el.Apply(t.Context(), "/usr/idunn-test-acme", descriptor("stable", "1.3.0"))
 	if !errors.Is(err, elevate.ErrDenied) {
 		t.Fatalf("VULNERABILITY: an unconfigured helper answered a non-root caller: %v", err)
 	}
@@ -234,7 +234,7 @@ func TestAVersionOutsideTheGrammarNeverLeavesTheCaller(t *testing.T) {
 		"../../../etc",
 		"",
 	} {
-		err := el.Apply(t.Context(), "/opt/acme", descriptor("stable", version))
+		err := el.Apply(t.Context(), "/usr/idunn-test-acme", descriptor("stable", version))
 		if !errors.Is(err, elevate.ErrRequest) {
 			t.Errorf("version %q: err = %v, want ErrRequest", version, err)
 		}
@@ -253,7 +253,7 @@ func TestARootOutsideTheGrammarNeverLeavesTheCaller(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, root := range []string{"opt/acme", "/opt/../etc", "/opt/acme/", "", "//server/share"} {
+	for _, root := range []string{"opt/acme", "/opt/../etc", "/usr/idunn-test-acme/", "", "//server/share"} {
 		err := el.Apply(t.Context(), root, descriptor("stable", "1.3.0"))
 		if !errors.Is(err, elevate.ErrRequest) && !errors.Is(err, elevate.ErrDenied) {
 			t.Errorf("root %q: err = %v, want a refusal", root, err)
@@ -272,12 +272,12 @@ func TestRawGarbageIsRefused(t *testing.T) {
 	for _, payload := range []string{
 		"",
 		"GET / HTTP/1.1\r\n\r\n",
-		"idunn-apply/2\nroot=/opt/acme\nchannel=stable\nversion=1.3.0\n\n",
-		"idunn-apply/1\nchannel=stable\nroot=/opt/acme\nversion=1.3.0\n\n",
-		"idunn-apply/1\nroot=/opt/acme\nchannel=stable\nversion=1.3.0\nextra=1\n\n",
-		"idunn-apply/1\nroot=/opt/acme\nroot=/etc\nchannel=stable\nversion=1.3.0\n\n",
-		"idunn-apply/1\r\nroot=/opt/acme\r\nchannel=stable\r\nversion=1.3.0\r\n\r\n",
-		"idunn-apply/1\nroot=/opt/acme\nchannel=stable\nversion=1.3.0\n" + strings.Repeat("A", 8192),
+		"idunn-apply/2\nroot=/usr/idunn-test-acme\nchannel=stable\nversion=1.3.0\n\n",
+		"idunn-apply/1\nchannel=stable\nroot=/usr/idunn-test-acme\nversion=1.3.0\n\n",
+		"idunn-apply/1\nroot=/usr/idunn-test-acme\nchannel=stable\nversion=1.3.0\nextra=1\n\n",
+		"idunn-apply/1\nroot=/usr/idunn-test-acme\nroot=/etc\nchannel=stable\nversion=1.3.0\n\n",
+		"idunn-apply/1\r\nroot=/usr/idunn-test-acme\r\nchannel=stable\r\nversion=1.3.0\r\n\r\n",
+		"idunn-apply/1\nroot=/usr/idunn-test-acme\nchannel=stable\nversion=1.3.0\n" + strings.Repeat("A", 8192),
 	} {
 		// A caller that oversteps the protocol may not get to read the answer:
 		// the helper writes its refusal and closes, and a socket still holding
@@ -302,10 +302,10 @@ func TestASecondRequestInsideTheIntervalIsDenied(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := el.Apply(t.Context(), "/opt/acme", descriptor("stable", "1.3.0")); err != nil {
+	if err := el.Apply(t.Context(), "/usr/idunn-test-acme", descriptor("stable", "1.3.0")); err != nil {
 		t.Fatalf("the first apply: %v", err)
 	}
-	err = el.Apply(t.Context(), "/opt/acme", descriptor("stable", "1.4.0"))
+	err = el.Apply(t.Context(), "/usr/idunn-test-acme", descriptor("stable", "1.4.0"))
 	if !errors.Is(err, elevate.ErrDenied) {
 		t.Fatalf("err = %v, want ErrDenied", err)
 	}
@@ -319,17 +319,17 @@ func TestASecondRequestInsideTheIntervalIsDenied(t *testing.T) {
 // process may not be able to read (§11.3 T20).
 func TestAFailedApplyReportsAClassAndNoDetail(t *testing.T) {
 	rec, endpoint := helper(t, nil)
-	rec.err = errors.New("open /opt/acme/.updater/journal: permission denied")
+	rec.err = errors.New("open /usr/idunn-test-acme/.updater/journal: permission denied")
 
 	el, err := elevate.NewService(elevate.ServiceOptions{Endpoint: endpoint})
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = el.Apply(t.Context(), "/opt/acme", descriptor("stable", "1.3.0"))
+	err = el.Apply(t.Context(), "/usr/idunn-test-acme", descriptor("stable", "1.3.0"))
 	if !errors.Is(err, elevate.ErrHelper) {
 		t.Fatalf("err = %v, want ErrHelper", err)
 	}
-	if strings.Contains(err.Error(), "/opt/acme") || strings.Contains(err.Error(), "permission denied") {
+	if strings.Contains(err.Error(), "/usr/idunn-test-acme") || strings.Contains(err.Error(), "permission denied") {
 		t.Errorf("the helper described its own filesystem to the caller: %v", err)
 	}
 }
@@ -339,9 +339,9 @@ func TestAFailedApplyReportsAClassAndNoDetail(t *testing.T) {
 // reason into its answer. What crosses back is exactly the class.
 func TestAFailedApplyPutsNothingButTheClassOnTheWire(t *testing.T) {
 	rec, endpoint := helper(t, nil)
-	rec.err = errors.New("open /opt/acme/.updater/journal: permission denied")
+	rec.err = errors.New("open /usr/idunn-test-acme/.updater/journal: permission denied")
 
-	answer := speak(t, endpoint, "idunn-apply/1\nroot=/opt/acme\nchannel=stable\nversion=1.3.0\n\n")
+	answer := speak(t, endpoint, "idunn-apply/1\nroot=/usr/idunn-test-acme\nchannel=stable\nversion=1.3.0\n\n")
 	if answer != "error apply" {
 		t.Fatalf("the helper answered %q, want exactly %q", answer, "error apply")
 	}
@@ -360,7 +360,7 @@ func TestAWorldWritableSocketDirectoryIsRefused(t *testing.T) {
 	_, err := elevate.NewHelper(elevate.HelperOptions{
 		Endpoint:     filepath.Join(dir, "helper.sock"),
 		Applier:      &recorder{},
-		AllowedRoots: []string{"/opt/acme"},
+		AllowedRoots: []string{"/usr/idunn-test-acme"},
 	})
 	if err == nil {
 		t.Fatal("a helper bound a socket in a directory any local user can write")
@@ -381,7 +381,7 @@ func TestAnEndpointThatIsNotASocketIsRefused(t *testing.T) {
 	_, err := elevate.NewHelper(elevate.HelperOptions{
 		Endpoint:     endpoint,
 		Applier:      &recorder{},
-		AllowedRoots: []string{"/opt/acme"},
+		AllowedRoots: []string{"/usr/idunn-test-acme"},
 	})
 	if err == nil {
 		t.Fatal("the helper took over a path that was not its socket")
@@ -443,7 +443,7 @@ func TestAnEndpointTooLongForTheKernelIsRefused(t *testing.T) {
 	_, err := elevate.NewHelper(elevate.HelperOptions{
 		Endpoint:     filepath.Join(socketDir(t), strings.Repeat("s", 200)+".sock"),
 		Applier:      &recorder{},
-		AllowedRoots: []string{"/opt/acme"},
+		AllowedRoots: []string{"/usr/idunn-test-acme"},
 	})
 	if !errors.Is(err, elevate.ErrRequest) || !strings.Contains(err.Error(), "longer than") {
 		t.Fatalf("err = %v, want a refusal naming the length", err)
@@ -485,7 +485,7 @@ func TestASocketDirectoryUnderAWritableParentIsRefused(t *testing.T) {
 	_, err := elevate.NewHelper(elevate.HelperOptions{
 		Endpoint:     filepath.Join(dir, "helper.sock"),
 		Applier:      &recorder{},
-		AllowedRoots: []string{"/opt/acme"},
+		AllowedRoots: []string{"/usr/idunn-test-acme"},
 	})
 	if !errors.Is(err, elevate.ErrRequest) || !strings.Contains(err.Error(), "above the socket") {
 		t.Fatalf("err = %v, want a refusal of the writable parent", err)
@@ -516,7 +516,7 @@ func TestCancellingTheCallerDoesNotStopTheApply(t *testing.T) {
 	h, err := elevate.NewHelper(elevate.HelperOptions{
 		Endpoint:     endpoint,
 		Applier:      b,
-		AllowedRoots: []string{"/opt/acme"},
+		AllowedRoots: []string{"/usr/idunn-test-acme"},
 		AllowedUIDs:  []uint32{uint32(os.Getuid())}, //nolint:gosec // a uid fits.
 		MinInterval:  time.Nanosecond,
 	})
@@ -541,7 +541,7 @@ func TestCancellingTheCallerDoesNotStopTheApply(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
-	go func() { done <- el.Apply(ctx, "/opt/acme", descriptor("stable", "1.3.0")) }()
+	go func() { done <- el.Apply(ctx, "/usr/idunn-test-acme", descriptor("stable", "1.3.0")) }()
 
 	select {
 	case <-b.started:

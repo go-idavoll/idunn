@@ -51,7 +51,7 @@ func startHelper(t *testing.T, a Applier, checkRoot func(string) error) string {
 	h, err := newHelper(HelperOptions{
 		Endpoint:     endpoint,
 		Applier:      a,
-		AllowedRoots: []string{"/opt/acme"},
+		AllowedRoots: []string{"/usr/idunn-test-acme"},
 		AllowedUIDs:  []uint32{uint32(os.Getuid())}, //nolint:gosec // a uid fits.
 		MinInterval:  time.Nanosecond,
 	}, checkRoot)
@@ -102,11 +102,11 @@ func TestARootThatBecameUnsafeAfterStartIsDenied(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := el.Apply(t.Context(), "/opt/acme", stableDescriptor("1.3.0")); err != nil {
+	if err := el.Apply(t.Context(), "/usr/idunn-test-acme", stableDescriptor("1.3.0")); err != nil {
 		t.Fatalf("the control apply: %v", err)
 	}
 	unsafe.Store(true)
-	err = el.Apply(t.Context(), "/opt/acme", stableDescriptor("1.4.0"))
+	err = el.Apply(t.Context(), "/usr/idunn-test-acme", stableDescriptor("1.4.0"))
 	if !errors.Is(err, ErrDenied) {
 		t.Fatalf("VULNERABILITY: err = %v, want ErrDenied", err)
 	}
@@ -129,7 +129,7 @@ func TestAnApplyLongerThanTheExchangeTimeoutStillAnswers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := el.Apply(t.Context(), "/opt/acme", stableDescriptor("1.3.0")); err != nil {
+	if err := el.Apply(t.Context(), "/usr/idunn-test-acme", stableDescriptor("1.3.0")); err != nil {
 		t.Fatalf("Apply = %v, want the answer after the long apply", err)
 	}
 }
