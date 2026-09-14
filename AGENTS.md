@@ -18,6 +18,10 @@ whose pull request must earn trust. See [Agent trust model](#agent-trust-model).
 2. **Never roll your own trust.** go-tuf v2 is *the* trust core. Do not add, wrap, or
    shortcut a parallel signature/hash/expiry/rollback check. If verification feels
    missing, it belongs in go-tuf's workflow, not in a hand-written path next to it.
+   *One carve-out:* a platform's own launch check (Apple code signing, Authenticode)
+   may run **after** TUF accepted the bytes, as an additional refusal. It answers
+   "will the OS run this", never "may I trust this"; it can only narrow what gets
+   installed, never widen it, and nothing TUF refused may reach it (IDN-27).
 3. **Packages carry data, never executable update logic.** Migration, checks, and UI
    are compiled host code (hooks), not content pulled from the network. Do not add a
    mechanism that downloads and runs code.
