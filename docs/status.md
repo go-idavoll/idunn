@@ -30,7 +30,7 @@ piece of the section is missing; **open** — contract only, or nothing.
 | §12 | Test concept | **partial** — see coverage below; mutation testing gated in CI (IDN-16, [score](#mutation-score)); one fuzz target missing |
 | §13 | Cross-platform specifics | **partial** — layout, elevation and the launcher hand-over are per-OS; no `MoveFileEx` self-update of the launcher itself (IDN-17) |
 | §14.1 | GC / retention | **done** — `stage.GC`, soft-fails on locked dirs |
-| §14.2 | Elevation | **partial** — Windows `ElevationInteractive` done for installs and updates: the unprivileged side writes nothing under the root, the helper (`cmd/installer apply`, or a host verb on `Updater.ApplyRequested`) re-resolves and runs the transaction; tested end to end through real UAC prompts (`elevated` e2e scenario). `ElevationService` fails closed everywhere; POSIX interactive (`pkexec`, Authorization Services) not built; the helper refuses a root anyone but an administrator controls (IDN-22); recovery and deferral in a system root are open (IDN-23) |
+| §14.2 | Elevation | **partial** — Windows `ElevationInteractive` done for installs and updates: the unprivileged side writes nothing under the root, the helper (`cmd/installer apply`, or a host verb on `Updater.ApplyRequested`) re-resolves and runs the transaction; tested end to end through real UAC prompts (`elevated` e2e scenario). Linux `ElevationInteractive` via `pkexec` (fixed pkexec path, root-only helper, argv, empty environment; IDN-08), unit-tested on every OS and against a stand-in pkexec on Linux, with no e2e scenario through a real polkit agent; macOS has no prompt by decision (service mode, IDN-07). `ElevationService` fails closed everywhere; the helper refuses a root anyone but an administrator controls (IDN-22); recovery and deferral in a system root are open (IDN-23) |
 | §14.3 | Quiesce, app lock, `OnBusy` | **done** — lock + coordinator + all three policies; `BusyDeferToRestart` keeps the staged tree in a resting `DEFERRED` journal state and the launcher finishes it at the next start. `BusyAbort` is the zero value and is not promoted; deferral is a recommendation to the host, which the design now says in those words (IDN-21) |
 | §14.4 | Enterprise proxy / CA | **partial** — system trust store, `ExtraCAs`, env proxy, resumable ranged downloads with offset checks, proxy authentication, mTLS client certificates, and a `ProxyResolver` seam; the OS-native resolvers (PAC/WPAD, WinHTTP, `SCDynamicStore`, GSettings) are the remainder of IDN-13 |
 | §14.5 | Telemetry + staged rollout | **done** — `Reporter` with a closed error-class vocabulary; local rollout bucketing |
@@ -53,12 +53,14 @@ before an apply, and raised by every successful refresh).
 Not yet enforced:
 
 - **T16, T23** (LPE via the helper, cache TOCTOU) — the helper service does not exist;
-  `NewService` fails closed. The Windows interactive path enforces its half: three
+  `NewService` fails closed. The Windows and Linux interactive paths enforce their half: three
   validated scalars cross the boundary, nothing else; the helper validates them
   again, resolves the channel head itself and refuses any other version, and keeps
   its TUF cache inside the root rather than in the user's. It refuses a
   caller-chosen root that anyone but an administrator could change — owner, ACL,
-  inheritable ACEs, reparse points, drive kind (IDN-22).
+  inheritable ACEs, reparse points, drive kind (IDN-22). On Linux the helper binary
+  itself is vetted too: pkexec runs it only if it and every directory above it are
+  root-owned and writable by nobody else (IDN-08).
 - **T18** (enterprise DPI) — tolerated by design, and the availability half now has
   resumable downloads, proxy authentication and mTLS (IDN-13). OS-native proxy
   resolution including PAC is still missing, so a machine whose proxy is configured

@@ -18,7 +18,6 @@ package elevate
 
 import (
 	"fmt"
-	"io/fs"
 	"os"
 	"syscall"
 )
@@ -44,29 +43,4 @@ func checkObject(path string, r role) error {
 		return fmt.Errorf("%w: cannot read the owner of %q", ErrUnsafeRoot, path)
 	}
 	return judgeMode(path, st.Mode(), uint64(sys.Uid), uint64(sys.Gid), r)
-}
-
-// judgeMode is the decision, apart from the stat that feeds it.
-func judgeMode(path string, mode fs.FileMode, uid, gid uint64, r role) error {
-	if mode&fs.ModeSymlink != 0 {
-		return fmt.Errorf("%w: %q is a symbolic link", ErrUnsafeRoot, path)
-	}
-	if uid != 0 {
-		return fmt.Errorf("%w: %q is owned by uid %d", ErrUnsafeRoot, path, uid)
-	}
-	groupWrite := mode.Perm()&0o020 != 0 && gid != 0
-	otherWrite := mode.Perm()&0o002 != 0
-	switch r {
-	case roleAncestor, roleParentOfNewRoot:
-		// Write access to a directory is the right to rename its entries, and
-		// the sticky bit is what restricts that to their owners.
-		if (groupWrite || otherWrite) && mode&fs.ModeSticky == 0 {
-			return fmt.Errorf("%w: %q is writable by others without the sticky bit (%s)", ErrUnsafeRoot, path, mode)
-		}
-	case roleContainer:
-		if groupWrite || otherWrite {
-			return fmt.Errorf("%w: %q is writable by others (%s)", ErrUnsafeRoot, path, mode)
-		}
-	}
-	return nil
 }

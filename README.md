@@ -200,7 +200,7 @@ What exists today:
 | TUF trust client and resolve (`core/trust`, `core/fetch`) | implemented, unit-tested and adversarially tested |
 | Adversarial corpus (`test/redteam`) | 28 cases, gates every PR |
 | Apply path: staging, journal, crash recovery, hooks, GC (`core/stage`, `core/txn`, `core/updater`, `core/installer`) | implemented, tested; a migration floor is walked through the releases in between rather than refused |
-| Elevation (`core/elevate`) | Windows `ElevationInteractive` implemented; privileged helper service and POSIX prompts fail closed |
+| Elevation (`core/elevate`) | `ElevationInteractive` implemented on Windows (UAC) and Linux (pkexec); macOS uses the service mode by decision; the privileged helper service fails closed |
 | Clock rollback defence (`core/timefloor`) | implemented: known-good time floor, checked before every refresh and apply |
 | Delta stage 1 (content-addressed reuse) | go-tuf cache reuse plus verified local reuse from `current`/retained versions; the copy is not yet a reflink/hardlink |
 | Packer (`cmd/packer`, `internal/packer`) | publishes a delegated, reproducible TUF repository, with opt-in retention |

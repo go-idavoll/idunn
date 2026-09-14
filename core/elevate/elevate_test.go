@@ -211,11 +211,11 @@ func TestNewServiceIsNotImplemented(t *testing.T) {
 // Everywhere the prompt is not built, elevation must refuse at construction. An
 // updater that cannot elevate has to fail before it starts an apply, not
 // discover it mid-swap.
-func TestNewInteractiveIsNotImplementedOffWindows(t *testing.T) {
+func TestNewInteractiveIsNotImplementedWhereNoPromptIsBuilt(t *testing.T) {
 	t.Parallel()
 
-	if runtime.GOOS == "windows" {
-		t.Skip("Windows has an implementation; see the windows-only tests")
+	if runtime.GOOS == "windows" || runtime.GOOS == "linux" || runtime.GOOS == "android" {
+		t.Skip("this platform has an implementation; see its own tests")
 	}
 	el, err := elevate.NewInteractive(elevate.InteractiveOptions{})
 	if !errors.Is(err, elevate.ErrNotImplemented) {

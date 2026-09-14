@@ -232,8 +232,22 @@ Available today: Windows `ElevationInteractive` (`ShellExecuteEx` verb `runas`,
 `test/e2e/cmd/e2eapp` is a host wired this way (`apply` verb), and the `elevated`
 e2e scenario installs and updates it into an administrators-only root through real
 UAC prompts.
-`ElevationService` and POSIX interactive elevation fail closed with
-`elevate.ErrNotImplemented` — see `design.md` §14.2.1 and backlog IDN-07/IDN-08.
+
+Linux `ElevationInteractive` runs the helper through `pkexec` with an argument
+vector and an empty environment (`design.md` §14.2.2). pkexec is taken from
+`/usr/bin` or `/bin` only, never `PATH`. The helper — `HelperPath`, or the running
+executable — must resolve to a file that it and every directory above it are
+root-owned and writable by nobody else; anything else is `elevate.ErrRequest` at
+construction. pkexec status 126 (dialog dismissed) is `elevate.ErrDeclined`, 127
+(no polkit agent, failed or refused authentication) and any other non-zero status
+are `elevate.ErrHelper`; a helper must not exit 126 or 127 itself. An example
+polkit action is `docs/examples/org.idunn.apply.policy`. The helper sees pkexec's
+scrubbed environment, so proxy variables do not reach it.
+
+macOS has no interactive elevation by decision: `NewInteractive` fails with
+`elevate.ErrNotImplemented`, and a system-wide install there is the service mode
+(`SMAppService`). `ElevationService` fails closed with `elevate.ErrNotImplemented`
+everywhere — see backlog IDN-07/IDN-08.
 
 Cancelling the context stops the *wait*, never the apply: the elevated process owns
 the swap once it starts, and killing it mid-write is the half-installed state the

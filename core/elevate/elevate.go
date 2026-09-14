@@ -88,12 +88,19 @@ type InteractiveOptions struct {
 	// user can plant a binary and have it run for them — the classic elevation
 	// LPE. idunn cannot establish that property at update time (the ACL can be
 	// changed between the check and the launch), so it is an install-time
-	// guarantee. What is enforced here is the cheap half: an absolute, local,
-	// existing, regular file (see checkHelperPath).
+	// guarantee. What is enforced on Windows is the cheap half: an absolute,
+	// local, existing, regular file (see checkHelperPath).
+	//
+	// On Linux both halves are enforced, because there the check does not race:
+	// the helper, with every symlink resolved, and every directory above it must
+	// be owned by root and writable by nobody else (see checkPkexecHelper). A
+	// binary run from a user's own directory is refused, and the resolved path is
+	// what pkexec runs.
 	HelperPath string
 
 	// ShowWindow shows the helper's own window. The default hides it; the UAC
 	// consent dialog is shown by Windows either way and is not suppressed by this.
+	// It has no effect on Linux.
 	ShowWindow bool
 }
 
@@ -163,7 +170,9 @@ func nearestExistingDir(p string) (string, error) {
 }
 
 // NewInteractive returns an Elevator that requests an on-demand privilege prompt
-// (UAC on Windows, polkit/authorization services elsewhere).
+// (UAC on Windows, pkexec/polkit on Linux). On macOS it fails with
+// ErrNotImplemented by design: a system-wide install there uses the service
+// mode (NewService).
 //
 // The returned Elevator starts the helper and waits for it. It does not report
 // progress: the privileged process owns the apply from the moment it starts, and
