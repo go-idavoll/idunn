@@ -41,10 +41,15 @@ transaction: no trust client, no filesystem, no root, no channel, `RetainVersion
 below 2 (that would leave no rollback target), a negative `QuiesceTimeout`, an
 unknown `OnBusy` or elevation mode, or an elevated mode with no `Elevator`.
 
-`Policy.EnforceExpiry` is forced to `true` whatever the caller passed. Go cannot tell
-"left unset" from "deliberately false", and the unsafe reading must not win by
-accident — TUF metadata expiry is the freeze defence and nothing above go-tuf may
-relax it.
+There is no switch for metadata expiry, and there is not going to be one. It is
+checked inside go-tuf during `Refresh`, which runs before this package decides
+anything, and the freeze defence *is* that check — a flag that could relax it would
+be a way to ask for the attack. An earlier `EnforceExpiry` existed and was always
+forced to `true`; it was removed rather than kept as decoration, because a knob that
+cannot be turned is a knob somebody will eventually believe in (IDN-15).
+`TestExpiredMetadataIsRefusedThroughTheUpdater` drives a real go-tuf client against
+a signed repository past its timestamp window, under the most permissive `Policy`
+there is, and requires the refusal.
 
 Defaults: `RetainVersions` 2, `QuiesceTimeout` 30s, `OnBusy` `BusyAbort` (the zero
 value fails rather than forces), `Elevation` `ElevationNone`, `Now` `time.Now`, `OS`
@@ -149,9 +154,11 @@ where its data lives.
   `QuiesceTimeout`.
 - Still busy ⇒ `Policy.OnBusy` decides:
   - `BusyAbort` — `ErrBusy`, retry later.
-  - `BusyDeferToRestart` — **today**: rolls back cleanly and returns `ErrDeferred`.
-    The design wants the staged tree kept and finished by the launcher at next start;
-    that needs a launcher and a resting journal state (backlog IDN-05, IDN-06).
+  - `BusyDeferToRestart` — keeps the staged tree in a resting `DEFERRED` journal
+    state and returns `ErrDeferred`; the launcher finishes it at the next start
+    (IDN-06). Recommended for a host whose running application updates itself, but
+    never the default: an unset `OnBusy` is `BusyAbort`, and `New` does not promote
+    it (IDN-21).
   - `BusyForce` — proceed without the proof of quiescence. Terminating processes is
     the host's business; the updater's part of "force" is to continue anyway. Opt-in,
     documented as a data-loss risk.

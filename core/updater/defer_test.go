@@ -147,3 +147,32 @@ func TestAbortStillUndoesTheStaging(t *testing.T) {
 		t.Errorf("journal is at %v, want ROLLED_BACK", last.State)
 	}
 }
+
+// A Policy that never mentions OnBusy aborts. It does not defer, and New does not
+// promote it to deferring (IDN-21).
+//
+// The design recommends BusyDeferToRestart to a host whose running application
+// updates itself, which makes "why is it not simply the default?" a fair
+// question. The answer is that Go cannot distinguish "left unset" from
+// "deliberately chosen": promoting would turn a forgotten line of host
+// configuration into an update that quietly stays staged and lands at the next
+// start, on a host that never asked for one. This test is what stops that from
+// being introduced later as a convenience.
+func TestUnsetOnBusyAbortsRatherThanDefers(t *testing.T) {
+	f := busy(t)
+	f.opts.Policy.OnBusy = updater.BusyPolicy(0) // as if the host never set it.
+
+	err := f.run()
+	if errors.Is(err, updater.ErrDeferred) {
+		t.Fatal("an unset OnBusy deferred; the zero value must be the failing one")
+	}
+	if !errors.Is(err, updater.ErrBusy) {
+		t.Fatalf("err = %v, want ErrBusy", err)
+	}
+	if f.exists("/opt/app/versions/1.3.0") {
+		t.Error("the aborted update left its staged version behind")
+	}
+	if last := lastRecord(t, f); last.State != txn.StateRolledBack {
+		t.Errorf("journal is at %v, want ROLLED_BACK", last.State)
+	}
+}

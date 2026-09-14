@@ -346,10 +346,24 @@ control that keeps them from passing on a client that ignores patches altogether
 
 IDN-14 is **done**.
 
-### IDN-15 — Descriptor-level validity window (§6.3 `EnforceExpiry`)
-Schema 1 descriptors carry no validity window, so `Policy.EnforceExpiry` currently
-governs nothing beyond TUF's own metadata expiry (`TODO(release)` in
-`core/updater`). Either add the field in schema 2 or drop the flag.
+### IDN-15 — Descriptor-level validity window (§6.3 `EnforceExpiry`) — **done, by removal**
+Decided the second way: the flag is gone. This is a public API break —
+`updater.Policy` no longer has an `EnforceExpiry` field, and a host that set it no
+longer compiles; deleting the line is the whole migration, because the value was
+ignored.
+
+It governed nothing. Schema 1 descriptors carry no validity window, so the only expiry
+in play was TUF's own — checked inside go-tuf during `Refresh`, before this package
+decides anything, and not relaxable from above by design. Adding a second, app-level
+window in schema 2 was the alternative and is worse: it is exactly the parallel check
+AGENTS.md §1.2 warns about, and it buys nothing `timestamp.expires` does not already
+give. Removing the field rather than leaving it forced to `true` is the point — a knob
+that cannot be turned is one somebody will eventually believe in.
+
+`TestExpiredMetadataIsRefusedThroughTheUpdater` (`core/updater`) is the proof that
+nothing was lost: a real go-tuf client, a signed repository a month past its timestamp
+window, the most permissive `Policy`, and a refusal classified as expiry with nothing
+written — beside a control that the same setup inside the window offers the release.
 
 ### IDN-16 — Mutation testing (§12, AGENTS.md §4)
 `go-mutesting` (or equivalent) as the quality bar for assertions. Coverage is high;
@@ -389,10 +403,15 @@ module; a public `packer.ValidateConfig([]byte) error` and a `--json` flag on
 `publish` would let it stop mirroring unexported rules and parsing human-readable
 output.
 
-### IDN-20 — Decide the mythology naming question (§2.1)
-Left explicitly open in the design. Functional names are canonical in code today,
-which is the recommended middle path; the decision is whether mythological names are
-adopted as branding. Closing it costs nothing and removes a recurring question.
+### IDN-20 — Decide the mythology naming question (§2.1) — **done**
+Functional names are canonical in code; mythological names are branding for the
+umbrella `idunn` and nothing below it.
+
+The first half is what the code has always done, so deciding it costs nothing. The
+second half is the part that needed deciding: not `heimdall`, not `bifrost`, not as an
+internal codename. A codename that lives in a README is charming; one that turns up in
+a stack trace an auditor is reading is a question they have to stop and ask, and the
+boundary is easier to hold at zero than at two.
 
 ### IDN-22 — The elevated helper vets the install root it is asked to write (§14.2, T16) — **done**
 The root is one of the three scalars, and the caller chooses it. A helper running as
@@ -422,9 +441,14 @@ helper leaves a staged update the unprivileged launcher cannot finish. Both need
 either a launcher that elevates for this (a prompt at start) or the service mode
 (IDN-07).
 
-### IDN-21 — Reconcile the `OnBusy` default with the design (§6.3, §14.3)
-`design.md` names `BusyDeferToRestart` the default and the recommended one; the code
-leaves the zero value `BusyAbort` in place, because Go's zero value must be the
-failing one and deferring does not work yet (IDN-06). Once it does, decide: either
-`New` promotes an unset `OnBusy` to `BusyDeferToRestart`, or the design text drops
-the claim. Today the two disagree.
+### IDN-21 — Reconcile the `OnBusy` default with the design (§6.3, §14.3) — **done**
+Decided the second way: the design text drops the claim, `New` promotes nothing, and
+`BusyAbort` stays the zero value. No API or behaviour change.
+
+Promoting an unset `OnBusy` to `BusyDeferToRestart` was the other option and is the
+worse one. Go cannot distinguish "left unset" from "deliberately chosen", so the
+promotion would turn a forgotten line of host configuration into a change of behaviour
+in the apply path — an update that quietly stays staged and lands at the next start, on
+a host that never asked for one. Deferral remains what §14.3 recommends to a host whose
+running application updates itself; a host that wants it says so.
+`TestUnsetOnBusyAbortsRatherThanDefers` (`core/updater`) pins the zero value.

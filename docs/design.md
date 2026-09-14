@@ -68,10 +68,25 @@ idunn-bubbletea/     (separate module, depends on idunn/core)
 interface (`Refresh`, `LatestRelease`, `MaterializeTarget`) and stays independent of TUF
 details — replaceable and testable.
 
-### 2.1 Naming scheme (optional): mythology vs. function
+### 2.1 Naming scheme: mythology vs. function — **decided**
+
+> **Decision (IDN-20): functional names are canonical in code, and mythological names
+> are branding only — for the umbrella `idunn` and nothing below it.** (The org
+> namespace `go-idavoll` sits above the umbrella and is part of the same branding.)
+>
+> The middle path this section used to recommend is what the code has done since the
+> first commit, so the decision costs nothing to make and stops the question being
+> asked again. What it adds is the second half: no package, type, error class, target path, journal state
+> or metric name is a mythological one either, and none will be added later "for the
+> two most prominent public sub-names". A codename that exists only in the README is
+> harmless; one that appears in a stack trace an auditor is reading is not, and the
+> boundary is easier to hold at zero than at two.
+>
+> The table below stays as the record of what was considered. `AGENTS.md` §2 already
+> states the rule for contributors.
 
 The umbrella name is **idunn**. For the internal packages there is a coherent Norse
-naming scheme — charming, but deliberately left as an **open decision**:
+naming scheme — charming, and considered:
 
 | Function (package) | Mytho codename | Why it fits |
 |---|---|---|
@@ -87,17 +102,16 @@ naming scheme — charming, but deliberately left as an **open decision**:
 The internal coherence is nice: **heimdall guards bifrost** = the trust layer decides
 what the transport lets through — mythologically correct and exactly the data flow.
 
-**Trade-off (left open):**
+**Trade-off (as considered):**
 - *For:* memorable, coherent identity, fun, strengthens project culture and branding.
 - *Against:* not self-documenting — `bragi` tells a new developer or auditor nothing;
   hampers onboarding/grep; can read as playful in enterprise/audit contexts; insider
   knowledge = bus factor.
-- *Recommended middle path:* **functional names stay canonical in code**
-  (self-documenting, audit-friendly) — the rest of this document uses them throughout.
-  The mythological names serve **optionally** as product/module branding or internal
-  codenames (at minimum the umbrella `idunn`, possibly the two most prominent public
-  sub-names `heimdall`/`bifrost`). That gets you the charm without losing readability.
-  How far to go is a deliberately open decision.
+- *Chosen:* **functional names are canonical in code** (self-documenting,
+  audit-friendly) — the rest of this document uses them throughout — and the
+  mythological names are branding for the umbrella `idunn` alone. Not `heimdall`, not
+  `bifrost`, not as an internal codename: the charm is worth having in a README and it
+  is not worth having in a grep.
 
 ---
 
@@ -432,7 +446,6 @@ type Options struct {
 
 type Policy struct {
     AllowDowngrade   bool // default false (blocks rollback attacks).
-    EnforceExpiry    bool // default true; enforce descriptor validity on top of TUF metadata expiry.
     VerifyAfterApply bool // re-hash installed files post-swap (belt & braces).
 
     // RetainVersions is how many version dirs to keep after a successful commit,
@@ -449,7 +462,7 @@ type Policy struct {
     QuiesceTimeout time.Duration // default 30s.
 
     // OnBusy decides what happens if the target app cannot be quiesced in time.
-    OnBusy BusyPolicy // default BusyDeferToRestart.
+    OnBusy BusyPolicy // zero value BusyAbort; see 14.3 for what to set it to.
 }
 
 type ElevationMode int
@@ -482,6 +495,14 @@ func (u *Updater) CheckForUpdate(ctx context.Context) (*Release, error)
 // rolls back files and calls Migrator.Rollback. Safe to call again after a crash.
 func (u *Updater) Apply(ctx context.Context, r *Release) error
 ```
+
+> **As built:** there is no `EnforceExpiry`. Schema 1 descriptors carry no validity
+> window of their own, so the flag governed nothing beyond TUF's metadata expiry —
+> which go-tuf checks during `Refresh` and which nothing above it may relax. A second,
+> app-level expiry was considered and dropped: it is the kind of parallel check §1.2 of
+> `AGENTS.md` warns about, and it buys nothing `timestamp.expires` does not already
+> give. The field was removed rather than left forced-true, because a knob that cannot
+> be turned is one somebody will eventually believe in (IDN-15).
 
 ### 6.4 Delta / differential updates (content-addressed)
 
@@ -1058,7 +1079,9 @@ writing concurrently.
   quit, update pending") and waits up to `QuiesceTimeout`.
 - On timeout `Policy.OnBusy` decides:
     - `BusyAbort` — abort cleanly, retry later.
-    - `BusyDeferToRestart` (**recommended default** when the running app updates itself):
+    - `BusyDeferToRestart` (**the recommended setting** when the running app updates
+      itself — a recommendation to the host, not a language default; see the note
+      below):
       the package stays staged, a "pending update" marker is set; the **launcher** performs
       swap+migrate at the next start — *before* the app opens the DB, when no lock is held.
       Sidesteps the concurrency problem entirely.
@@ -1078,8 +1101,11 @@ shared state are host knowledge and are configured.
 > handing over. A newer update may supersede one that is still waiting (`BEGIN` is legal
 > after `DEFERRED`), so a machine that never restarts cannot wedge the updater.
 >
-> `BusyDeferToRestart` is **not** the zero value and is not promoted to one: Go's zero
-> value has to be the failing one, and here that is `BusyAbort` (backlog IDN-21).
+> `BusyDeferToRestart` is **not** the zero value and is not promoted to one. Go's zero
+> value has to be the failing one, and here that is `BusyAbort`; and Go cannot tell
+> "left unset" from "deliberately chosen", so promoting an unset field would turn a
+> forgotten line of host configuration into an update that quietly stays staged and
+> lands at the next start. A host that wants deferral asks for it. (IDN-21, closed.)
 
 ### 14.4 Enterprise networks: proxy, PAC & custom CA
 
@@ -1221,6 +1247,8 @@ because an unprivileged user can tamper with the cache while the helper reads it
   open, for large binaries that change slightly.
 - **Uptane** as a reference should the system ever move toward embedded/automotive (a TUF
   extension for exactly that case).
+- **Naming (2.1) is decided, not open** (IDN-20): functional names in code, mythology as
+  branding for the umbrella name only.
 - **When *without* TUF after all?** Only for single-vendor + single-HSM-key + tolerable
   compromise consequences + a hard minimalism constraint; then a tiny, externally audited
   own core. Conscious price: no online rotation, full break on key loss. For "Fort Knox",
