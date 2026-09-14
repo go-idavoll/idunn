@@ -102,6 +102,27 @@ func TestApplyRequiresAllThreeScalars(t *testing.T) {
 	}
 }
 
+// The helper validates what it receives by the grammar the sender enforces. A
+// relative root would otherwise be resolved against whatever working directory
+// the elevated process got, and a channel or version outside the grammar is not
+// a request, whoever sent it. Refused as usage before the anchor is even looked
+// at — the build under test embeds none, which would be exitError.
+func TestApplyRefusesAMalformedRequest(t *testing.T) {
+	abs := filepath.Join(t.TempDir(), "app")
+	malformed := [][]string{
+		{"apply", "--root", "app", "--channel", "stable", "--version", "1.2.0"},
+		{"apply", "--root", abs + string(filepath.Separator) + ".." + string(filepath.Separator) + "x", "--channel", "stable", "--version", "1.2.0"},
+		{"apply", "--root", abs, "--channel", "stable&calc", "--version", "1.2.0"},
+		{"apply", "--root", abs, "--channel", "stable", "--version", "1.2"},
+	}
+	for i, args := range malformed {
+		var out bytes.Buffer
+		if code := run(args, &out, &out); code != exitUsage {
+			t.Errorf("case %d: run(%v) = %d, want %d\n%s", i, args, code, exitUsage, &out)
+		}
+	}
+}
+
 // A build that embeds nothing cannot serve as its own privileged helper, and
 // says so rather than starting an elevated process that would fail after the
 // prompt.

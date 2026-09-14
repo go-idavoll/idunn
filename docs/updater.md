@@ -185,9 +185,32 @@ update is bad.
 
 ## 7. Elevation
 
-With `Policy.Elevation != ElevationNone`, the swap goes through `elevate.Elevator`
-instead of the in-process stager. Download and staging stay unprivileged; only the
-re-verify and swap run elevated.
+With `Policy.Elevation != ElevationNone`, the root is one this process cannot write,
+and it runs no part of a transaction there — not the journal, not staging, not the
+time floor. What it does, with reads only: the clock floor check, the stale check,
+the policy and walk decision, and the `Checker` and `Prompter` hooks. Then it asks
+`elevate.Elevator`, and when the helper returns it reads the pointer back. A helper
+that exits zero and did not install the requested version is `elevate.ErrHelper`,
+never a success. Anything refused before the request never raises a prompt.
+
+`CheckForUpdate` still enforces the time floor in this mode, but does not raise it:
+the floor lives in the root, and the helper's own refresh raises it.
+
+The helper side is `Updater.ApplyRequested(ctx, version)`, on an Updater configured
+for `ElevationNone` (anything else is `ErrConfig`: a helper that elevates again
+loops). It refreshes, resolves the channel head and runs every policy check itself;
+the requested version only has to agree with the head, otherwise `ErrStale`. A
+caller cannot pick a release the publisher has not made current, even one that
+would still be an upgrade. A request for the installed head is a no-op success.
+A host's helper verb validates its arguments with `elevate.ParseRequest` — the
+same grammar the sender enforced — and keeps its TUF cache in
+`elevate.PrivilegedCacheDir(root)`, inside the root, never in a directory the
+invoking user can write (T23).
+
+Download and staging therefore run elevated today, in the helper. The design's
+unprivileged pre-download handed over by file descriptor needs the authenticated
+IPC of the helper service (IDN-07); without it, a helper reading the user's cache
+by path is exactly the TOCTOU §14.8 warns about, so the helper downloads again.
 
 What crosses the boundary is three validated scalars — root, channel, version. No
 file list, no hashes, no staged path, no URL. The privileged side runs its own TUF
@@ -196,6 +219,9 @@ refresh and verification: the descriptor is a *request*, not a verdict it may ac
 
 Available today: Windows `ElevationInteractive` (`ShellExecuteEx` verb `runas`,
 `shell32.dll` loaded from `%SystemRoot%\System32` only, waits on the process handle).
+`test/e2e/cmd/e2eapp` is a host wired this way (`apply` verb), and the `elevated`
+e2e scenario installs and updates it into an administrators-only root through real
+UAC prompts.
 `ElevationService` and POSIX interactive elevation fail closed with
 `elevate.ErrNotImplemented` — see `design.md` §14.2.1 and backlog IDN-07/IDN-08.
 

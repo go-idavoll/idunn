@@ -1024,6 +1024,20 @@ live where only administrators can write. That is an install-time property; it
 cannot be established at update time without a TOCTOU of its own. What is enforced
 here is that the path is absolute, local (never UNC), existing, and a regular file.
 
+> **As built — elevated updates.** The unprivileged process runs no part of the
+> transaction: journal, staging and the time floor all live under a root it cannot
+> write. It decides with reads only (clock floor, stale check, policy and walk,
+> `Checker`, `Prompter`), sends the request, and reads the pointer back — an exit
+> code of zero without the requested version installed is a failure. The helper
+> answers with `Updater.ApplyRequested`: its own refresh, its own channel head, and
+> the ordinary transaction; a requested version that is not the head is refused.
+> Its TUF cache is `<root>/.updater/tuf`, never the invoking user's cache. This
+> means download and staging run elevated, which is more privileged surface than
+> "download+verify unprivileged" above; the fd hand-off that would restore that
+> needs the authenticated IPC of the service mode (IDN-07). Still open: the root is
+> chosen by the caller, and the helper does not yet refuse a root that a
+> non-administrator can write (IDN-22).
+
 `ElevationService` (the privileged helper and its authenticated IPC, 14.8) is not
 built yet and fails closed.
 

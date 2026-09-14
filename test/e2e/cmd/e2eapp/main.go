@@ -21,10 +21,20 @@
 //	e2eapp install --root <dir>    first install from the release
 //	e2eapp update  --root <dir>    check and apply an update, no prompts
 //	e2eapp status  --root <dir>    print the install state the test attests
+//	e2eapp apply   --root <dir> --channel <c> --version <v>
+//	                               the privileged helper; started elevated by
+//	                               install and update, never by hand
+//
+// An install root this process cannot write (C:\Program Files, or any directory
+// only administrators may change) is installed and updated through
+// core/elevate: the check runs here, unprivileged, and the transaction runs in
+// this same binary started elevated with the `apply` verb, which refreshes and
+// resolves everything again on its own.
 //
 // Exit codes: 0 ok, 1 error, 2 usage, 3 refused by update policy (a downgrade,
-// a migration floor, a client too old). A refusal is kept apart from an error
-// so a test that expects one cannot pass on a network failure.
+// a migration floor, a client too old), 4 the elevation prompt was declined.
+// A refusal is kept apart from an error so a test that expects one cannot pass
+// on a network failure.
 //
 // Build-time configuration, all through the linker:
 //
@@ -37,7 +47,9 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -49,6 +61,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-idavoll/idunn/core/elevate"
 	"github.com/go-idavoll/idunn/core/fetch"
 	"github.com/go-idavoll/idunn/core/fsx"
 	"github.com/go-idavoll/idunn/core/hook"
@@ -80,7 +93,7 @@ func main() {
 
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: e2eapp version|install|update|status [--root dir]")
+		_, _ = fmt.Fprintln(stderr, "usage: e2eapp version|install|update|status|apply [--root dir]")
 		return 2
 	}
 	var err error
@@ -93,14 +106,19 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = withRoot(args[1:], stdout, doUpdate)
 	case "status":
 		err = status(args[1:], stdout)
+	case "apply":
+		err = applyVerb(args[1:], stdout)
 	default:
 		_, _ = fmt.Fprintf(stderr, "e2eapp: unknown command %q\n", args[0])
 		return 2
 	}
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "e2eapp: %v\n", err)
-		if errors.Is(err, updater.ErrPolicy) {
+		switch {
+		case errors.Is(err, updater.ErrPolicy):
 			return 3
+		case errors.Is(err, elevate.ErrDeclined):
+			return 4
 		}
 		return 1
 	}
@@ -125,16 +143,80 @@ func withRoot(args []string, stdout io.Writer, verb func(context.Context, update
 	if err != nil {
 		return err
 	}
-	o, err := options(abs, stdout)
+	needs, err := elevate.NeedsElevation(abs)
+	if err != nil {
+		return fmt.Errorf("cannot tell whether %s needs privileges: %w", abs, err)
+	}
+	if !needs {
+		// Next to the install root rather than in it, so the layout sees only
+		// what idunn put there, and a fresh root never meets stale metadata.
+		o, err := options(abs, abs+".tuf", stdout)
+		if err != nil {
+			return err
+		}
+		return verb(context.Background(), o, stdout)
+	}
+
+	// Next to the root is inside a directory this process cannot write either,
+	// so the unprivileged check keeps its cache with the user. Nothing privileged
+	// ever reads it: the helper has a cache of its own (elevate.PrivilegedCacheDir).
+	base, err := os.UserCacheDir()
 	if err != nil {
 		return err
 	}
+	sum := sha256.Sum256([]byte(abs))
+	o, err := options(abs, filepath.Join(base, "idunn-e2eapp", hex.EncodeToString(sum[:8])), stdout)
+	if err != nil {
+		return err
+	}
+	el, err := elevate.NewInteractive(elevate.InteractiveOptions{})
+	if err != nil {
+		return err
+	}
+	o.Elevator = el
+	o.Policy.Elevation = updater.ElevationInteractive
+	_, _ = fmt.Fprintf(stdout, "  %s needs privileges; the apply will ask for them\n", abs)
 	return verb(context.Background(), o, stdout)
+}
+
+// applyVerb is the privileged helper. It takes the three scalars core/elevate
+// sends and nothing else, validates them by the same grammar, and answers with
+// an update of its own: its own refresh, its own resolution of the channel head,
+// its own cache inside the root. The requested version only has to agree.
+func applyVerb(args []string, stdout io.Writer) error {
+	fl := flag.NewFlagSet("apply", flag.ContinueOnError)
+	root := fl.String("root", "", "install root")
+	ch := fl.String("channel", "", "channel")
+	ver := fl.String("version", "", "version")
+	if err := fl.Parse(args); err != nil {
+		return err
+	}
+	if fl.NArg() != 0 {
+		return fmt.Errorf("unexpected argument %q", fl.Arg(0))
+	}
+	req, err := elevate.ParseRequest(*root, *ch, *ver)
+	if err != nil {
+		return err
+	}
+	// The channel is this application's own; a request for another one is not
+	// a request this build answers.
+	if req.Channel != channel {
+		return fmt.Errorf("%w: channel %q, this application follows %q", elevate.ErrRequest, req.Channel, channel)
+	}
+	o, err := options(req.Root, elevate.PrivilegedCacheDir(req.Root), stdout)
+	if err != nil {
+		return err
+	}
+	u, err := updater.New(o)
+	if err != nil {
+		return err
+	}
+	return u.ApplyRequested(context.Background(), req.Version)
 }
 
 // options wires the client exactly as a host would, with one difference: the
 // transport maps TUF paths onto flat release asset names.
-func options(root string, stdout io.Writer) (updater.Options, error) {
+func options(root, cache string, stdout io.Writer) (updater.Options, error) {
 	anchor, err := anchorFS.ReadFile("anchor/root.json")
 	if err != nil {
 		return updater.Options{}, fmt.Errorf("this build embeds no trust anchor: %w", err)
@@ -161,10 +243,8 @@ func options(root string, stdout io.Writer) (updater.Options, error) {
 		Root:        anchor,
 		MetadataURL: releaseURL + "/metadata/",
 		TargetsURL:  releaseURL + "/targets/",
-		// Next to the install root rather than in it, so the layout sees only
-		// what idunn put there, and a fresh root never meets stale metadata.
-		LocalDir: root + ".tuf",
-		Fetcher:  fetcher,
+		LocalDir:    cache,
+		Fetcher:     fetcher,
 	})
 	if err != nil {
 		return updater.Options{}, err

@@ -19,9 +19,11 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/go-idavoll/idunn/core/release"
+	"github.com/go-idavoll/idunn/internal/layout"
 )
 
 // The helper command line. This is the contract between the unprivileged updater
@@ -75,6 +77,41 @@ func newRequest(root string, d *release.Descriptor) (Request, error) {
 		return Request{}, err
 	}
 	return Request{Root: root, Channel: d.Channel, Version: d.Version}, nil
+}
+
+// ParseRequest is the helper's side of newRequest: it validates the three scalars
+// a privileged helper received on its command line, by the same rules the
+// unprivileged side applied before sending them.
+//
+// The helper must not rely on the sender having done so. Anyone can start the
+// helper with any arguments, and the elevated one is started by the very process
+// the boundary exists to distrust. A value the sender would have refused is
+// refused here too, before it names a directory or reaches a trust client.
+func ParseRequest(root, channel, version string) (Request, error) {
+	if err := checkInstallRoot(root); err != nil {
+		return Request{}, err
+	}
+	if err := checkChannel(channel); err != nil {
+		return Request{}, err
+	}
+	if err := checkVersion(version); err != nil {
+		return Request{}, err
+	}
+	return Request{Root: root, Channel: channel, Version: version}, nil
+}
+
+// PrivilegedCacheDir is where a privileged helper keeps its TUF metadata and
+// target cache for the install at root: inside the root's own metadata directory.
+//
+// It is not the user's cache, and not a machine-wide directory either. A helper
+// running as administrator that reads or writes a directory an unprivileged user
+// can write is exposed to exactly what §14.8 describes — a junction or symlink
+// planted between its check and its write, which turns a cache update into a
+// write anywhere on the machine (T23). The install root is the one directory the
+// helper is already trusted to write because nobody else can; putting its cache
+// anywhere else would add a second such directory to keep safe.
+func PrivilegedCacheDir(root string) string {
+	return filepath.Join(root, layout.MetaName, layout.TrustCacheName)
 }
 
 // args renders the request as an argument vector, one element per value. The

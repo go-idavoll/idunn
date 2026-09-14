@@ -25,6 +25,13 @@
 #   major      1.0.0 -> 2.0.0 -> 2.1.0   major update, then a sequential one
 #   floor-gap  1.0.0 -/-> 1.2.0          1.2.0 requires min_from_version 1.1.0,
 #                                        which is never published: refused
+#   elevated   1.0.0 -> 1.1.0            Windows only, interactive: the install
+#                                        root is writable by administrators only,
+#                                        so install and update each raise a UAC
+#                                        prompt that someone has to accept. Not
+#                                        in the default set and not in CI — a
+#                                        runner is already elevated and has no
+#                                        one to click.
 #
 # Every step is a case with an expectation, a verdict and an attestation — the
 # observed exit code, installed version (pointer and recorded state agreeing),
@@ -106,7 +113,7 @@ fi
 
 # --- scenario state -----------------------------------------------------------
 
-scen="" stag="" url="" stuf="" sassets="" sroot="" results=""
+scen="" stag="" url="" stuf="" sassets="" sroot="" slauncher="" results=""
 
 begin() {
   scen="$1"
@@ -119,6 +126,7 @@ begin() {
   stuf="$work/$scen/repo"
   sassets="$work/assets/$scen"
   sroot="$work/$scen/install"
+  slauncher="$sroot/launcher$exe"
   results="$work/$scen/results.tsv"
   mkdir -p "$stuf/metadata" "$sassets"
   cp "$work/root/metadata/1.root.json" "$stuf/metadata/1.root.json"
@@ -171,7 +179,7 @@ publish() {
   printf '  published %s%s\n' "$version" "${min_from:+ (min_from_version $min_from)}"
 }
 
-launch() { "$sroot/launcher$exe" --quiet -- "$@"; }
+launch() { "$slauncher" --quiet --root "$sroot" -- "$@"; }
 
 # observe: read back the install state into st_* and the attestation line.
 observe() {
@@ -219,7 +227,7 @@ install_case() {
   local v="$1" out rc
   out="$("$work/$scen/build/$v/bin/e2eapp$exe" install --root "$sroot" 2>&1)"
   rc=$?
-  cp "$bin/launcher$exe" "$sroot/launcher$exe" 2>/dev/null || true
+  if [ "$slauncher" = "$sroot/launcher$exe" ]; then cp "$bin/launcher$exe" "$slauncher" 2>/dev/null || true; fi
   observe
   why=""
   want rc "$rc" 0
@@ -273,6 +281,50 @@ refuse_case() {
     "rc=$rc error=$(printf '%s' "$out" | grep 'e2eapp:' | oneline)"
 }
 
+# admin_only <dir>: create dir so that administrators may write it and this
+# user may only read it — the shape of C:\Program Files, in a place the test can
+# clean up. The user keeps DELETE, which is enough to remove the tree afterwards
+# and not enough to create anything in it: NeedsElevation probes by creating.
+admin_only() {
+  mkdir -p "$1"
+  MSYS_NO_PATHCONV=1 icacls "$(cygpath -w "$1")" /inheritance:r \
+    /grant:r "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" "$USERDOMAIN\\$USERNAME:(OI)(CI)(RX,D)" >/dev/null
+}
+
+# unwritable_case <dir>: attest that this process cannot create in dir, so an
+# elevated case that passes cannot have passed without elevating.
+unwritable_case() {
+  why=""
+  if (: >"$1/.e2e-probe") 2>/dev/null; then
+    rm -f "$1/.e2e-probe"
+    why="created a file in $1 without privileges; "
+  fi
+  attestation="dir=$1"
+  verdict "install root is administrators-only" "an unprivileged create in the root is denied" ""
+}
+
+# elevated_case <case> <from> <to> <versions after> <verb> <expected output>
+elevated_case() {
+  local out rc
+  if [ "$5" = install ]; then
+    out="$("$work/$scen/build/$3/bin/e2eapp$exe" install --root "$sroot" 2>&1)"
+  else
+    out="$(launch update --root "$sroot" 2>&1)"
+  fi
+  rc=$?
+  out="${out//$'\r'/}"
+  printf '%s\n' "$out" | sed 's/^/    | /'
+  observe
+  why=""
+  want rc "$rc" 0
+  contains output "$out" "needs privileges"
+  contains output "$out" "$6"
+  settled "$3" "$4"
+  # The helper refreshed on its own, into its own cache inside the root.
+  if [ ! -f "$sroot/.updater/tuf/metadata/timestamp.json" ]; then why="${why}no helper cache in the root; "; fi
+  verdict "$1" "UAC accepted, $2 -> $3 applied by the elevated helper" "rc=$rc"
+}
+
 # --- scenarios ----------------------------------------------------------------
 
 scenario_minor() {
@@ -300,6 +352,28 @@ scenario_floor_gap() {
   install_case 1.0.0 || return 1
   publish 1.2.0 1.1.0 || return 1
   refuse_case "refuse minor update 1.0.0 -> 1.2.0 (min_from_version 1.1.0 unpublished)" 1.0.0 1.2.0 1.1.0
+}
+
+scenario_elevated() {
+  if [ "$goos" != windows ]; then
+    record "elevated" "Windows host" FAIL "the elevated scenario needs Windows and UAC, this is $goos"
+    return 1
+  fi
+  sroot="$work/$scen/programs/e2eapp"
+  slauncher="$work/$scen/launcher$exe"
+  cp "$bin/launcher$exe" "$slauncher"
+  admin_only "$work/$scen/programs"
+  unwritable_case "$work/$scen/programs" || return 1
+
+  publish 1.0.0 || return 1
+  step "accept the UAC prompt for the elevated install of 1.0.0"
+  elevated_case "elevated install 1.0.0" "" 1.0.0 "1.0.0" install "installed 1.0.0" || return 1
+  publish 1.1.0 || return 1
+  step "accept the UAC prompt for the elevated update to 1.1.0"
+  elevated_case "elevated update 1.0.0 -> 1.1.0" 1.0.0 1.1.0 "1.0.0,1.1.0" update "updated 1.0.0 -> 1.1.0" || return 1
+  # No prompt for this one: checking needs no privileges, and a check that
+  # tried to write the root would fail here.
+  uptodate_case 1.1.0
 }
 
 # --- run ----------------------------------------------------------------------

@@ -240,6 +240,23 @@ Left explicitly open in the design. Functional names are canonical in code today
 which is the recommended middle path; the decision is whether mythological names are
 adopted as branding. Closing it costs nothing and removes a recurring question.
 
+### IDN-22 — The elevated helper vets the install root it is asked to write (§14.2, T16)
+The root is one of the three scalars, and the caller chooses it. `elevate.ParseRequest`
+refuses a malformed one, but not a well-formed root in a directory a
+non-administrator can write: a helper running as administrator that writes there can
+be redirected by a junction planted between two of its operations — an arbitrary
+write as administrator, and with over-the-shoulder elevation a standard user's LPE.
+The helper should refuse, before any write, a root whose nearest existing directory
+(and its ancestors, for rename/delete) grants create, delete, `WRITE_DAC` or
+`WRITE_OWNER` to anyone but SYSTEM, Administrators and TrustedInstaller, or whose
+owner is not one of them; and should decide what a UNC root means for an elevated
+process. This is a refusal, not a prediction of the kernel's answer, so it does not
+contradict `NeedsElevation`'s probe.
+
+Also open around the same path: an interrupted transaction in a system root can only
+be recovered by the helper (the launcher runs unprivileged), and `BusyDeferToRestart`
+in the helper leaves a staged update the unprivileged launcher cannot finish.
+
 ### IDN-21 — Reconcile the `OnBusy` default with the design (§6.3, §14.3)
 `design.md` names `BusyDeferToRestart` the default and the recommended one; the code
 leaves the zero value `BusyAbort` in place, because Go's zero value must be the

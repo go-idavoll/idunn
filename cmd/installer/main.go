@@ -225,11 +225,23 @@ func applyHelper(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	// The same grammar the sender enforced, enforced again: this process does
+	// not know who started it or with what.
+	req, err := elevate.ParseRequest(*root, *channel, *version)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "idunn installer: %v\n", err)
+		return exitUsage
+	}
+
 	cfg, code := buildConfig(config{
-		root:    *root,
-		channel: *channel,
-		version: *version,
-		quiet:   true,
+		root:    req.Root,
+		channel: req.Channel,
+		version: req.Version,
+		// Never the invoking user's cache: a directory they can write, read and
+		// written by a process running as administrator, is the junction attack
+		// of §14.8 (T23).
+		cache: elevate.PrivilegedCacheDir(req.Root),
+		quiet: true,
 		// Already privileged: elevating again would be a loop, and there is
 		// nothing left to ask for.
 		elevate: false,

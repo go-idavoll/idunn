@@ -52,6 +52,12 @@ func (u *Updater) Apply(ctx context.Context, r *Release) error {
 		return fmt.Errorf("%w: no release to apply", ErrConfig)
 	}
 
+	// A root this process cannot write gets no transaction from it at all: the
+	// helper runs the whole of one, walk included (§14.2).
+	if u.policy.Elevation != ElevationNone {
+		return u.applyElevated(ctx, r)
+	}
+
 	from := r.FromVersion
 	for i, step := range u.plan(ctx, r) {
 		if err := u.applyRelease(ctx, &Release{Descriptor: step, FromVersion: from}); err != nil {
@@ -369,7 +375,7 @@ func (u *Updater) apply(ctx context.Context, r *Release) (hook.Phase, func(), er
 	}
 
 	u.emit(hook.PhaseApply, "installing "+d.Version, nil)
-	if err := u.swap(ctx, d, versionDir); err != nil {
+	if err := u.stager.Swap(versionDir); err != nil {
 		return hook.PhaseApply, unlock, err
 	}
 	if err := record(txn.StateSwapped, hook.PhaseApply); err != nil {
@@ -415,18 +421,6 @@ func (u *Updater) apply(ctx context.Context, r *Release) (hook.Phase, func(), er
 		u.emit(hook.PhaseGC, "some old versions could not be removed yet", err)
 	}
 	return "", unlock, nil
-}
-
-// swap installs the staged version, directly or through the privileged helper.
-func (u *Updater) swap(ctx context.Context, d *release.Descriptor, versionDir string) error {
-	if u.policy.Elevation == ElevationNone {
-		return u.stager.Swap(versionDir)
-	}
-	// The privileged side re-verifies everything it installs; the descriptor is
-	// untrusted input to it, not a verdict it may act on (AGENTS.md §1.4). This
-	// call is a request, and everything it asks for is checked again on the
-	// other side of the boundary.
-	return u.elevator.Apply(ctx, u.root, d)
 }
 
 // verifyInstalled re-reads what is on disk and compares it with the verified
