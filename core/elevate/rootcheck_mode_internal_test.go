@@ -20,6 +20,44 @@ import (
 	"testing"
 )
 
+// The `current` symlink is the one link an installed POSIX root contains; every
+// install after the first meets it, so refusing it refuses every update.
+func TestJudgePointer(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		mode fs.FileMode
+		uid  uint64
+		gid  uint64
+		ok   bool
+	}{
+		{"root-owned symlink", fs.ModeSymlink | 0o777, 0, 0, true},
+		{"root-owned symlink, another group", fs.ModeSymlink | 0o777, 0, 100, true},
+		{"root-owned regular file (the Windows form)", 0o644, 0, 0, true},
+		{"user-owned symlink", fs.ModeSymlink | 0o777, 1000, 1000, false},
+		{"user-owned file", 0o644, 1000, 1000, false},
+		{"world-writable file", 0o666, 0, 0, false},
+		{"a directory others may write", fs.ModeDir | 0o777, 0, 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := judgePointer("/x/current", tc.mode, tc.uid, tc.gid)
+			if tc.ok && err != nil {
+				t.Fatalf("judgePointer = %v, want nil", err)
+			}
+			if !tc.ok && !errors.Is(err, ErrUnsafeRoot) {
+				t.Fatalf("judgePointer = %v, want ErrUnsafeRoot", err)
+			}
+		})
+	}
+	// Only `current` gets this: a root-owned symlink anywhere else in the
+	// install is still refused.
+	if err := judgeMode("/x/.updater", fs.ModeSymlink|0o777, 0, 0, roleContainer); !errors.Is(err, ErrUnsafeRoot) {
+		t.Fatalf("judgeMode(symlink, container) = %v, want ErrUnsafeRoot", err)
+	}
+}
+
 func TestJudgeMode(t *testing.T) {
 	t.Parallel()
 

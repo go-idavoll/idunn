@@ -120,6 +120,11 @@ func judgeVolume(vol string, driveType uint32, device string) error {
 	return nil
 }
 
+// checkPointer judges the install's `current` entry. On Windows it is a file
+// (internal/layout), judged like every other entry: a reparse point there is
+// refused.
+func checkPointer(path string) error { return checkObject(path, roleContainer) }
+
 // checkObject reads one object's attributes, owner and DACL — without following
 // a reparse point, so a junction is judged as itself — and judges them.
 func checkObject(path string, r role) error {

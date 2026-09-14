@@ -23,6 +23,8 @@ func checkVolume(dir string) error {
 	return fmt.Errorf("%w: %w: no ownership model on this platform", ErrUnsafeRoot, ErrNotImplemented)
 }
 
+func checkPointer(path string) error { return checkObject(path, roleContainer) }
+
 func checkObject(string, role) error {
 	return fmt.Errorf("%w: %w: no ownership model on this platform", ErrUnsafeRoot, ErrNotImplemented)
 }

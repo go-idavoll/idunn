@@ -26,6 +26,19 @@ import (
 // other, and its owner and mode are judged as one.
 func checkVolume(string) error { return nil }
 
+// checkPointer judges the install's `current` symlink (judgePointer).
+func checkPointer(path string) error {
+	st, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("%w: cannot inspect %q: %w", ErrUnsafeRoot, path, err)
+	}
+	sys, ok := st.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fmt.Errorf("%w: cannot read the owner of %q", ErrUnsafeRoot, path)
+	}
+	return judgePointer(path, st.Mode(), uint64(sys.Uid), uint64(sys.Gid))
+}
+
 // checkObject judges one object by its owner and mode bits, without following a
 // final symlink.
 //
