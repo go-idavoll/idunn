@@ -31,6 +31,7 @@ import (
 	"github.com/go-idavoll/idunn/core/fetch"
 	"github.com/go-idavoll/idunn/core/fsx"
 	"github.com/go-idavoll/idunn/core/hook"
+	"github.com/go-idavoll/idunn/core/integrate"
 	"github.com/go-idavoll/idunn/core/release"
 	"github.com/go-idavoll/idunn/core/stage"
 	"github.com/go-idavoll/idunn/core/timefloor"
@@ -139,6 +140,17 @@ type Options struct {
 	// a descriptor can choose or move either.
 	Launcher stage.Launcher
 
+	// Registry is where the installation's recorded OS integrations are kept
+	// current — integrate.OSRegistry() in a real program, nil for none. After
+	// Apply, the version the Windows "Installed apps" entry shows is brought in
+	// line with the version that is live; a failure is reported through
+	// Observe and never fails or undoes the update (core/integrate, IDN-36).
+	//
+	// In a system-wide installation it is the helper's to set: the entry is in
+	// HKEY_LOCAL_MACHINE, and the process that applies the update there is the
+	// one that can write it. An elevated Apply refreshes nothing itself.
+	Registry integrate.Registry
+
 	Policy Policy
 }
 
@@ -244,6 +256,7 @@ type Updater struct {
 	report     hook.Reporter
 	lock       AppLock
 	elevator   elevate.Elevator
+	registry   integrate.Registry
 
 	policy Policy
 }
@@ -330,6 +343,7 @@ func New(o Options) (*Updater, error) {
 		report:        o.Report,
 		lock:          o.Lock,
 		elevator:      o.Elevator,
+		registry:      o.Registry,
 		policy:        p,
 	}
 	// Wired after construction rather than in the literal: the callback closes

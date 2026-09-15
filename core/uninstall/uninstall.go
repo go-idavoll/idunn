@@ -49,6 +49,7 @@ import (
 
 	"github.com/go-idavoll/idunn/core/fsx"
 	"github.com/go-idavoll/idunn/core/hook"
+	"github.com/go-idavoll/idunn/core/integrate"
 	"github.com/go-idavoll/idunn/core/txn"
 	"github.com/go-idavoll/idunn/internal/launcherfile"
 	"github.com/go-idavoll/idunn/internal/layout"
@@ -143,6 +144,13 @@ type Options struct {
 	// not put there.
 	SelfPath string
 
+	// Registry is where the installation's recorded OS integrations — the
+	// Windows "Installed apps" entry — are removed from (core/integrate,
+	// IDN-36): integrate.OSRegistry() in a real program. An installation that
+	// records integrations is refused without one, before anything is changed:
+	// removing the root would lose the only record of what to unregister.
+	Registry integrate.Registry
+
 	// Observe receives progress events. Optional.
 	Observe hook.Observer
 }
@@ -199,6 +207,23 @@ func Run(ctx context.Context, o Options) (Result, error) {
 	}
 	res := Result{Name: id.name, Version: id.version, Resumed: id.resumed}
 
+	// What was registered outside the root is removed from the record inside
+	// it, so an installation whose record could not be acted on is not begun.
+	recorded, err := integrate.Recorded(o.FS, root)
+	if err != nil {
+		return res, fmt.Errorf("%w: %w", ErrUninstall, err)
+	}
+	var integrations *integrate.Integrator
+	if recorded {
+		if o.Registry == nil {
+			return res, fmt.Errorf("%w: the installation registered OS integrations and this uninstall has no way to remove them", ErrUninstall)
+		}
+		integrations, err = integrate.New(integrate.Options{FS: o.FS, Root: root, Registry: o.Registry, Observe: o.Observe})
+		if err != nil {
+			return res, fmt.Errorf("%w: %w", ErrUninstall, err)
+		}
+	}
+
 	if o.Lock != nil {
 		held, err := o.Lock.TryLock(ctx)
 		if err != nil {
@@ -234,6 +259,15 @@ func Run(ctx context.Context, o Options) (Result, error) {
 
 	// From here on the journal says UNINSTALLING. Every failure below leaves it
 	// that way, and the next run picks up where this one stopped.
+	//
+	// The integrations go first: an "Installed apps" entry that outlives the
+	// installation it lists is the one leftover a user sees, and its record is
+	// in the directory removed last.
+	if integrations != nil {
+		if err := integrations.Unregister(ctx); err != nil {
+			return res, fmt.Errorf("%w: %w", ErrIncomplete, err)
+		}
+	}
 	if err := layout.RemovePointer(o.FS, root); err != nil {
 		return res, fmt.Errorf("%w: %w", ErrIncomplete, err)
 	}

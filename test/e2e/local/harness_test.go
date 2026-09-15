@@ -81,6 +81,12 @@ var suite struct {
 	installer string
 	launcher  string
 
+	// registrar is cmd/installer built to register the Windows "Installed
+	// apps" entry (IDN-36). Only the scenario that checks the entry uses it:
+	// every entry is keyed by the release name, and parallel installs of the
+	// same application in different roots would refuse each other's.
+	registrar string
+
 	mu   sync.Mutex
 	apps map[string]*appBuild
 }
@@ -135,15 +141,21 @@ func setup() (int, error) {
 		pkg     string
 		out     *string
 		ldflags string
+		name    string
 	}{
-		{"./cmd/packer", &suite.packer, ""},
-		{"./test/e2e/cmd/e2etool", &suite.e2etool, ""},
-		{"./cmd/installer", &suite.installer, ""},
+		{"./cmd/packer", &suite.packer, "", ""},
+		{"./test/e2e/cmd/e2etool", &suite.e2etool, "", ""},
+		{"./cmd/installer", &suite.installer, "", ""},
 		// The launcher bakes in what it starts; the application lives at the
 		// same install-relative path in every release.
-		{"./cmd/launcher", &suite.launcher, "-X main.appBinary=" + appDst + " -X main.releaseName=hostapp"},
+		{"./cmd/launcher", &suite.launcher, "-X main.appBinary=" + appDst + " -X main.releaseName=hostapp", ""},
+		{"./cmd/installer", &suite.registrar, "-X main.launcherName=" + exe("launcher") + " -X main.publisher=idunn-e2e", "registrar"},
 	} {
-		out := filepath.Join(suite.binDir, exe(filepath.Base(b.pkg)))
+		name := b.name
+		if name == "" {
+			name = filepath.Base(b.pkg)
+		}
+		out := filepath.Join(suite.binDir, exe(name))
 		if err := goBuild(out, b.pkg, b.ldflags); err != nil {
 			return 1, err
 		}
@@ -469,6 +481,13 @@ func newInstall(t *testing.T, r *repo) *install {
 // runInstaller runs cmd/installer against the served repository.
 func (in *install) runInstaller(extra ...string) (int, string) {
 	in.t.Helper()
+	return in.runInstallerBinary(suite.installer, extra...)
+}
+
+// runInstallerBinary runs one build of cmd/installer against the served
+// repository.
+func (in *install) runInstallerBinary(bin string, extra ...string) (int, string) {
+	in.t.Helper()
 	args := append([]string{
 		"install",
 		"--root", in.root,
@@ -477,7 +496,7 @@ func (in *install) runInstaller(extra ...string) (int, string) {
 		"--targets-url", in.repo.srv.targetsURL(),
 		"--cache", in.cache,
 	}, extra...)
-	return runProc(in.t, suite.installer, args...)
+	return runProc(in.t, bin, args...)
 }
 
 // mustInstall installs the channel head and checks it arrived.

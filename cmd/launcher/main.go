@@ -51,6 +51,7 @@ import (
 
 	"github.com/go-idavoll/idunn/core/fsx"
 	"github.com/go-idavoll/idunn/core/hook"
+	"github.com/go-idavoll/idunn/core/integrate"
 	"github.com/go-idavoll/idunn/core/launch"
 	"github.com/go-idavoll/idunn/core/txn"
 	"github.com/go-idavoll/idunn/core/uninstall"
@@ -181,6 +182,9 @@ func run(args []string, stdout, stderr io.Writer, exec execFn) int {
 		FS:             fsx.OS(),
 		Root:           installRoot,
 		RetainVersions: *retain,
+		// The "Installed apps" entry is reconciled with the live version on
+		// every start, and removed with the installation (IDN-36).
+		Registry: integrate.OSRegistry(),
 	}
 	// The file a staged launcher replaces is the one this process was started
 	// from, not a name derived from the root or the command line: a host may
@@ -213,7 +217,7 @@ func run(args []string, stdout, stderr io.Writer, exec execFn) int {
 	}
 
 	if *remove {
-		return uninstallRoot(installRoot, o.SelfPath, o.Observe, stderr)
+		return uninstallRoot(installRoot, o.SelfPath, o.Registry, o.Observe, stderr)
 	}
 
 	quick := 0
@@ -278,6 +282,11 @@ func startOnce(o launch.Options, installRoot, rel string, args []string, stderr 
 	if res.SelfErr != nil {
 		_, _ = fmt.Fprintf(stderr, "idunn launcher: this launcher was not replaced: %v\n", res.SelfErr)
 	}
+	// And an "Installed apps" entry that could not be brought up to date — in a
+	// system-wide install, one the helper should have refreshed.
+	if res.IntegrateErr != nil {
+		_, _ = fmt.Fprintf(stderr, "idunn launcher: %v\n", res.IntegrateErr)
+	}
 
 	// Resolved again on every start: after a relaunch, `current` may name a
 	// newer version than the one that asked for it.
@@ -301,7 +310,7 @@ func startOnce(o launch.Options, installRoot, rel string, args []string, stderr 
 // the same judgement a launcher makes before it swaps a staged launcher over
 // itself. A --root that names another directory is refused rather than removed,
 // so a launcher cannot be talked into deleting an installation it is not part of.
-func uninstallRoot(root, self string, observe hook.Observer, stderr io.Writer) int {
+func uninstallRoot(root, self string, registry integrate.Registry, observe hook.Observer, stderr io.Writer) int {
 	if self == "" {
 		_, _ = fmt.Fprintln(stderr, "idunn launcher: --uninstall needs to know where this launcher is, and it could not be located")
 		return exitError
@@ -317,6 +326,7 @@ func uninstallRoot(root, self string, observe hook.Observer, stderr io.Writer) i
 		Root:     fsx.Slash(root),
 		Name:     releaseName,
 		SelfPath: self,
+		Registry: registry,
 		Observe:  observe,
 	}
 	// The installer's TUF cache for this root goes with it. A different
