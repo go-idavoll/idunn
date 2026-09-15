@@ -21,6 +21,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/go-idavoll/idunn/core/installer"
 )
 
 // The command line is the contract with whatever runs this — a shell script, an
@@ -40,6 +42,10 @@ func TestExitCodes(t *testing.T) {
 		{"stray argument", []string{"install", "--root", "x", "extra"}, exitUsage},
 		{"version is not semver", []string{"install", "--root", "x", "--version", "latest"}, exitUsage},
 		{"missing anchor file", []string{"install", "--root", "x", "--root-metadata", "does-not-exist.json"}, exitUsage},
+		{"root and scope", []string{"install", "--root", "x", "--scope", "user"}, exitUsage},
+		{"unknown scope", []string{"install", "--scope", "system"}, exitUsage},
+		{"empty scope", []string{"install", "--scope", ""}, exitUsage},
+		{"scope without an application", []string{"install", "--scope", "machine"}, exitUsage},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -76,6 +82,7 @@ func TestApplyAcceptsOnlyTheRequestGrammar(t *testing.T) {
 		{"apply", "--root", "/opt/app", "--channel", "stable", "--version", "1.2.0", "--root-metadata", "/tmp/root.json"},
 		{"apply", "--root", "/opt/app", "--channel", "stable", "--version", "1.2.0", "--cache", "/tmp/cache"},
 		{"apply", "--root", "/opt/app", "--channel", "stable", "--version", "1.2.0", "--allow-downgrade"},
+		{"apply", "--root", "/opt/app", "--channel", "stable", "--version", "1.2.0", "--scope", "machine"},
 	}
 	for _, args := range rejected {
 		t.Run(args[len(args)-1], func(t *testing.T) {
@@ -200,5 +207,114 @@ func TestApplyRefusesARootAUserControls(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "administrators-only") {
 		t.Errorf("err = %q", out.String())
+	}
+}
+
+// withApp sets the build-time application identity for one test.
+func withApp(t *testing.T, name, id string) {
+	t.Helper()
+	oldName, oldID := appName, bundleID
+	appName, bundleID = name, id
+	t.Cleanup(func() { appName, bundleID = oldName, oldID })
+}
+
+// Without --root, a build that names its application installs where the
+// platform puts it: the user's location by default, the machine's on request
+// (IDN-24). The derivation itself is core/installer's and tested there; this is
+// the wiring.
+func TestRootDefaultsToTheScope(t *testing.T) {
+	withApp(t, "Acme Editor", "com.acme.editor")
+	tests := []struct {
+		name     string
+		scope    string
+		scopeSet bool
+		want     installer.Scope
+	}{
+		{"no scope", "", false, installer.ScopeUser},
+		{"user", "user", true, installer.ScopeUser},
+		{"machine", "machine", true, installer.ScopeMachine},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			want, err := installer.DefaultRoot(tt.want, installer.App{Name: appName, BundleID: bundleID})
+			if err != nil {
+				t.Fatalf("DefaultRoot: %v", err)
+			}
+			var errOut bytes.Buffer
+			got, code := resolveRoot("", tt.scope, tt.scopeSet, &errOut)
+			if code != exitOK || got != want {
+				t.Errorf("resolveRoot = %q, %d; want %q, %d\n%s", got, code, want, exitOK, &errOut)
+			}
+		})
+	}
+}
+
+// --root wins over the build's identity, and does so without deriving anything.
+func TestExplicitRootIsTakenAsGiven(t *testing.T) {
+	withApp(t, "../bad", "")
+	var errOut bytes.Buffer
+	if got, code := resolveRoot("some/dir", "", false, &errOut); code != exitOK || got != "some/dir" {
+		t.Errorf("resolveRoot = %q, %d\n%s", got, code, &errOut)
+	}
+}
+
+// --root and --scope say two things about where the install goes, and which one
+// wins decides whether it is elevated. Neither does: the command line is refused,
+// even when the two happen to agree.
+func TestRootAndScopeAreMutuallyExclusive(t *testing.T) {
+	withApp(t, "Acme Editor", "com.acme.editor")
+	user, err := installer.DefaultRoot(installer.ScopeUser, installer.App{Name: appName, BundleID: bundleID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, scope := range []string{"user", "machine", ""} {
+		var errOut bytes.Buffer
+		if got, code := resolveRoot(user, scope, true, &errOut); code != exitUsage {
+			t.Errorf("--root %q --scope %q: resolveRoot = %q, %d; want %d", user, scope, got, code, exitUsage)
+		}
+		if !strings.Contains(errOut.String(), "mutually exclusive") {
+			t.Errorf("err = %q", errOut.String())
+		}
+	}
+}
+
+// An identity the build carries but no root can be derived from is the build's
+// defect, not the operator's typo, and is reported as a failure — with --root as
+// the way out.
+func TestUnusableBuildIdentityIsAnError(t *testing.T) {
+	withApp(t, "../etc", "not reverse dns")
+	var errOut bytes.Buffer
+	if got, code := resolveRoot("", "", false, &errOut); code != exitError {
+		t.Fatalf("resolveRoot = %q, %d; want %d\n%s", got, code, exitError, &errOut)
+	}
+	if !strings.Contains(errOut.String(), "--root") {
+		t.Errorf("the error does not name the flag that would fix it: %q", errOut.String())
+	}
+}
+
+// A build without an identity keeps today's contract: --root is required, and
+// the error says why.
+func TestNoIdentityRequiresRoot(t *testing.T) {
+	withApp(t, "", "")
+	var errOut bytes.Buffer
+	if _, code := resolveRoot("", "", false, &errOut); code != exitUsage {
+		t.Fatalf("resolveRoot = %d, want %d", code, exitUsage)
+	}
+	if !strings.Contains(errOut.String(), "--root is required") {
+		t.Errorf("err = %q", errOut.String())
+	}
+}
+
+// End to end through the command line: a derived root gets as far as the trust
+// anchor, which this tree does not embed — past the point where a missing --root
+// would have stopped it, and before anything is written.
+func TestInstallWithoutRootReachesTheAnchor(t *testing.T) {
+	withApp(t, "Acme Editor", "com.acme.editor")
+	var out bytes.Buffer
+	if code := run([]string{"install"}, &out, &out); code != exitUsage {
+		t.Fatalf("run = %d, want %d\n%s", code, exitUsage, &out)
+	}
+	if !strings.Contains(out.String(), "--root-metadata") {
+		t.Errorf("did not reach the anchor: %q", out.String())
 	}
 }

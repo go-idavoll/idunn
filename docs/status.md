@@ -16,7 +16,7 @@ piece of the section is missing; **open** — contract only, or nothing.
 | §3.2 | Release descriptor & channel pointer | **done** — `core/release`, strict parse, fuzzed |
 | §4 | TUF roles & key management (client side) | **done** — embedded root, `Refresh`, resolve |
 | §4.1 | Delegations, dedup, retention | **partial** — the packer delegates per channel and per release line from the first publish, and content-addressed payload targets deduplicate; retention (`retention.keep`) retires releases beyond a per-platform window of the line being published by reference counting (IDN-03). Retiring a whole major at end of life is not built |
-| §5 | Installer flow | **done** — `core/installer` plus the `cmd/installer` binary: embedded anchor, flags, elevation decision, exit codes |
+| §5 | Installer flow | **done** — `core/installer` plus the `cmd/installer` binary: embedded anchor, flags, elevation decision, exit codes, and a default install root per platform and `--scope user\|machine` (`installer.DefaultRoot`, IDN-24) |
 | §6.1 | Blue/green layout + pointer | **done** — `internal/layout`, symlink (POSIX) / pointer file (Windows), plus the launcher shim (`core/launch`, `cmd/launcher`), which also restarts an application that asks for it (exit code 42 / `launch.Relaunch`, IDN-29) |
 | §6.2 | Transaction flow, journal, recovery | **done** — `core/txn`, crash-injection tests |
 | §6.3 | Updater API (`CheckForUpdate`, `Apply`) | **done** — `Apply` installs the releases a migration floor demands in between, in order, each its own transaction (§6.4). `Policy` has no expiry switch: metadata expiry is go-tuf's alone, tested through the updater (IDN-15) |
