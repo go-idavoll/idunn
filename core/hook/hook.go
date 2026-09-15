@@ -66,6 +66,24 @@ type Coordinator interface {
 	RequestShutdown(Context) error
 }
 
+// Uninstaller lets the host take part in removing its installation
+// (core/uninstall, IDN-35). Both methods are the host's compiled code; neither
+// is ever reached for a tree that is not an installation of this application.
+type Uninstaller interface {
+	// BeforeUninstall may refuse the uninstall with a non-nil error. It runs
+	// before anything is changed, so a refusal leaves the installation intact
+	// and runnable. It is not called again when an interrupted uninstall is
+	// finished: by then the installation is already past the point of refusal.
+	BeforeUninstall(Context) error
+
+	// PurgeData removes the application's own data outside the install root —
+	// settings, caches, databases — and is called only when the user asked for
+	// a purge. It must be idempotent: an uninstall interrupted after it ran
+	// calls it again when it is finished. An error leaves the uninstall
+	// unfinished, and running it again retries.
+	PurgeData(Context) error
+}
+
 // Reporter receives the terminal outcome of an update transaction so a publisher
 // is not blind to a bad release. Opt-in and privacy-first: core produces only
 // coarse, categorized data (no paths, no raw error strings, no PII). Reporting is
@@ -101,6 +119,10 @@ const (
 	PhaseCommit   Phase = "commit"
 	PhaseGC       Phase = "gc" // prune old version dirs after a successful commit.
 	PhaseRollback Phase = "rollback"
+
+	// PhaseUninstall is the removal of an installation (core/uninstall). It is
+	// not a step of an update transaction; it is its own lifecycle event.
+	PhaseUninstall Phase = "uninstall"
 )
 
 // Source names where the bytes of a staged file came from. It mirrors the

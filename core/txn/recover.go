@@ -86,6 +86,13 @@ func RecoverResult(ctx context.Context, f fsx.FS, root string, m hook.Migrator) 
 		// includes the pending launcher of the update that did not happen.
 		return Result{}, cleanOrphans(f, root)
 
+	case StateUninstalling:
+		// Not a transaction to settle: the installation is being removed, and
+		// the only way forward is the uninstall that started it. Finishing an
+		// update or rolling one back here would rebuild a tree that is already
+		// half gone.
+		return Result{}, ErrUninstalling
+
 	case StateDeferred:
 		// Nothing was interrupted here: this transaction is staged and waiting
 		// on purpose. Recovery leaves everything where it is — the version
@@ -161,6 +168,8 @@ func Rollback(ctx context.Context, f fsx.FS, root string, m hook.Migrator) error
 		return settleCommitted(f, root, last)
 	case StateRolledBack:
 		return cleanOrphans(f, root)
+	case StateUninstalling:
+		return ErrUninstalling
 	case StateBegin:
 		// Nothing beyond the journal write happened, so there is no migration
 		// to undo (it only starts after STAGED).

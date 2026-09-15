@@ -26,6 +26,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-idavoll/idunn/core/fsx"
 	"github.com/go-idavoll/idunn/core/release"
@@ -488,4 +489,156 @@ func TestInstallAndRestart(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ---------------------------------------------------------------------------
+// 8. Uninstall (IDN-35): the launcher removes the installation it belongs to,
+//    and then itself. As real processes, so the Windows self-delete path — a
+//    copy started with the launcher's DELETE_ON_CLOSE handle — runs for real.
+// ---------------------------------------------------------------------------
+
+func TestUninstall(t *testing.T) {
+	t.Parallel()
+	if elevated() {
+		// A user-scope install root is user-owned, which an elevated process is
+		// refused (elevate.CheckPrivilegedRoot, §14.8). System-scope uninstall by
+		// an elevated process is IDN-37/IDN-23; here it would only test the
+		// refusal. The unit tests cover the logic with the root check stubbed.
+		t.Skip("running elevated/root: the per-user uninstall path is refused by the privileged-root check")
+	}
+
+	// launcherInRoot copies the built launcher to <root>/launcher(.exe), where a
+	// real installation keeps it: above versions/, the one file that stays. The
+	// uninstall removes that copy, not the shared suite binary.
+	launcherInRoot := func(t *testing.T, in *install) string {
+		t.Helper()
+		dst := filepath.Join(in.root, exe("launcher"))
+		raw, err := os.ReadFile(suite.launcher)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(dst, raw, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return dst
+	}
+
+	// waitGone polls until the launcher and the root are gone: on Windows the
+	// removal is finished by a detached copy after this process returns.
+	waitGone := func(t *testing.T, paths ...string) {
+		t.Helper()
+		deadline := time.Now().Add(lineTimeout)
+		for {
+			left := ""
+			for _, p := range paths {
+				if _, err := os.Stat(p); err == nil {
+					left = p
+					break
+				} else if !errors.Is(err, fs.ErrNotExist) {
+					t.Fatalf("Stat(%s): %v", p, err)
+				}
+			}
+			if left == "" {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%s was not removed in time", left)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+
+	t.Run("removes the installation and the launcher", func(t *testing.T) {
+		t.Parallel()
+		r := newRepo(t)
+		r.publish("1.0.0")
+		in := newInstall(t, r)
+		in.mustInstall("1.0.0")
+		self := launcherInRoot(t, in)
+
+		// It runs once as a user would, then is uninstalled.
+		if code, out := runProc(t, self, "-root", in.root); code != exitOK || !strings.Contains(out, "app 1.0.0") {
+			t.Fatalf("first start = %d: %q", code, out)
+		}
+		code, out := runProc(t, self, "-root", in.root, "--uninstall")
+		if code != exitOK {
+			t.Fatalf("--uninstall = %d\n%s", code, out)
+		}
+		waitGone(t, self, in.root)
+	})
+
+	t.Run("keeps a directory holding files idunn did not install", func(t *testing.T) {
+		t.Parallel()
+		r := newRepo(t)
+		r.publish("1.0.0")
+		in := newInstall(t, r)
+		in.mustInstall("1.0.0")
+		self := launcherInRoot(t, in)
+		mine := filepath.Join(in.root, "user-notes.txt")
+		if err := os.WriteFile(mine, []byte("keep me"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		code, out := runProc(t, self, "-root", in.root, "--uninstall")
+		if code != exitOK {
+			t.Fatalf("--uninstall = %d\n%s", code, out)
+		}
+		// The version directories and idunn's state are gone; the user's file,
+		// and so the root, remain.
+		if _, err := os.Stat(filepath.Join(in.root, layout.VersionsName)); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("versions/ survived: %v", err)
+		}
+		if b, err := os.ReadFile(mine); err != nil || string(b) != "keep me" {
+			t.Fatalf("the user's file was not kept: %q, %v", b, err)
+		}
+	})
+
+	t.Run("an interrupted uninstall is refused a start and finished by running it again", func(t *testing.T) {
+		t.Parallel()
+		r := newRepo(t)
+		r.publish("1.0.0")
+		in := newInstall(t, r)
+		in.mustInstall("1.0.0")
+		self := launcherInRoot(t, in)
+
+		// Mark the installation as being uninstalled, as a crash mid-uninstall
+		// would leave it, and then try to start it: the launcher must refuse.
+		j, err := txn.Open(fsx.OS(), in.root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := j.Append(txn.Record{State: txn.StateUninstalling, Name: "hostapp", ToVersion: "1.0.0"}); err != nil {
+			t.Fatal(err)
+		}
+		if code, out := runProc(t, self, "-root", in.root); code != exitError || !strings.Contains(out, "uninstall") {
+			t.Fatalf("start of an uninstalling root = %d, want it refused with a hint: %q", code, out)
+		}
+		// Running the uninstall again finishes it.
+		if code, out := runProc(t, self, "-root", in.root, "--uninstall"); code != exitOK {
+			t.Fatalf("resumed --uninstall = %d\n%s", code, out)
+		}
+		waitGone(t, self, in.root)
+	})
+
+	t.Run("refuses to remove another application", func(t *testing.T) {
+		t.Parallel()
+		r := newRepo(t)
+		r.publish("1.0.0")
+		in := newInstall(t, r)
+		in.mustInstall("1.0.0")
+		self := launcherInRoot(t, in)
+		// Rewrite the recorded name to a different application.
+		if err := layout.WriteInstall(fsx.OS(), in.root, layout.Install{
+			Name: "someone-else", Version: "1.0.0", LayoutSchema: release.LayoutSchema,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		code, out := runProc(t, self, "-root", in.root, "--uninstall")
+		if code != exitRefused {
+			t.Fatalf("--uninstall of another app = %d, want %d\n%s", code, exitRefused, out)
+		}
+		if _, err := os.Stat(self); err != nil {
+			t.Fatalf("a refused uninstall removed the launcher: %v", err)
+		}
+	})
 }
