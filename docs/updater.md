@@ -221,6 +221,25 @@ start and, since a missing launcher cannot start, also at the beginning of `Appl
 `ApplyRequested`, in `launch.Relaunch`, and wherever the host calls
 `Updater.RepairLauncher`. None of it can fail an update; failures are Observer events.
 
+### The "Installed apps" entry
+
+An installation that registered a Windows "Installed apps" entry (`core/integrate`,
+IDN-36) records it in `.updater/integrations.json`. The version the entry shows is
+derived state — winget, Intune and SCCM detect the installed version through it — so a
+host hands the updater the registry:
+
+```go
+Registry: integrate.OSRegistry(), // nil on other platforms, and then nothing happens
+```
+
+After `Apply`, whatever it ended on, the entry's `DisplayVersion`, icon and size are
+brought in line with the version the pointer names. Only what differs is written. The
+refresh is not part of the transaction: a registry write that fails is an Observer event
+and never fails or undoes a committed update, and the launcher (`launch.Options.Registry`)
+reconciles again at every start. An elevated `Apply` refreshes nothing itself — the entry
+of a system-wide installation is in `HKEY_LOCAL_MACHINE`, and the helper that ran the
+transaction sets `Registry` on its own updater.
+
 ## 6. Crash recovery
 
 The journal is rewritten atomically on every append (write, fsync, rename): a torn

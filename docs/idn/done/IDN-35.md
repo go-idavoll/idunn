@@ -77,6 +77,6 @@ Still open, tracked elsewhere:
   work of [IDN-23](../IDN-23.md). The privileged helper deliberately gets **no**
   uninstall verb — an allowed caller must not remove a system-wide application without
   administrator rights.
-- **OS integrations** (the Windows "Installed apps" entry, shortcuts) are removed from
-  a recorded manifest by [IDN-36](../IDN-36.md); uninstall already removes what is
-  inside the root.
+- **OS integrations** are removed from the manifest [IDN-36](../IDN-36.md) records,
+  right after the `UNINSTALLING` record (`uninstall.Options.Registry`); the Windows
+  "Installed apps" entry is done, shortcuts and the other integrations are open there.

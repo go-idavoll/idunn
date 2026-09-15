@@ -36,6 +36,7 @@ import (
 
 	"github.com/go-idavoll/idunn/core/fsx"
 	"github.com/go-idavoll/idunn/core/hook"
+	"github.com/go-idavoll/idunn/core/integrate"
 	"github.com/go-idavoll/idunn/core/stage"
 	"github.com/go-idavoll/idunn/core/txn"
 	"github.com/go-idavoll/idunn/internal/launcherfile"
@@ -93,6 +94,15 @@ type Options struct {
 	// launcher is host knowledge given to the updater (updater.Options.Launcher),
 	// never something a descriptor nominates (docs/design.md §13, IDN-17).
 	SelfPath string
+
+	// Registry is where the installation's recorded OS integrations live —
+	// integrate.OSRegistry() in a real program, nil for none. Each start
+	// reconciles them against the version that is live: the Windows "Installed
+	// apps" entry is derived state, and an update that committed without
+	// refreshing it — a recovery, a deferred update, a host that set no
+	// Registry on its updater — is corrected here (core/integrate, IDN-36).
+	// A start that finds the entry current writes nothing.
+	Registry integrate.Registry
 }
 
 // Deferred describes an update that is staged and waiting for a start.
@@ -126,6 +136,12 @@ type Result struct {
 	// left the old launcher in place. It never makes Start fail — the
 	// installation that is live is runnable either way.
 	SelfErr error
+
+	// IntegrateErr is why the OS integrations could not be reconciled with the
+	// live version — typically a system-wide entry this unprivileged start may
+	// not write, while the helper that should have has not. Like SelfErr it
+	// never makes Start fail.
+	IntegrateErr error
 
 	// Skipped is true when a deferred update was found but left waiting,
 	// because the application lock said an instance is still running.
@@ -205,6 +221,7 @@ func Start(ctx context.Context, o Options) (Result, error) {
 	res := Result{Recovered: rec.Recovered, SelfRestored: restored, SelfErr: repairErr, FromVersion: rec.FromVersion, ToVersion: rec.ToVersion}
 	if !rec.Deferred {
 		o.selfUpdate(&res)
+		o.reconcile(ctx, &res)
 		return res, nil
 	}
 
@@ -222,6 +239,7 @@ func Start(ctx context.Context, o Options) (Result, error) {
 			// live, which is the one that instance is already running.
 			o.emit(hook.PhaseQuiesce, "an instance is still running; "+rec.ToVersion+" stays deferred", nil)
 			res.Skipped = true
+			o.reconcile(ctx, &res)
 			return res, nil
 		}
 		defer func() {
@@ -261,7 +279,25 @@ func Start(ctx context.Context, o Options) (Result, error) {
 	// The launcher is swapped last: finishing the deferred update is what may
 	// have staged the one it carries.
 	o.selfUpdate(&res)
+	o.reconcile(ctx, &res)
 	return res, nil
+}
+
+// reconcile brings the OS integrations in line with the live version and
+// records the outcome in res. A failure is reported and never returned: the
+// installation is runnable whatever the "Installed apps" list says about it.
+func (o Options) reconcile(ctx context.Context, res *Result) {
+	if o.Registry == nil {
+		return
+	}
+	in, err := integrate.New(integrate.Options{FS: o.FS, Root: o.Root, Registry: o.Registry, Observe: o.Observe})
+	if err == nil {
+		err = in.Refresh(ctx)
+	}
+	if err != nil {
+		res.IntegrateErr = fmt.Errorf("%w: reconciling the OS integrations: %w", ErrLaunch, err)
+		o.emit(hook.PhaseCommit, "the Installed apps entry could not be brought up to date", res.IntegrateErr)
+	}
 }
 
 // selfUpdate swaps in a staged launcher and records the outcome in res.

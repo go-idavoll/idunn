@@ -23,6 +23,7 @@ import (
 
 	"github.com/go-idavoll/idunn/core/fsx"
 	"github.com/go-idavoll/idunn/core/hook"
+	"github.com/go-idavoll/idunn/core/integrate"
 	"github.com/go-idavoll/idunn/core/release"
 	"github.com/go-idavoll/idunn/core/stage"
 	"github.com/go-idavoll/idunn/core/txn"
@@ -62,6 +63,11 @@ func (u *Updater) Apply(ctx context.Context, r *Release) error {
 	// else. It is not part of the transaction and never fails it: the update
 	// is as good with or without it, and the report says what happened.
 	u.repairLauncher()
+
+	// Whatever the walk below ends on — the release asked for, a step on the
+	// way, or the version it started from — is what the OS integrations have
+	// to say (IDN-36).
+	defer u.refreshIntegrations(ctx)
 
 	from := r.FromVersion
 	for i, step := range u.plan(ctx, r) {
@@ -610,6 +616,28 @@ func phaseIsTransactional(phase hook.Phase) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+// refreshIntegrations brings the installation's OS integrations — the version
+// the Windows "Installed apps" entry shows — in line with the version that is
+// live (core/integrate, IDN-36).
+//
+// It runs after the transaction, never inside it: the swap is the transaction,
+// and the registry is not part of it. A failure is reported and changes nothing
+// about the update's outcome, and the launcher reconciles again at the next
+// start. It runs on a context that is not canceled with the update's, so an
+// update that committed and was then interrupted still says so.
+func (u *Updater) refreshIntegrations(ctx context.Context) {
+	if u.registry == nil {
+		return
+	}
+	in, err := integrate.New(integrate.Options{FS: u.fs, Root: u.root, Registry: u.registry, Now: u.now, Observe: u.observe})
+	if err == nil {
+		err = in.Refresh(context.WithoutCancel(ctx))
+	}
+	if err != nil {
+		u.emit(hook.PhaseCommit, "the Installed apps entry could not be brought up to date; the next start retries", err)
 	}
 }
 

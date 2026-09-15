@@ -31,6 +31,7 @@ Everything under `core/` sits on one side of that line. Keep new code on the cor
 | `core/timefloor` | Monotonic known-good time floor: refuses a clock below where this install has already been | §14.7 |
 | `core/launch` | Start of day: settle the journal, apply an update deferred by a busy application | §6.1, §14.3 |
 | `core/uninstall` | Remove an installation offline, crash-safe, without following a link; the launcher's `--uninstall` | §5 |
+| `core/integrate` | OS integrations outside the root (the Windows "Installed apps" entry), recorded in a manifest, refreshed from the pointer, removed from the record | §5, §13 |
 | `internal/packer` | Publishing engine: `pack.yaml` -> delegated, signed, reproducible TUF repository | §9, §4.1 |
 | `cmd/installer` | Thin installer binary | §5 |
 | `cmd/launcher` | The stable shim the install layout starts with; execs the application, or removes it (`--uninstall`) | §6.1, §13 |

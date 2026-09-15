@@ -25,7 +25,7 @@ An item that is partly done stays open until what it still lists is done.
 | [IDN-28](idn/IDN-28.md) | macOS: install on quit and relaunch (§14.3) | open |
 | [IDN-30](idn/IDN-30.md) | Replacing the privileged helper itself (§14.2) | open |
 | [IDN-31](idn/IDN-31.md) | Windows: Authenticode as a gate before the swap (§13) | open |
-| [IDN-36](idn/IDN-36.md) | OS integrations as a recorded manifest; Windows "Installed apps" (§5, §13) | open |
+| [IDN-36](idn/IDN-36.md) | OS integrations as a recorded manifest; Windows "Installed apps" (§5, §13) | manifest and uninstall entry done; repair and other integrations open |
 
 ### P2 — hardening and reach
 

@@ -43,6 +43,7 @@ import (
 	"github.com/go-idavoll/idunn/core/fsx"
 	"github.com/go-idavoll/idunn/core/hook"
 	"github.com/go-idavoll/idunn/core/installer"
+	"github.com/go-idavoll/idunn/core/integrate"
 	"github.com/go-idavoll/idunn/core/release"
 	"github.com/go-idavoll/idunn/core/trust"
 	"github.com/go-idavoll/idunn/core/updater"
@@ -103,6 +104,29 @@ var (
 	appName  = ""
 	bundleID = ""
 )
+
+// publisher and launcherName describe the Windows "Installed apps" entry an
+// install registers (core/integrate, IDN-36), set at build time:
+//
+//	go build -ldflags "-X 'main.publisher=Acme Corp' -X main.launcherName=acme.exe" ./cmd/installer
+//
+// launcherName is the launcher's file name in the install root; the entry's
+// uninstall commands are its --uninstall verb. A build that leaves it unset
+// registers no entry — there is no uninstaller for one to name — and neither
+// does a build for a platform without the registry. The entry is keyed by the
+// name the release is published under and shows appName, or that name when the
+// build sets no appName.
+//
+// An installer package that registers its own entry (an MSI, IDN-34) is built
+// without launcherName.
+var (
+	publisher    = ""
+	launcherName = ""
+)
+
+// osRegistry is the registry the entry is written to. A variable so the tests
+// can hand in an in-memory one rather than write the user's.
+var osRegistry = integrate.OSRegistry
 
 // userAgent identifies this client to proxies and servers.
 const userAgent = "idunn-installer"
@@ -419,6 +443,16 @@ func doInstall(c config, stdout, stderr io.Writer) int {
 			_, _ = fmt.Fprintf(stderr, "idunn installer: installed, but the install state is unreadable: %v\n", verr)
 			return exitError
 		}
+		// An install the elevated helper performed was registered by it: the
+		// entry of a system-wide installation is in HKEY_LOCAL_MACHINE, and
+		// the process that wrote the root is the one that can write there.
+		if o.Updater.Policy.Elevation == updater.ElevationNone {
+			if rerr := registerEntry(ctx, c.root); rerr != nil {
+				_, _ = fmt.Fprintf(stderr, "idunn installer: %s is installed, but it could not be added to the "+
+					"Installed apps list: %v; running the installer again retries\n", installed, rerr)
+				return exitError
+			}
+		}
 		if !c.quiet {
 			_, _ = fmt.Fprintf(stdout, "%s is installed at %s\n", installed, c.root)
 		}
@@ -566,6 +600,49 @@ func wireElevation(o *installer.Options, c config) (int, error) {
 	o.Updater.Elevator = el
 	o.Updater.Policy.Elevation = updater.ElevationInteractive
 	return exitOK, nil
+}
+
+// registerEntry registers the installation's "Installed apps" entry, or brings
+// the one already registered up to date. It is idempotent, so an install that
+// finds the requested version already on disk registers too, and running the
+// installer again repairs an entry that failed or was removed.
+//
+// The scope follows the root rather than a flag: a root only administrators
+// control is a system-wide installation, whose entry every user sees, and any
+// other root is the current user's.
+func registerEntry(ctx context.Context, root string) error {
+	reg := osRegistry()
+	if launcherName == "" || reg == nil {
+		return nil
+	}
+	f := fsx.OS()
+	slashRoot := fsx.Slash(root)
+	state, err := layout.ReadInstall(f, slashRoot)
+	if err != nil {
+		return err
+	}
+	if state == nil {
+		return fmt.Errorf("%s records no installation", root)
+	}
+	scope := integrate.ScopeUser
+	if elevate.CheckPrivilegedRoot(root) == nil {
+		scope = integrate.ScopeMachine
+	}
+	display := appName
+	if display == "" {
+		display = state.Name
+	}
+	in, err := integrate.New(integrate.Options{FS: f, Root: slashRoot, Registry: reg})
+	if err != nil {
+		return err
+	}
+	return in.RegisterUninstallEntry(ctx, integrate.UninstallEntry{
+		Scope:       scope,
+		ID:          state.Name,
+		DisplayName: display,
+		Publisher:   publisher,
+		Launcher:    launcherName,
+	})
 }
 
 // parseBuildTime reads the linker-set stamp. Both spellings are accepted because

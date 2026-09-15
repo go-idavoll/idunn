@@ -29,6 +29,7 @@ import (
 	"github.com/go-idavoll/idunn/core/elevate"
 	"github.com/go-idavoll/idunn/core/fetch"
 	"github.com/go-idavoll/idunn/core/fsx"
+	"github.com/go-idavoll/idunn/core/integrate"
 	"github.com/go-idavoll/idunn/core/trust"
 	"github.com/go-idavoll/idunn/core/updater"
 	"github.com/go-idavoll/idunn/internal/anchor"
@@ -175,6 +176,10 @@ func updaterOptions(b *build, root, cacheDir string) (updater.Options, error) {
 		Root:          root,
 		ClientVersion: version,
 		BuildTime:     stamp,
+		// A system-wide installation's "Installed apps" entry is in
+		// HKEY_LOCAL_MACHINE; the helper that applies the update is the
+		// process that can bring it up to date (IDN-36).
+		Registry: integrate.OSRegistry(),
 		Policy: updater.Policy{
 			RetainVersions:   2,
 			VerifyAfterApply: true,

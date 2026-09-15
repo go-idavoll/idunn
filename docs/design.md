@@ -365,6 +365,19 @@ paths exist only once.
 > fixed paths. `--root` and `--scope` together are refused. On macOS this is where the
 > versions live; the bundle a user starts is IDN-26. On Linux, making the launcher
 > discoverable (`.desktop`, `$PATH`) is left to the host.
+>
+> **As built — OS integrations (IDN-36).** What an installation registers outside its
+> root is recorded in `.updater/integrations.json` before it takes effect, and removed
+> from that record (`core/integrate`). Today that is the Windows "Installed apps" entry
+> below `HKCU` or the 64-bit view of `HKLM`, following the root's scope: `cmd/installer`
+> registers it when built with a launcher name, its uninstall commands are the
+> launcher's `--uninstall`, and it carries the root it belongs to, so an entry of another
+> root or of other software is never overwritten or removed. `DisplayVersion` is derived
+> state: `updater.Apply` refreshes it from the pointer and the launcher reconciles it at
+> every start, writing only what differs; a failed write is reported and never touches
+> the committed update. `NoModify`/`NoRepair` default to 1 and a UI sidecar sets
+> `ModifyPath`. Repair, and the other integrations (shortcuts, associations, protocols,
+> autostart), are still open.
 
 ---
 

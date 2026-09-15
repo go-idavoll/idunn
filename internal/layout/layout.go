@@ -61,6 +61,10 @@ const (
 	ClockName    = "clock.json"
 	StagingName  = "staging"
 
+	// IntegrationsName is the record of what an installation registered with
+	// the operating system outside its root (core/integrate, IDN-36).
+	IntegrationsName = "integrations.json"
+
 	// TrustCacheName is the privileged helper's TUF cache (elevate.PrivilegedCacheDir).
 	TrustCacheName = "tuf"
 )
@@ -109,6 +113,12 @@ func State(root string) string { return fsx.Join(root, MetaName, StateName) }
 // the first thing anyone tries when updates misbehave, and a defence a routine
 // cleanup silently disables is not one.
 func Clock(root string) string { return fsx.Join(root, MetaName, ClockName) }
+
+// Integrations is the manifest of the OS integrations registered for this
+// installation — the Windows "Installed apps" entry and whatever follows it —
+// so that removing them is a reading of the record, never a guess
+// (core/integrate, IDN-36).
+func Integrations(root string) string { return fsx.Join(root, MetaName, IntegrationsName) }
 
 // Staging is where verified files are assembled before the swap.
 func Staging(root string) string { return fsx.Join(root, MetaName, StagingName) }

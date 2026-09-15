@@ -16,6 +16,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -23,7 +24,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-idavoll/idunn/core/fsx"
 	"github.com/go-idavoll/idunn/core/installer"
+	"github.com/go-idavoll/idunn/core/integrate"
+	"github.com/go-idavoll/idunn/internal/layout"
 	"github.com/go-idavoll/idunn/test/redteam/harness"
 )
 
@@ -250,5 +254,100 @@ func TestForeignRepositoryIsRefused(t *testing.T) {
 	}
 	if v, err := installer.InstalledVersion(root); err != nil || v != "" {
 		t.Fatalf("something was installed from a repository signed by unknown keys: %q, %v", v, err)
+	}
+}
+
+// withRegistry stands an in-memory registry in for the user's and names a
+// launcher, so an install registers its "Installed apps" entry there.
+func withRegistry(t *testing.T) *integrate.MemRegistry {
+	t.Helper()
+	reg := &integrate.MemRegistry{}
+	oldReg, oldLauncher, oldPublisher := osRegistry, launcherName, publisher
+	osRegistry = func() integrate.Registry { return reg }
+	launcherName, publisher = "acme.exe", "Acme Corp"
+	t.Cleanup(func() { osRegistry, launcherName, publisher = oldReg, oldLauncher, oldPublisher })
+	return reg
+}
+
+// entryOf finds the entry an install registered, in whichever hive the root's
+// ownership put it.
+func entryOf(t *testing.T, reg *integrate.MemRegistry, root string) map[string]integrate.Value {
+	t.Helper()
+	state, err := layout.ReadInstall(fsx.OS(), fsx.Slash(root))
+	if err != nil || state == nil {
+		t.Fatalf("ReadInstall = %v, %v", state, err)
+	}
+	for _, h := range []integrate.Hive{integrate.HiveUser, integrate.HiveMachine} {
+		if v, err := reg.ReadKey(h, integrate.UninstallKey+`\`+state.Name); err == nil {
+			return v
+		}
+	}
+	return nil
+}
+
+func TestInstallRegistersTheInstalledAppsEntry(t *testing.T) {
+	reg := withRegistry(t)
+	r := newRepo(t, "1.2.0")
+	root := filepath.Join(t.TempDir(), "app")
+
+	var out bytes.Buffer
+	if code := run(r.installArgs(t, root), &out, &out); code != exitOK {
+		t.Fatalf("run = %d: %s", code, &out)
+	}
+	v := entryOf(t, reg, root)
+	if v == nil {
+		t.Fatal("no Installed apps entry was registered")
+	}
+	if v["DisplayVersion"].S != "1.2.0" || v["Publisher"].S != "Acme Corp" ||
+		!strings.HasSuffix(v["UninstallString"].S, `acme.exe" --uninstall`) {
+		t.Errorf("entry = %v", v)
+	}
+}
+
+// A registration that fails is an install that reports failure — and running the
+// installer again, which finds the version already installed, registers it.
+func TestAFailedRegistrationIsRetriedByRunningAgain(t *testing.T) {
+	reg := withRegistry(t)
+	reg.Fail = func(op string, _ integrate.Hive, _ string) error {
+		if op == "write" {
+			return errors.New("access denied")
+		}
+		return nil
+	}
+	r := newRepo(t, "1.2.0")
+	root := filepath.Join(t.TempDir(), "app")
+
+	var out bytes.Buffer
+	if code := run(r.installArgs(t, root), &out, &out); code != exitError {
+		t.Fatalf("run = %d, want %d: %s", code, exitError, &out)
+	}
+	if !strings.Contains(out.String(), "Installed apps") {
+		t.Errorf("the failure does not say what failed: %s", &out)
+	}
+	if v, err := installer.InstalledVersion(root); err != nil || v != "1.2.0" {
+		t.Fatalf("InstalledVersion = %q, %v; the install itself must stand", v, err)
+	}
+
+	reg.Fail = nil
+	out.Reset()
+	if code := run(r.installArgs(t, root), &out, &out); code != exitOK {
+		t.Fatalf("second run = %d: %s", code, &out)
+	}
+	if entryOf(t, reg, root) == nil {
+		t.Fatal("the second run did not register the entry")
+	}
+}
+
+func TestNoLauncherNoEntry(t *testing.T) {
+	reg := withRegistry(t)
+	launcherName = ""
+	r := newRepo(t, "1.2.0")
+	root := filepath.Join(t.TempDir(), "app")
+	var out bytes.Buffer
+	if code := run(r.installArgs(t, root), &out, &out); code != exitOK {
+		t.Fatalf("run = %d: %s", code, &out)
+	}
+	if reg.Keys() != 0 {
+		t.Fatal("a build without a launcher registered an entry")
 	}
 }
