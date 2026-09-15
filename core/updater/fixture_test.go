@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"slices"
 	"strings"
 	"testing"
@@ -131,21 +132,22 @@ func (f *fakeTrust) LatestRelease(ch, goos, goarch string) (*release.Descriptor,
 	return f.descriptor, nil
 }
 
-func (f *fakeTrust) Target(path string) ([]byte, error) {
+func (f *fakeTrust) Materialize(path string, w io.Writer) error {
 	if err := f.targetErr[path]; err != nil {
-		return nil, err
+		return err
 	}
 	data, ok := f.targets[path]
 	if !ok {
-		return nil, errors.New("no such target: " + path)
+		return errors.New("no such target: " + path)
 	}
-	return data, nil
+	_, err := w.Write(data)
+	return err
 }
 
-// TargetLength and VerifyTarget model the trust client's reuse surface: a length
+// TargetLength and VerifyStream model the trust client's reuse surface: a length
 // the staging path may pre-filter on, and the one verdict on bytes it did not get
-// from Target. The real check is a hash comparison inside go-tuf; comparing the
-// bytes themselves is the same answer, stricter, and needs no fixture hashes.
+// from Materialize. The real check is a hash comparison inside go-tuf; comparing
+// the bytes themselves is the same answer, stricter, and needs no fixture hashes.
 func (f *fakeTrust) TargetLength(path string) (int64, error) {
 	data, ok := f.targets[path]
 	if !ok {
@@ -154,10 +156,14 @@ func (f *fakeTrust) TargetLength(path string) (int64, error) {
 	return int64(len(data)), nil
 }
 
-func (f *fakeTrust) VerifyTarget(path string, data []byte) error {
+func (f *fakeTrust) VerifyStream(path string, r io.Reader) error {
 	want, ok := f.targets[path]
 	if !ok {
 		return errors.New("no such target: " + path)
+	}
+	data, err := io.ReadAll(io.LimitReader(r, int64(len(want))+1))
+	if err != nil {
+		return err
 	}
 	if !bytes.Equal(want, data) {
 		return errors.New("target does not match: " + path)

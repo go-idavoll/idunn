@@ -297,6 +297,14 @@ func TestStageFallsBackToTheFullTarget(t *testing.T) {
 			r.publishPatch(old, newer)
 			return stage.Route{dst: {payload(newer)}}
 		},
+		"the size of the base is unknown": func(r *repo) stage.Route {
+			// The route is worth taking — the patch is published and cheap —
+			// and then the base cannot be pre-filtered by length, so it cannot
+			// be admitted as a base at all.
+			r.publishPatch(old, newer)
+			r.lenErr[payload(old)] = errors.New("no target info")
+			return stage.Route{dst: {payload(old), payload(newer)}}
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			r := newRepo(t, old, newer)
@@ -413,5 +421,211 @@ func TestStageDoesNotPatchTowardsATargetAboveTheCeiling(t *testing.T) {
 	}
 	if opened {
 		t.Error("read a patch base for a target above the ceiling")
+	}
+}
+
+// --- streaming -----------------------------------------------------------
+
+// A delta reads its base and its patch at offsets, and a chain writes every hop
+// but the last to a file. All of that lives beside the staging tree, never in
+// it: what becomes versions/<v> must hold the release and nothing else, and a
+// chain abandoned halfway must leave nothing that a later pass could mistake for
+// a staged file.
+func TestStageLeavesNoDeltaScratchBehind(t *testing.T) {
+	const dst = "lib/libcef.so"
+	v1 := runtimeBytes(41, 1<<16)
+	v2 := rebuilt(v1, 42)
+	v3 := rebuilt(v2, 43)
+
+	r := newRepo(t, v1, v2, v3)
+	r.publishPatch(v1, v2)
+	r.publishPatch(v2, v3)
+	r.fail[payload(v3)] = errors.New("the full target must not be fetched")
+
+	m := installedWith(t, "1.1.0", dst, v1)
+	s := &stage.Stager{FS: m, Trust: r, Root: root}
+
+	dir, err := s.Stage(context.Background(), descriptor(
+		ref(payload(v3), dst, release.KindLib, 0o644),
+	), stage.Route{dst: {payload(v1), payload(v2), payload(v3)}})
+	if err != nil {
+		t.Fatalf("Stage: %v", err)
+	}
+
+	// Exactly the release, and nothing beside it, anywhere under the version
+	// directory.
+	var found []string
+	walk(t, m, dir, &found)
+	if len(found) != 1 || found[0] != fsx.Join(dir, dst) {
+		t.Errorf("the version directory holds %v, want only %s", found, fsx.Join(dir, dst))
+	}
+
+	// And the scratch area itself is gone, not merely unused.
+	if _, err := m.Stat(fsx.Join(layout.Staging(root), ".scratch")); err == nil {
+		t.Error("the delta scratch directory survived a successful stage")
+	}
+}
+
+// The same, for a chain that fails partway: the last hop's patch is missing, so
+// the walk is abandoned and the full target is fetched instead. Nothing the
+// abandoned chain produced may be left where the release goes.
+func TestStageCleansUpAfterAnAbandonedChain(t *testing.T) {
+	const dst = "lib/libcef.so"
+	v1 := runtimeBytes(51, 1<<16)
+	v2 := rebuilt(v1, 52)
+	v3 := rebuilt(v2, 53)
+
+	r := newRepo(t, v1, v2, v3)
+	r.publishPatch(v1, v2)
+	r.publishPatch(v2, v3)
+	// The second hop's patch resolves — so the route is chosen — and then will
+	// not come down.
+	r.fail[patchPath(t, v2, v3)] = errors.New("the patch is not available after all")
+
+	m := installedWith(t, "1.1.0", dst, v1)
+	s := &stage.Stager{FS: m, Trust: r, Root: root}
+
+	dir, err := s.Stage(context.Background(), descriptor(
+		ref(payload(v3), dst, release.KindLib, 0o644),
+	), stage.Route{dst: {payload(v1), payload(v2), payload(v3)}})
+	if err != nil {
+		t.Fatalf("Stage: %v", err)
+	}
+	got, err := fsx.ReadFile(m, fsx.Join(dir, dst), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, v3) {
+		t.Fatal("the fallback did not install the signed target")
+	}
+	var found []string
+	walk(t, m, dir, &found)
+	if len(found) != 1 {
+		t.Errorf("the version directory holds %v, want only the release", found)
+	}
+	if _, err := m.Stat(fsx.Join(layout.Staging(root), ".scratch")); err == nil {
+		t.Error("the delta scratch directory survived an abandoned chain")
+	}
+}
+
+// patchPath is the target path of the patch between two payloads, which a test
+// needs in order to take exactly that patch away.
+func patchPath(t *testing.T, from, to []byte) string {
+	t.Helper()
+	p, ok := release.PatchPath(payload(from), payload(to))
+	if !ok {
+		t.Fatal("the fixture payloads have no patch path")
+	}
+	return p
+}
+
+// walk collects every regular file under dir.
+func walk(t *testing.T, m *fsx.Mem, dir string, out *[]string) {
+	t.Helper()
+	entries, err := m.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir(%s): %v", dir, err)
+	}
+	for _, e := range entries {
+		name := fsx.Join(dir, e.Name())
+		if e.IsDir() {
+			walk(t, m, name, out)
+			continue
+		}
+		*out = append(*out, name)
+	}
+}
+
+// The base of a walk is looked for in every installed version, and one that
+// holds a file of the wrong length at the destination is dismissed on the stat
+// rather than read. With no other version holding it, the walk has no base and
+// the full target is fetched.
+func TestStageSkipsAVersionWhoseBaseIsTheWrongSize(t *testing.T) {
+	const dst = "lib/libcef.so"
+	old := runtimeBytes(61, 1<<15)
+	newer := rebuilt(old, 62)
+
+	r := newRepo(t, old, newer)
+	r.publishPatch(old, newer)
+
+	m := newRoot(t)
+	// Two installed versions, neither holding the base: one shorter, one longer.
+	install(t, m, "1.1.0", map[string]string{dst: string(old[:len(old)/2])})
+	install(t, m, "1.2.0", map[string]string{dst: string(old) + "trailing"})
+	if err := layout.SetPointer(m, root, "1.2.0"); err != nil {
+		t.Fatalf("SetPointer: %v", err)
+	}
+	s := &stage.Stager{FS: m, Trust: r, Root: root}
+
+	if _, err := s.Stage(context.Background(), descriptor(
+		ref(payload(newer), dst, release.KindLib, 0o644),
+	), stage.Route{dst: {payload(old), payload(newer)}}); err != nil {
+		t.Fatalf("Stage: %v", err)
+	}
+	got, err := fsx.ReadFile(m, "/opt/app/versions/1.3.0/"+dst, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, newer) {
+		t.Fatal("the staged file is not the target")
+	}
+	if !slices.Contains(r.asked, payload(newer)) {
+		t.Error("did not fall back to fetching the full target")
+	}
+}
+
+// A base or a patch that verifies and then cannot be opened for the apply is a
+// failed hop, not a reason to install anything: the walk is abandoned and the
+// full target is fetched. Both files are opened twice — once to admit them, once
+// to read them at offsets — and the window between is where a disk goes away.
+func TestStageFallsBackWhenAHopCannotOpenItsInputs(t *testing.T) {
+	const dst = "lib/libcef.so"
+	old := runtimeBytes(71, 1<<15)
+	newer := rebuilt(old, 72)
+
+	base := fsx.Join(layout.Versions(root), "1.2.0", dst)
+	patch := fsx.Join(layout.Staging(root), ".scratch", "patch0")
+
+	for name, target := range map[string]string{
+		"the base": base,
+		"a patch":  patch,
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := newRepo(t, old, newer)
+			r.publishPatch(old, newer)
+
+			m := installedWith(t, "1.2.0", dst, old)
+			s := &stage.Stager{FS: m, Trust: r, Root: root}
+
+			// Refuse only the read the apply itself does: the base is opened
+			// once to admit it, and the patch is written before it is read.
+			var seen int
+			m.Fail = func(op, name string) error {
+				if op == "open" && name == target {
+					seen++
+					if (target == base && seen > 1) || target == patch {
+						return errors.New("the medium went away")
+					}
+				}
+				return nil
+			}
+			_, err := s.Stage(context.Background(), descriptor(
+				ref(payload(newer), dst, release.KindLib, 0o644),
+			), stage.Route{dst: {payload(old), payload(newer)}})
+			m.Fail = nil
+			if err != nil {
+				t.Fatalf("Stage: %v", err)
+			}
+			got, err := fsx.ReadFile(m, "/opt/app/versions/1.3.0/"+dst, 1<<20)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got, newer) {
+				t.Fatal("the staged file is not the target")
+			}
+			if !slices.Contains(r.asked, payload(newer)) {
+				t.Error("did not fall back to fetching the full target")
+			}
+		})
 	}
 }

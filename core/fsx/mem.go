@@ -606,6 +606,16 @@ func (f *memFile) Read(p []byte) (int, error) {
 	return f.r.Read(p)
 }
 
+// ReadAt satisfies fsx.ReaderAtCloser, so the streaming paths that need random
+// access to a file — a delta patch and the base it is applied to — run against
+// the in-memory filesystem exactly as they do against a real disk.
+func (f *memFile) ReadAt(p []byte, off int64) (int, error) {
+	if f.r == nil {
+		return 0, pathErr("readat", f.name, errors.New("is a directory"))
+	}
+	return f.r.ReadAt(p, off)
+}
+
 func (f *memFile) Close() error { return nil }
 
 // memInfo is both the fs.FileInfo and the fs.DirEntry view of a node.

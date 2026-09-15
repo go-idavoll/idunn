@@ -25,8 +25,11 @@
 package trust_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -947,5 +950,267 @@ func TestLatestReleaseRespectsTheCeiling(t *testing.T) {
 	}
 	if f.srv.Fetched(f.build.PointerTarget()) {
 		t.Error("the channel pointer was requested before it was refused")
+	}
+}
+
+// --- streaming targets ---------------------------------------------------
+
+// Materialize is what staging consumes in place of Target, so it must hand over
+// exactly the same bytes — and it must do it without the caller ever holding
+// them, which is what the io.Writer in the signature is for.
+func TestMaterializeStreamsTheSignedBytes(t *testing.T) {
+	f := refreshed(t, nil)
+	d, err := f.client.LatestRelease(testChannel, testOS, testArch)
+	if err != nil {
+		t.Fatalf("LatestRelease: %v", err)
+	}
+	target := d.Files[0].Target
+	want, err := f.client.Target(target)
+	if err != nil {
+		t.Fatalf("Target: %v", err)
+	}
+
+	var got bytes.Buffer
+	if err := f.client.Materialize(target, &got); err != nil {
+		t.Fatalf("Materialize: %v", err)
+	}
+	if !bytes.Equal(got.Bytes(), want) {
+		t.Errorf("Materialize wrote %d bytes, want the %d signed ones", got.Len(), len(want))
+	}
+}
+
+// The second materialization must come off the local cache: that is the whole
+// reason reuse and a re-run of a failed update are cheap. Closing the server
+// first is what proves nothing went back to it.
+func TestMaterializeSecondTimeComesFromTheCache(t *testing.T) {
+	f := refreshed(t, nil)
+	d, err := f.client.LatestRelease(testChannel, testOS, testArch)
+	if err != nil {
+		t.Fatalf("LatestRelease: %v", err)
+	}
+	target := d.Files[0].Target
+
+	var first bytes.Buffer
+	if err := f.client.Materialize(target, &first); err != nil {
+		t.Fatalf("Materialize: %v", err)
+	}
+	f.srv.Close()
+
+	var second bytes.Buffer
+	if err := f.client.Materialize(target, &second); err != nil {
+		t.Fatalf("Materialize from cache: %v", err)
+	}
+	if !bytes.Equal(first.Bytes(), second.Bytes()) {
+		t.Error("the cached materialization differs from the downloaded one")
+	}
+}
+
+// The go-tuf cache is local, owner-only state, and a file planted in it is still
+// untrusted input: it is verified exactly like a download, and a cache entry
+// that does not verify is not a cache hit. It must also not be *read* whole
+// first — Updater.FindCachedTarget does that with an unbounded os.ReadFile,
+// which is why this path does not use it (T23).
+func TestMaterializeRefusesATamperedCacheEntry(t *testing.T) {
+	f := refreshed(t, nil)
+	d, err := f.client.LatestRelease(testChannel, testOS, testArch)
+	if err != nil {
+		t.Fatalf("LatestRelease: %v", err)
+	}
+	target := d.Files[0].Target
+
+	var want bytes.Buffer
+	if err := f.client.Materialize(target, &want); err != nil {
+		t.Fatalf("Materialize: %v", err)
+	}
+	cached := filepath.Join(f.workDir, "targets", url.PathEscape(target))
+	if _, err := os.Stat(cached); err != nil {
+		t.Fatalf("the cache file is not where this test expects it: %v", err)
+	}
+
+	for name, planted := range map[string][]byte{
+		"different content of the same length": bytes.Repeat([]byte{'x'}, want.Len()),
+		"truncated":                            want.Bytes()[:max(want.Len()-1, 0)],
+		"far larger than the signed length":    bytes.Repeat([]byte{'x'}, want.Len()+4<<20),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := os.WriteFile(cached, planted, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			var got bytes.Buffer
+			if err := f.client.Materialize(target, &got); err != nil {
+				t.Fatalf("Materialize: %v", err)
+			}
+			if !bytes.Equal(got.Bytes(), want.Bytes()) {
+				t.Error("a planted cache entry reached the caller")
+			}
+		})
+	}
+}
+
+// A target above the ceiling is refused before it is requested, whichever door
+// it is asked for through. Materialize and VerifyStream are two more doors.
+func TestStreamingRespectsTheCeiling(t *testing.T) {
+	f := newFixture(t, nil)
+	target := f.build.DescriptorTarget()
+	signed := f.build.DescriptorRaw
+	c := f.withCeiling(t, int64(len(signed))-1, t.TempDir())
+
+	if err := c.Materialize(target, io.Discard); !errors.Is(err, trust.ErrTrust) {
+		t.Errorf("Materialize: err = %v, want ErrTrust", err)
+	}
+	if err := c.VerifyStream(target, bytes.NewReader(signed)); !errors.Is(err, trust.ErrTrust) {
+		t.Errorf("VerifyStream: err = %v, want ErrTrust", err)
+	}
+	if f.srv.Fetched(target) {
+		t.Error("the target was requested before it was refused")
+	}
+
+	// At the ceiling, both answer as they always did — otherwise the refusals
+	// above would prove nothing.
+	c = f.withCeiling(t, int64(len(signed)), t.TempDir())
+	if err := c.Materialize(target, io.Discard); err != nil {
+		t.Errorf("Materialize at the ceiling: %v", err)
+	}
+	if err := c.VerifyStream(target, bytes.NewReader(signed)); err != nil {
+		t.Errorf("VerifyStream at the ceiling: %v", err)
+	}
+}
+
+// VerifyStream is the door bytes from outside go-tuf come through once they are
+// too big to hold: a reused file, the output of a delta patch, an installed file
+// re-read after the swap. It must accept exactly the signed content and nothing
+// adjacent to it — the same contract VerifyTarget has, over a reader.
+func TestVerifyStreamAcceptsOnlyTheSignedBytes(t *testing.T) {
+	f := refreshed(t, nil)
+	d, err := f.client.LatestRelease(testChannel, testOS, testArch)
+	if err != nil {
+		t.Fatalf("LatestRelease: %v", err)
+	}
+	target := d.Files[0].Target
+	signed, err := f.client.Target(target)
+	if err != nil {
+		t.Fatalf("Target: %v", err)
+	}
+	if len(signed) == 0 {
+		t.Fatal("the fixture payload is empty; the tampering below would be vacuous")
+	}
+
+	if err := f.client.VerifyStream(target, bytes.NewReader(signed)); err != nil {
+		t.Fatalf("VerifyStream rejected the signed bytes: %v", err)
+	}
+
+	flipped := append([]byte(nil), signed...)
+	flipped[len(flipped)-1] ^= 0x01
+	for name, data := range map[string][]byte{
+		"one bit flipped": flipped,
+		"truncated":       signed[:len(signed)-1],
+		"one byte added":  append(append([]byte(nil), signed...), 0x00),
+		"empty":           {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := f.client.VerifyStream(target, bytes.NewReader(data)); err == nil {
+				t.Fatal("accepted bytes that are not the signed ones")
+			}
+		})
+	}
+}
+
+func TestVerifyStreamOfAnUnknownTargetIsRefused(t *testing.T) {
+	f := refreshed(t, nil)
+
+	err := f.client.VerifyStream("targets/nothing-here", strings.NewReader("anything"))
+	if !errors.Is(err, trust.ErrTrust) {
+		t.Fatalf("err = %v, want ErrTrust", err)
+	}
+}
+
+// A reader that fails halfway is a refusal, not a partial success: the caller
+// must never be told the stream verified because the part that arrived did.
+func TestVerifyStreamReportsAReaderThatFails(t *testing.T) {
+	f := refreshed(t, nil)
+	d, err := f.client.LatestRelease(testChannel, testOS, testArch)
+	if err != nil {
+		t.Fatalf("LatestRelease: %v", err)
+	}
+	target := d.Files[0].Target
+	signed, err := f.client.Target(target)
+	if err != nil {
+		t.Fatalf("Target: %v", err)
+	}
+
+	broken := io.MultiReader(bytes.NewReader(signed[:len(signed)/2]), errorReader{})
+	if err := f.client.VerifyStream(target, broken); err == nil {
+		t.Fatal("a stream that could not be read whole was accepted")
+	}
+}
+
+// errorReader fails every read, standing in for a file that goes away or a disk
+// that stops answering mid-stream.
+type errorReader struct{}
+
+func (errorReader) Read([]byte) (int, error) { return 0, errors.New("the medium stopped answering") }
+
+// A target that is not cached and cannot be fetched is a refusal that writes
+// nothing: the caller's writer must not be left holding a prefix of a download
+// that never finished.
+func TestMaterializeReportsAnUnreachableRepository(t *testing.T) {
+	f := refreshed(t, nil)
+	d, err := f.client.LatestRelease(testChannel, testOS, testArch)
+	if err != nil {
+		t.Fatalf("LatestRelease: %v", err)
+	}
+	target := d.Files[0].Target
+	f.srv.Close()
+
+	var got bytes.Buffer
+	if err := f.client.Materialize(target, &got); !errors.Is(err, trust.ErrTrust) {
+		t.Fatalf("err = %v, want ErrTrust", err)
+	}
+	if got.Len() != 0 {
+		t.Errorf("a failed materialization wrote %d bytes", got.Len())
+	}
+}
+
+// Every way a target's bytes come into this process now reads the go-tuf cache
+// the same bounded, verifying way — including the small documents this package
+// parses itself, which reach it through Target rather than Materialize. A file
+// planted in the cache is refused and replaced whichever door is used (T23).
+func TestEveryCacheReadRefusesAPlantedEntry(t *testing.T) {
+	f := refreshed(t, nil)
+
+	// The channel pointer and the descriptor go through Target; a payload goes
+	// through Materialize.
+	d, err := f.client.LatestRelease(testChannel, testOS, testArch)
+	if err != nil {
+		t.Fatalf("LatestRelease: %v", err)
+	}
+	for _, target := range []string{
+		f.build.PointerTarget(),
+		f.build.DescriptorTarget(),
+		d.Files[0].Target,
+	} {
+		t.Run(target, func(t *testing.T) {
+			want, err := f.client.Target(target)
+			if err != nil {
+				t.Fatalf("Target: %v", err)
+			}
+			cached := filepath.Join(f.workDir, "targets", url.PathEscape(target))
+			if err := os.WriteFile(cached, bytes.Repeat([]byte{'x'}, len(want)+8<<20), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			got, err := f.client.Target(target)
+			if err != nil {
+				t.Fatalf("Target after the cache was planted: %v", err)
+			}
+			if !bytes.Equal(got, want) {
+				t.Error("a planted cache entry reached the caller")
+			}
+			// And the planted file is gone rather than re-read on every
+			// attempt for the rest of this install's life.
+			if info, err := os.Stat(cached); err == nil && info.Size() != int64(len(want)) {
+				t.Errorf("the cache still holds %d bytes, want the %d signed ones", info.Size(), len(want))
+			}
+		})
 	}
 }

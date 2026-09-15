@@ -151,3 +151,54 @@ func TestStageRefusesAnUnsafeLauncherConfiguration(t *testing.T) {
 		})
 	}
 }
+
+// The launcher is recorded whichever of the three ways it was produced.
+//
+// Streaming made that a property to defend rather than one that holds by
+// construction: there is no longer a single buffer every source ends in, so a
+// source that returns early is a source whose launcher is silently never
+// recorded — an update that then starts the *old* launcher against a new
+// version directory. Reuse is the case that got it wrong, so it is the case
+// that is pinned.
+func TestStageKeepsThePendingLauncherWhateverProducedIt(t *testing.T) {
+	const launcherBytes = "the launcher"
+
+	for name, setup := range map[string]func(*fsx.Mem) *targets{
+		"downloaded": func(*fsx.Mem) *targets {
+			return newTargets(map[string][]byte{
+				"t/app":      []byte("the application"),
+				"t/launcher": []byte(launcherBytes),
+			})
+		},
+		"reused from the live version": func(m *fsx.Mem) *targets {
+			install(t, m, "1.2.0", map[string]string{"bin/launcher": launcherBytes})
+			if err := layout.SetPointer(m, root, "1.2.0"); err != nil {
+				t.Fatalf("SetPointer: %v", err)
+			}
+			// Offline for the launcher: a Stage that still records it can only
+			// have taken the bytes off the disk.
+			tr := newTargets(map[string][]byte{
+				"t/app":      []byte("the application"),
+				"t/launcher": []byte(launcherBytes),
+			})
+			tr.fail["t/launcher"] = errors.New("the launcher must not be fetched")
+			return tr
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := newRoot(t)
+			tr := setup(m)
+			s := &stage.Stager{FS: m, Trust: tr, Root: root, Launcher: hostLauncher}
+
+			if _, err := s.Stage(context.Background(), descriptor(
+				ref("t/app", "bin/app", release.KindExe, 0o755),
+				ref("t/launcher", "bin/launcher", release.KindExe, 0o755),
+			), nil); err != nil {
+				t.Fatalf("Stage: %v", err)
+			}
+			if got, ok := pendingLauncher(t, m, "1.3.0"); !ok || got != launcherBytes {
+				t.Fatalf("pending launcher = %q (%v), want the verified bytes", got, ok)
+			}
+		})
+	}
+}

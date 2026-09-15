@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -64,15 +65,16 @@ func (f *fakeTrust) ReleaseVersion(_, _, version string) (*release.Descriptor, e
 	return d, nil
 }
 
-func (f *fakeTrust) Target(path string) ([]byte, error) {
+func (f *fakeTrust) Materialize(path string, w io.Writer) error {
 	data, ok := f.targets[path]
 	if !ok {
-		return nil, errors.New("no such target: " + path)
+		return errors.New("no such target: " + path)
 	}
-	return data, nil
+	_, err := w.Write(data)
+	return err
 }
 
-// TargetLength and VerifyTarget are the reuse half of the trust surface; see the
+// TargetLength and VerifyStream are the reuse half of the trust surface; see the
 // note on the same pair in core/updater's fixture.
 func (f *fakeTrust) TargetLength(path string) (int64, error) {
 	data, ok := f.targets[path]
@@ -82,10 +84,14 @@ func (f *fakeTrust) TargetLength(path string) (int64, error) {
 	return int64(len(data)), nil
 }
 
-func (f *fakeTrust) VerifyTarget(path string, data []byte) error {
+func (f *fakeTrust) VerifyStream(path string, r io.Reader) error {
 	want, ok := f.targets[path]
 	if !ok {
 		return errors.New("no such target: " + path)
+	}
+	data, err := io.ReadAll(io.LimitReader(r, int64(len(want))+1))
+	if err != nil {
+		return err
 	}
 	if !bytes.Equal(want, data) {
 		return errors.New("target does not match: " + path)

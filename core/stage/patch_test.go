@@ -19,6 +19,7 @@ import (
 	"compress/flate"
 	"encoding/binary"
 	"errors"
+	"io"
 	"math"
 	"math/rand"
 	"testing"
@@ -559,3 +560,98 @@ func TestApplyPatchOnGeneratedShapes(t *testing.T) {
 		}
 	}
 }
+
+// --- the streaming form --------------------------------------------------
+
+// ApplyPatchStream is where the staging path actually goes: base and patch read
+// at offsets, output written sequentially into the scratch file of an atomic
+// write. ApplyPatch is the same reader with both sides buffered, so the cases
+// above cover the decoding — these cover what only the streaming form has.
+
+// The output writer is the scratch file of an atomic write, and a disk that
+// stops answering mid-reconstruction must fail the apply rather than produce a
+// short file that something later treats as a target.
+func TestApplyPatchStreamReportsAFailingOutput(t *testing.T) {
+	base := []byte("the quick brown fox jumps over the lazy dog")
+	want := append(append([]byte(nil), base...), []byte(" and keeps going")...)
+
+	b := &builder{newLen: uint64(len(want))}
+	b.add(uint64(len(base)), uint64(len(want)-len(base)), 0)
+	b.diff = diffBytes(want[:len(base)], base)
+	b.extra = want[len(base):]
+	patch := b.build(t)
+
+	boom := errors.New("the medium stopped answering")
+	for name, out := range map[string]*failingWriter{
+		"during the difference run": {after: 1, err: boom},
+		"during the literal run":    {after: int64(len(base)) + 1, err: boom},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := stage.ApplyPatchStream(bytes.NewReader(base), int64(len(base)),
+				bytes.NewReader(patch), int64(len(patch)), out, int64(len(want)))
+			if !errors.Is(err, boom) {
+				t.Fatalf("err = %v, want the writer's own error", err)
+			}
+		})
+	}
+}
+
+// A base file that stops answering is the same kind of failure, and has to be
+// reported rather than turned into zero bytes that the reconstruction then
+// happily adds to.
+func TestApplyPatchStreamReportsAFailingBase(t *testing.T) {
+	base := []byte("the quick brown fox jumps over the lazy dog")
+	b := &builder{newLen: uint64(len(base))}
+	b.add(uint64(len(base)), 0, 0)
+	b.diff = make([]byte, len(base))
+	patch := b.build(t)
+
+	boom := errors.New("the medium stopped answering")
+	err := stage.ApplyPatchStream(failingReaderAt{boom}, int64(len(base)),
+		bytes.NewReader(patch), int64(len(patch)), io.Discard, int64(len(base)))
+	if !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want the base file's own error", err)
+	}
+}
+
+// Negative lengths describe no file at all. They can only come from a caller
+// that got its own arithmetic wrong, and are refused before anything is read
+// rather than carried into a bound that then wraps.
+func TestApplyPatchStreamRefusesNegativeLengths(t *testing.T) {
+	for name, lengths := range map[string][2]int64{
+		"negative base":  {-1, 32},
+		"negative patch": {32, -1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := stage.ApplyPatchStream(bytes.NewReader(nil), lengths[0],
+				bytes.NewReader(nil), lengths[1], io.Discard, 32)
+			if !errors.Is(err, stage.ErrStage) {
+				t.Fatalf("err = %v, want ErrStage", err)
+			}
+		})
+	}
+}
+
+// failingWriter accepts `after` bytes and then fails, standing in for a disk
+// that fills up or a filesystem that goes away mid-write.
+type failingWriter struct {
+	after int64
+	err   error
+	n     int64
+}
+
+func (w *failingWriter) Write(p []byte) (int, error) {
+	if w.n >= w.after {
+		return 0, w.err
+	}
+	room := min(int64(len(p)), w.after-w.n)
+	w.n += room
+	if room < int64(len(p)) {
+		return int(room), w.err
+	}
+	return len(p), nil
+}
+
+type failingReaderAt struct{ err error }
+
+func (r failingReaderAt) ReadAt([]byte, int64) (int, error) { return 0, r.err }

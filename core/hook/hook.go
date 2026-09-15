@@ -103,10 +103,59 @@ const (
 	PhaseRollback Phase = "rollback"
 )
 
+// Source names where the bytes of a staged file came from. It mirrors the
+// staging vocabulary so a UI can say "reusing" where nothing crosses the wire,
+// and is empty on an event that is not about one file.
+type Source string
+
+// The ways a staged file is produced, cheapest first (docs/design.md §6.4).
+const (
+	SourceReuse    Source = "reuse"
+	SourcePatch    Source = "patch"
+	SourceDownload Source = "download"
+)
+
 // Event is one lifecycle notification delivered to an Observer.
+//
+// The byte fields are set while a release is being written and are zero
+// everywhere else. They exist because a phase alone cannot drive a progress bar:
+// staging is where all the time goes, and until it reported bytes a UI had to
+// invent a number or show a spinner for the whole update (IDN-19).
+//
+// An Observer is called synchronously from the goroutine running the update, so
+// one that blocks stalls it. A UI records the event and repaints on its own
+// schedule; it does not paint here.
 type Event struct {
 	Phase    Phase
 	Message  string
 	Progress float64 // in [0,1], or -1 if indeterminate.
 	Err      error   // set on failure events.
+
+	// File is the install-relative destination being written, empty when the
+	// event is not about one file. It is a path and stays in the Observer: an
+	// Outcome, which may leave the machine, never carries one (§14.5).
+	File string
+
+	// FileIndex is the 1-based position of File in the release and FileCount
+	// the number of files in it. Both are zero outside staging.
+	FileIndex int
+	FileCount int
+
+	// Source is where this file's bytes are coming from.
+	Source Source
+
+	// BytesDone is how much of the release has been written, BytesTotal the sum
+	// of the signed lengths of its files — known before the first byte moves,
+	// so a bar built on it never jumps. Both are zero outside staging.
+	//
+	// BytesDone can go down exactly once per file: a reuse candidate that fails
+	// verification has its scratch file discarded, and the bytes it wrote were
+	// never staged. The event that rewinds it names the next Source, so a UI
+	// that must not run backwards has the reason before the number changes.
+	BytesDone  int64
+	BytesTotal int64
+
+	// FileDone and FileSize are the same two quantities for File alone.
+	FileDone int64
+	FileSize int64
 }

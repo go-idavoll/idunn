@@ -25,6 +25,7 @@
 package trust
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -244,17 +245,22 @@ func (c *Client) LatestRelease(channel, goos, goarch string) (*release.Descripto
 // put file placement inside the package that is supposed to answer only "which
 // bytes may I trust?".
 //
-// A target is held whole in memory, and at go-tuf v2.4.2 that is structural
-// rather than a shortcut taken here: fetcher.Fetcher is
+// It holds the target whole in memory and is therefore for the small, structured
+// targets this package parses itself — a channel pointer, a descriptor. Anything
+// that is a payload goes through Materialize instead, which streams.
+//
+// The whole-file allocation is unavoidable *here* because at go-tuf v2.4.2
+// fetcher.Fetcher is
 //
 //	DownloadFile(urlPath string, maxLength int64, _ time.Duration) ([]byte, error)
 //
 // and Updater.DownloadTarget verifies with VerifyLengthHashes over the complete
-// slice. Streaming would need that contract to expose the response body, and
-// building a second download-and-verify path beside go-tuf to get it is exactly
-// what AGENTS.md §1.2 forbids. What is in this package's hands is the ceiling:
-// a target above Options.MaxTargetBytes is refused before it is requested. See
-// backlog IDN-12.
+// slice. Streaming the download itself would need that contract to expose the
+// response body, and building a second download-and-verify path beside go-tuf to
+// get it is what AGENTS.md §1.2 forbids. So one buffer the size of the target
+// still exists on the first fetch; what Materialize removes is every copy beside
+// it, and Options.MaxTargetBytes bounds the one that is left — a target above
+// the ceiling is refused before it is requested. See backlog IDN-12.
 func (c *Client) Target(targetPath string) ([]byte, error) {
 	return c.target(targetPath)
 }
@@ -405,11 +411,10 @@ func (c *Client) OpenLine(goos, goarch, major string) {
 // MaterializeTarget places the verified bytes of a TUF target at dst, reusing the
 // local cache only when the cached bytes match the signed hash and length. A
 // cached file is never trusted on name alone (AGENTS.md §1.5).
+//
+// The bytes are streamed through Materialize, so what this costs in memory is
+// one copy window, not the size of the target.
 func (c *Client) MaterializeTarget(targetPath, dst string) error {
-	raw, err := c.target(targetPath)
-	if err != nil {
-		return err
-	}
 	// The destination is inside a staging tree that becomes a version directory
 	// (layout.DirMode): its subdirectories must be enterable by the users who run
 	// the application.
@@ -419,7 +424,8 @@ func (c *Client) MaterializeTarget(targetPath, dst string) error {
 	}
 	// Write via a temp file in the destination directory so an interrupted
 	// materialization can never leave a half-written file where a complete one
-	// is expected.
+	// is expected — and so a stream that turns out not to verify leaves nothing
+	// at dst at all.
 	tmp, err := os.CreateTemp(filepath.Dir(dst), ".idunn-*")
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrTrust, err)
@@ -427,9 +433,9 @@ func (c *Client) MaterializeTarget(targetPath, dst string) error {
 	tmpName := tmp.Name()
 	defer func() { _ = os.Remove(tmpName) }()
 
-	if _, err := tmp.Write(raw); err != nil {
+	if err := c.Materialize(targetPath, tmp); err != nil {
 		_ = tmp.Close()
-		return fmt.Errorf("%w: %w", ErrTrust, err)
+		return err
 	}
 	if err := tmp.Sync(); err != nil {
 		_ = tmp.Close()
@@ -445,22 +451,32 @@ func (c *Client) MaterializeTarget(targetPath, dst string) error {
 }
 
 // target returns the verified bytes of one TUF target, preferring the local cache.
-// go-tuf checks the signed hash and length in both paths; nothing here decides
-// whether bytes are acceptable.
+//
+// It is Materialize into a buffer, which is what makes it safe to hold the
+// result: the buffer is filled by the bounded, verifying cache read that
+// Materialize does, never by Updater.FindCachedTarget's unbounded os.ReadFile,
+// so an oversized file planted in the cache is not read whole here either (T23).
+// Nothing here decides whether bytes are acceptable.
 func (c *Client) target(targetPath string) ([]byte, error) {
 	info, err := c.targetInfo(targetPath)
 	if err != nil {
 		return nil, err
 	}
-	if _, raw, err := c.up.FindCachedTarget(info, ""); err == nil && raw != nil {
-		return raw, nil
+	var buf bytes.Buffer
+	// The signed length is already below the ceiling, and the copy is bounded
+	// by it, so reserving it costs exactly what the result will.
+	if info.Length > 0 && info.Length <= int64(maxInt) {
+		buf.Grow(int(info.Length))
 	}
-	_, raw, err := c.up.DownloadTarget(info, "", "")
-	if err != nil {
-		return nil, fmt.Errorf("%w: download %q: %w", ErrTrust, targetPath, err)
+	if err := c.materialize(targetPath, info, &buf); err != nil {
+		return nil, err
 	}
-	return raw, nil
+	return buf.Bytes(), nil
 }
+
+// maxInt is the largest value an int holds on this platform, so a signed length
+// that a 32-bit build could not index by is never converted to one.
+const maxInt = int(^uint(0) >> 1)
 
 // targetInfo returns the signed description of one target, refusing a target
 // whose signed length is above the ceiling.

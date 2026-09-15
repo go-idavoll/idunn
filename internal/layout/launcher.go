@@ -16,6 +16,7 @@ package layout
 
 import (
 	"fmt"
+	"io"
 	"io/fs"
 	"strings"
 
@@ -110,6 +111,21 @@ func LauncherPendingDir(root, version string) (string, error) {
 // The caller is staging, and data are bytes the trust layer has just accepted:
 // this function is where they go, not a judgement on them.
 func WriteLauncherPending(f fsx.FS, root, version, name string, data []byte) error {
+	return WriteLauncherPendingStream(f, root, version, name, func(w io.Writer) error {
+		_, err := w.Write(data)
+		return err
+	})
+}
+
+// WriteLauncherPendingStream is WriteLauncherPending for a launcher that is
+// produced rather than held.
+//
+// Staging streams every file it writes, so it no longer has the launcher's bytes
+// to hand one it has just staged; produce copies them from where they landed,
+// past the same signed-hash verdict (IDN-12). Either form leaves nothing behind
+// if produce fails: fsx.WriteStreamAtomic removes its scratch file, and an empty
+// pending directory is what "no pending launcher" already looks like.
+func WriteLauncherPendingStream(f fsx.FS, root, version, name string, produce func(w io.Writer) error) error {
 	if err := ValidateLauncherName(name); err != nil {
 		return err
 	}
@@ -125,7 +141,7 @@ func WriteLauncherPending(f fsx.FS, root, version, name string, data []byte) err
 	if err := f.MkdirAll(dir, DirMode); err != nil {
 		return fmt.Errorf("%w: %w", ErrLayout, err)
 	}
-	if err := fsx.WriteFileAtomic(f, fsx.Join(dir, name), data, MetaFileMode); err != nil {
+	if err := fsx.WriteStreamAtomic(f, fsx.Join(dir, name), MetaFileMode, produce); err != nil {
 		return fmt.Errorf("%w: %w", ErrLayout, err)
 	}
 	return nil

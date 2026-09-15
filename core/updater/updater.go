@@ -310,7 +310,7 @@ func New(o Options) (*Updater, error) {
 		goarch = runtime.GOARCH
 	}
 
-	return &Updater{
+	u := &Updater{
 		trust:         o.Trust,
 		fs:            o.FS,
 		now:           now,
@@ -331,7 +331,12 @@ func New(o Options) (*Updater, error) {
 		lock:          o.Lock,
 		elevator:      o.Elevator,
 		policy:        p,
-	}, nil
+	}
+	// Wired after construction rather than in the literal: the callback closes
+	// over the Updater it reports through, and a Stager built with it before the
+	// Updater exists would have to reach for a half-initialised one.
+	u.stager.Progress = u.stageProgress()
+	return u, nil
 }
 
 // CheckForUpdate runs trust.Refresh (TUF), resolves the channel pointer to the

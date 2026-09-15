@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"io/fs"
 	"strings"
 	"testing"
@@ -44,11 +45,20 @@ type targets struct {
 	// (trust.Options.MaxTargetBytes): every method refuses a target longer
 	// than it, as the real client does before it fetches or reads anything.
 	ceiling int64
-	asked   []string
+	// cutAfter, when set for a target, makes Materialize write that many bytes
+	// and then fail. It models the one thing a streaming trust client can do
+	// that a buffering one cannot: hand over a prefix and only then refuse.
+	cutAfter map[string]int
+	asked    []string
 }
 
 func newTargets(files map[string][]byte) *targets {
-	return &targets{files: files, fail: map[string]error{}, lenErr: map[string]error{}}
+	return &targets{
+		files:    files,
+		fail:     map[string]error{},
+		lenErr:   map[string]error{},
+		cutAfter: map[string]int{},
+	}
 }
 
 // aboveCeiling is the fake's version of the trust client's refusal.
@@ -59,22 +69,29 @@ func (t *targets) aboveCeiling(path string) error {
 	return nil
 }
 
-func (t *targets) Target(path string) ([]byte, error) {
+func (t *targets) Materialize(path string, w io.Writer) error {
 	t.asked = append(t.asked, path)
 	if err := t.aboveCeiling(path); err != nil {
-		return nil, err
+		return err
 	}
 	if err := t.fail[path]; err != nil {
-		return nil, err
+		return err
 	}
 	data, ok := t.files[path]
 	if !ok {
-		return nil, errors.New("no such target: " + path)
+		return errors.New("no such target: " + path)
 	}
-	return data, nil
+	if n, cut := t.cutAfter[path]; cut {
+		if _, err := w.Write(data[:min(n, len(data))]); err != nil {
+			return err
+		}
+		return errors.New("the stream stopped short: " + path)
+	}
+	_, err := w.Write(data)
+	return err
 }
 
-// TargetLength and VerifyTarget are what makes reuse from an installed version
+// TargetLength and VerifyStream are what makes reuse from an installed version
 // possible without staging ever holding a signed hash: it asks for a size to
 // pre-filter on and hands back candidate bytes for a verdict. Byte equality
 // stands in for go-tuf's hash comparison — same answer, no fixture hashes.
@@ -92,13 +109,20 @@ func (t *targets) TargetLength(path string) (int64, error) {
 	return int64(len(data)), nil
 }
 
-func (t *targets) VerifyTarget(path string, data []byte) error {
+func (t *targets) VerifyStream(path string, r io.Reader) error {
 	if err := t.aboveCeiling(path); err != nil {
 		return err
 	}
 	want, ok := t.files[path]
 	if !ok {
 		return errors.New("no such target: " + path)
+	}
+	// Read one byte past the signed length, so a stream that is longer is
+	// refused here exactly as the real client refuses it rather than being
+	// silently truncated into a match.
+	data, err := io.ReadAll(io.LimitReader(r, int64(len(want))+1))
+	if err != nil {
+		return err
 	}
 	if !bytes.Equal(want, data) {
 		return errors.New("target does not match: " + path)
