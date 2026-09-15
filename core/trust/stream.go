@@ -223,6 +223,14 @@ func (c *Client) Materialize(targetPath string, w io.Writer) error {
 	if err != nil {
 		return err
 	}
+	return c.materialize(targetPath, info, w)
+}
+
+// materialize is Materialize with the target already resolved, so the one caller
+// that needs the bytes as a slice (target, for the small documents this package
+// parses itself) reaches the same bounded, verifying cache read rather than
+// go-tuf's unbounded one.
+func (c *Client) materialize(targetPath string, info *metadata.TargetFiles, w io.Writer) error {
 	cache, err := c.cachePath(info)
 	if err != nil {
 		return err

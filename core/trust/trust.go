@@ -25,6 +25,7 @@
 package trust
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -450,22 +451,32 @@ func (c *Client) MaterializeTarget(targetPath, dst string) error {
 }
 
 // target returns the verified bytes of one TUF target, preferring the local cache.
-// go-tuf checks the signed hash and length in both paths; nothing here decides
-// whether bytes are acceptable.
+//
+// It is Materialize into a buffer, which is what makes it safe to hold the
+// result: the buffer is filled by the bounded, verifying cache read that
+// Materialize does, never by Updater.FindCachedTarget's unbounded os.ReadFile,
+// so an oversized file planted in the cache is not read whole here either (T23).
+// Nothing here decides whether bytes are acceptable.
 func (c *Client) target(targetPath string) ([]byte, error) {
 	info, err := c.targetInfo(targetPath)
 	if err != nil {
 		return nil, err
 	}
-	if _, raw, err := c.up.FindCachedTarget(info, ""); err == nil && raw != nil {
-		return raw, nil
+	var buf bytes.Buffer
+	// The signed length is already below the ceiling, and the copy is bounded
+	// by it, so reserving it costs exactly what the result will.
+	if info.Length > 0 && info.Length <= int64(maxInt) {
+		buf.Grow(int(info.Length))
 	}
-	_, raw, err := c.up.DownloadTarget(info, "", "")
-	if err != nil {
-		return nil, fmt.Errorf("%w: download %q: %w", ErrTrust, targetPath, err)
+	if err := c.materialize(targetPath, info, &buf); err != nil {
+		return nil, err
 	}
-	return raw, nil
+	return buf.Bytes(), nil
 }
+
+// maxInt is the largest value an int holds on this platform, so a signed length
+// that a 32-bit build could not index by is never converted to one.
+const maxInt = int(^uint(0) >> 1)
 
 // targetInfo returns the signed description of one target, refusing a target
 // whose signed length is above the ceiling.

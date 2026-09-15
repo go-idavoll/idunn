@@ -59,9 +59,11 @@ Not yet enforced:
   clients; on macOS it can additionally require the caller's code signature
   (`PeerRequirement`). The fd hand-off (T23) and a client-side check of the pipe's server are
   open; the other half of T23 — an oversized file planted in the local target cache being
-  read whole by `Updater.FindCachedTarget`'s unbounded `os.ReadFile` — is closed, because
-  `trust.Materialize` reads the cache itself, bounded by the signed length, and removes an
-  entry that does not verify (IDN-12). The
+  read whole by `Updater.FindCachedTarget`'s unbounded `os.ReadFile` — is closed:
+  `FindCachedTarget` is no longer called at all, and every way a target's bytes enter
+  the process (`Materialize`, and `Target` for the pointer and descriptor this package
+  parses itself) reads the cache bounded by the signed length, verifies it, and removes
+  an entry that does not verify (IDN-12). The
   Windows and Linux interactive paths enforce their half: three
   validated scalars cross the boundary, nothing else; the helper validates them
   again, resolves the channel head itself and refuses any other version, and keeps

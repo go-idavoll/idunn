@@ -240,7 +240,10 @@ What is done:
   planted cache entry cannot reach the caller half-way, and it reads that cache itself
   rather than through `Updater.FindCachedTarget`, whose unbounded `os.ReadFile` reads an
   oversized planted entry whole (**T23**). An entry that does not verify is removed and
-  re-downloaded.
+  re-downloaded. `FindCachedTarget` is no longer called anywhere: `Target`, the small
+  remaining whole-buffer door for the pointer and the descriptor this package parses
+  itself, is `Materialize` into a buffer, so every cache read in the process is the
+  bounded, verifying one.
 - The ceiling is unchanged and still the guard on the one buffer that remains:
   `trust.Options.MaxTargetBytes` (default `trust.DefaultMaxTargetBytes`, 2 GiB; negative
   is refused by `trust.New`) refuses a target whose signed length is above it **before a

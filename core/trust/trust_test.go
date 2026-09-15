@@ -1170,3 +1170,47 @@ func TestMaterializeReportsAnUnreachableRepository(t *testing.T) {
 		t.Errorf("a failed materialization wrote %d bytes", got.Len())
 	}
 }
+
+// Every way a target's bytes come into this process now reads the go-tuf cache
+// the same bounded, verifying way — including the small documents this package
+// parses itself, which reach it through Target rather than Materialize. A file
+// planted in the cache is refused and replaced whichever door is used (T23).
+func TestEveryCacheReadRefusesAPlantedEntry(t *testing.T) {
+	f := refreshed(t, nil)
+
+	// The channel pointer and the descriptor go through Target; a payload goes
+	// through Materialize.
+	d, err := f.client.LatestRelease(testChannel, testOS, testArch)
+	if err != nil {
+		t.Fatalf("LatestRelease: %v", err)
+	}
+	for _, target := range []string{
+		f.build.PointerTarget(),
+		f.build.DescriptorTarget(),
+		d.Files[0].Target,
+	} {
+		t.Run(target, func(t *testing.T) {
+			want, err := f.client.Target(target)
+			if err != nil {
+				t.Fatalf("Target: %v", err)
+			}
+			cached := filepath.Join(f.workDir, "targets", url.PathEscape(target))
+			if err := os.WriteFile(cached, bytes.Repeat([]byte{'x'}, len(want)+8<<20), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			got, err := f.client.Target(target)
+			if err != nil {
+				t.Fatalf("Target after the cache was planted: %v", err)
+			}
+			if !bytes.Equal(got, want) {
+				t.Error("a planted cache entry reached the caller")
+			}
+			// And the planted file is gone rather than re-read on every
+			// attempt for the rest of this install's life.
+			if info, err := os.Stat(cached); err == nil && info.Size() != int64(len(want)) {
+				t.Errorf("the cache still holds %d bytes, want the %d signed ones", info.Size(), len(want))
+			}
+		})
+	}
+}
