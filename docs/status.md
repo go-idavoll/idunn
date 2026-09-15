@@ -180,12 +180,14 @@ on the tree that closed IDN-16 (Windows, Go 1.25):
 | `core/txn` | 74 | 1 | 2 | 98.7% | 97.4% |
 | `core/updater` | 150 | 17 | 5 | 89.8% | 97.1% |
 | `core/stage` | 142 | 29 | 9 | 83.0% | 95.0% |
-| `core/launch` | 18 | 4 | 0 | 81.8% | 100% |
+| `core/launch` | 50 | 6 | 6 | 89.3% | 90.3% |
 
 CI gates at 75% on both (`.gremlins.yaml`), which catches a regression without failing on the weather;
-the numbers above are what to raise it towards, per package. `core/launch` is the
-closest to the line: it has few mutants, so a single new survivor moves it by about
-four points.
+the numbers above are what to raise it towards, per package. `core/launch` was
+re-measured with IDN-17 and IDN-29 (Windows, Go 1.26); its six uncovered mutants are the
+platform half of the relaunch and wait code that a Windows run does not reach. A
+condition inside a `case` clause counts as not covered for gremlins even when a test
+exercises it, so refusal chains in these packages are written as `if` statements.
 
 A surviving mutant is a test gap, never a reason to weaken an assertion — a change that
 raises this score by deleting a check is the reward-hacking AGENTS.md §6 asks reviewers

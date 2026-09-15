@@ -155,6 +155,28 @@ func TestTheStagedLauncherIsSwappedIn(t *testing.T) {
 	}
 }
 
+// The size bounds are inclusive where a launcher can be: one byte and exactly the
+// limit are swapped in; the empty and the over-limit file are refused
+// (TestAStagedLauncherThatIsNotAPlainFileIsRefused).
+func TestAStagedLauncherAtTheSizeBoundsIsSwappedIn(t *testing.T) {
+	for name, staged := range map[string]string{
+		"one byte":          "x",
+		"exactly the limit": strings.Repeat("x", 64<<20),
+	} {
+		t.Run(name, func(t *testing.T) {
+			m, o := selfFixture(t, staged, "launcher v1")
+			res := start(t, o)
+			if !res.SelfReplaced || res.SelfErr != nil {
+				t.Fatalf("SelfReplaced = %v, SelfErr = %v", res.SelfReplaced, res.SelfErr)
+			}
+			info, err := fsx.Lstat(m, shim)
+			if err != nil || info.Size() != int64(len(staged)) {
+				t.Errorf("the launcher is %v (%v), want the staged %d bytes", info, err, len(staged))
+			}
+		})
+	}
+}
+
 // A launcher that already matches the staged one — a start that died after the
 // swap but before it removed the staged file — is not rewritten; only the staged
 // file goes.

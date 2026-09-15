@@ -86,24 +86,31 @@ func (o Options) updateSelf(replace launcherfile.Func) (bool, error) {
 	// The staged file: its directory and the file itself must be what the
 	// updater creates — a real directory and a regular file — and not a link
 	// to be followed somewhere else.
+	//
+	// These are if chains rather than switches on purpose: the mutation run
+	// (docs/status.md) attributes a condition in a case clause to no covered
+	// block, so every refusal below would count as untested.
 	dirInfo, err := fsx.Lstat(o.FS, layout.LauncherNextDir(o.Root))
-	switch {
-	case fsx.IsNotExist(err):
+	if fsx.IsNotExist(err) {
 		return false, nil // nothing staged: the ordinary case.
-	case err != nil:
+	}
+	if err != nil {
 		return false, fmt.Errorf("%w: %w", ErrLaunch, err)
-	case !dirInfo.IsDir() || dirInfo.Mode()&fs.ModeSymlink != 0:
+	}
+	if !dirInfo.IsDir() || dirInfo.Mode()&fs.ModeSymlink != 0 {
 		return false, fmt.Errorf("%w: %s is not a directory", ErrSelfRefused, layout.LauncherNextDir(o.Root))
 	}
 	info, err := fsx.Lstat(o.FS, next)
-	switch {
-	case fsx.IsNotExist(err):
+	if fsx.IsNotExist(err) {
 		return false, nil
-	case err != nil:
+	}
+	if err != nil {
 		return false, fmt.Errorf("%w: %w", ErrLaunch, err)
-	case !info.Mode().IsRegular():
+	}
+	if !info.Mode().IsRegular() {
 		return false, fmt.Errorf("%w: %s is not a regular file", ErrSelfRefused, next)
-	case info.Size() <= 0 || info.Size() > maxLauncherBytes:
+	}
+	if info.Size() <= 0 || info.Size() > maxLauncherBytes {
 		return false, fmt.Errorf("%w: %s is %d bytes, which is no launcher", ErrSelfRefused, next, info.Size())
 	}
 
@@ -122,27 +129,29 @@ func (o Options) updateSelf(replace launcherfile.Func) (bool, error) {
 	}
 
 	current, err := fsx.Lstat(o.FS, self)
-	switch {
-	case err == nil && !current.Mode().IsRegular():
-		// A link or a directory where the launcher should be is not something
-		// to follow or to replace: whatever put it there knows something this
-		// code does not.
-		return false, fmt.Errorf("%w: %s is not a regular file; the launcher is not replaced", ErrSelfRefused, o.SelfPath)
-	case err == nil && current.Size() == int64(len(data)):
-		have, err := readExactly(o.FS, self, current.Size())
-		if err != nil {
-			return false, err
-		}
-		if bytes.Equal(have, data) {
-			// Already swapped — a start that died before it could remove the
-			// staged file. Finish that and nothing else.
-			o.dropStaged(next)
-			return false, nil
-		}
-	case err == nil:
-		// A different length is a different launcher; no need to read it.
-	case !fsx.IsNotExist(err):
+	if err != nil && !fsx.IsNotExist(err) {
 		return false, fmt.Errorf("%w: %w", ErrLaunch, err)
+	}
+	if err == nil {
+		if !current.Mode().IsRegular() {
+			// A link or a directory where the launcher should be is not
+			// something to follow or to replace: whatever put it there knows
+			// something this code does not.
+			return false, fmt.Errorf("%w: %s is not a regular file; the launcher is not replaced", ErrSelfRefused, o.SelfPath)
+		}
+		// A different length is a different launcher; no need to read it.
+		if current.Size() == int64(len(data)) {
+			have, err := readExactly(o.FS, self, current.Size())
+			if err != nil {
+				return false, err
+			}
+			if bytes.Equal(have, data) {
+				// Already swapped — a start that died before it could remove
+				// the staged file. Finish that and nothing else.
+				o.dropStaged(next)
+				return false, nil
+			}
+		}
 	}
 
 	if err := replace(o.FS, self, data); err != nil {
@@ -160,9 +169,10 @@ func (o Options) updateSelf(replace launcherfile.Func) (bool, error) {
 
 // dropStaged removes a staged launcher that has been swapped in.
 func (o Options) dropStaged(next string) {
-	if err := o.FS.Remove(next); err == nil {
-		_ = fsx.SyncDir(o.FS, layout.LauncherNextDir(o.Root))
-	}
+	// Best effort, both: a staged file left behind is found identical to the
+	// launcher on the next start and removed then.
+	_ = o.FS.Remove(next)
+	_ = fsx.SyncDir(o.FS, layout.LauncherNextDir(o.Root))
 }
 
 // readExactly reads name, which must be exactly size bytes long. A file that has
