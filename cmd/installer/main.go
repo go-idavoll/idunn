@@ -91,6 +91,20 @@ var clientVersion = ""
 // an operator who could set it could also lower it.
 var buildTime = ""
 
+// appName and bundleID name the application this installer is built for, set at
+// build time:
+//
+//	go build -ldflags "-X 'main.appName=Acme Editor' -X main.bundleID=com.acme.editor" ./cmd/installer
+//
+// They are what a default install root is derived from when no --root is given
+// (core/installer.DefaultRoot, IDN-24): appName on Windows and Linux, bundleID on
+// macOS. Like the trust anchor they describe the product the binary is, so they
+// are not flags. A build that sets neither requires --root.
+var (
+	appName  = ""
+	bundleID = ""
+)
+
 // userAgent identifies this client to proxies and servers.
 const userAgent = "idunn-installer"
 
@@ -125,8 +139,12 @@ func usage(w io.Writer) {
 	_, _ = fmt.Fprintf(w, `idunn installer — first-time install of a TUF-published release.
 
 Usage:
-  installer [install] --root <dir> [--channel %s] [--version <semver>]
+  installer [install] [--scope user|machine | --root <dir>] [--channel %s] [--version <semver>]
   installer apply --root <dir> --channel <name> --version <semver>
+
+Without --root the install goes where the platform puts software for the
+current user (--scope user, the default) or for every user (--scope machine),
+named after the application this build is for.
 
 The trust anchor is compiled in (cmd/installer/anchor/root.json). A build that
 carries one cannot be pointed at another; a build without one requires
@@ -149,7 +167,8 @@ func installVerb(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("install", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
-		root         = fs.String("root", "", "install root (required)")
+		root         = fs.String("root", "", "install root (default: derived from --scope)")
+		scope        = fs.String("scope", "", "user or machine: where the default install root is (default user)")
 		channel      = fs.String("channel", "", "channel to follow (default "+defaultChannel+")")
 		version      = fs.String("version", "", "install this exact version instead of the channel head")
 		allowDown    = fs.Bool("allow-downgrade", false, "permit installing over a newer existing install")
@@ -167,6 +186,13 @@ func installVerb(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 
+	scopeSet := false
+	fs.Visit(func(f *flag.Flag) { scopeSet = scopeSet || f.Name == "scope" })
+	installRoot, code := resolveRoot(*root, *scope, scopeSet, stderr)
+	if code != exitOK {
+		return code
+	}
+
 	var anchorFromFlag []byte
 	if *rootMetadata != "" {
 		raw, err := os.ReadFile(*rootMetadata)
@@ -178,7 +204,7 @@ func installVerb(args []string, stdout, stderr io.Writer) int {
 	}
 
 	cfg, code := buildConfig(config{
-		root:           *root,
+		root:           installRoot,
 		channel:        *channel,
 		version:        *version,
 		allowDowngrade: *allowDown,
@@ -193,6 +219,44 @@ func installVerb(args []string, stdout, stderr io.Writer) int {
 		return code
 	}
 	return doInstall(cfg, stdout, stderr)
+}
+
+// resolveRoot picks the install root: --root if given, else the platform's
+// default for --scope and the application this build names.
+//
+// --root and --scope together are refused rather than one silently winning: an
+// operator who asked for a machine-wide install and named a directory in their
+// home has said two different things, and guessing which was meant decides
+// whether the install is elevated.
+func resolveRoot(root, scope string, scopeSet bool, stderr io.Writer) (string, int) {
+	if root != "" {
+		if scopeSet {
+			_, _ = fmt.Fprintln(stderr, "idunn installer: --root and --scope are mutually exclusive")
+			return "", exitUsage
+		}
+		return root, exitOK
+	}
+	s := installer.ScopeUser
+	if scopeSet {
+		var err error
+		if s, err = installer.ParseScope(scope); err != nil {
+			_, _ = fmt.Fprintf(stderr, "idunn installer: --scope %q: want user or machine\n", scope)
+			return "", exitUsage
+		}
+	}
+	if appName == "" && bundleID == "" {
+		_, _ = fmt.Fprintln(stderr, "idunn installer: --root is required: this build names no application "+
+			"to derive a default install root from")
+		return "", exitUsage
+	}
+	derived, err := installer.DefaultRoot(s, installer.App{Name: appName, BundleID: bundleID})
+	if err != nil {
+		// The identity is compiled in, so a bad one is this build's defect, not
+		// the command line's.
+		_, _ = fmt.Fprintf(stderr, "idunn installer: no default install root for --scope %s: %v; pass --root\n", s, err)
+		return "", exitError
+	}
+	return derived, exitOK
 }
 
 // applyHelper is the privileged half of interactive elevation (§14.2).

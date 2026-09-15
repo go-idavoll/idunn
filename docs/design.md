@@ -350,6 +350,22 @@ The installer is a small binary; its only job is bootstrap:
 Installer and updater share the same `core` code — TUF `Refresh`/resolve and the apply
 paths exist only once.
 
+> **As built — where an install goes (IDN-24).** Without `--root`, `cmd/installer`
+> derives the root from `--scope` (`user`, the default, or `machine`) and the application
+> identity compiled into the build (`installer.DefaultRoot`):
+>
+> | OS | user | machine |
+> |---|---|---|
+> | Windows | `FOLDERID_UserProgramFiles\<name>` | `FOLDERID_ProgramFiles\<name>` |
+> | Linux | `$XDG_DATA_HOME/<name>` (`~/.local/share/<name>`) | `/opt/<name>` |
+> | macOS | `~/Library/Application Support/<bundle id>` | `/Library/Application Support/<bundle id>` |
+>
+> A machine root is what the elevated helper vets (§14.2, IDN-22), so it is never taken
+> from the environment: Windows asks the shell for the known folder, the others use
+> fixed paths. `--root` and `--scope` together are refused. On macOS this is where the
+> versions live; the bundle a user starts is IDN-26. On Linux, making the launcher
+> discoverable (`.desktop`, `$PATH`) is left to the host.
+
 ---
 
 ## 6. Flow: updater — transaction, atomic swap, rollback
