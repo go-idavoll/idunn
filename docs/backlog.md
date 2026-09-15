@@ -402,9 +402,10 @@ structs by value, no callbacks, no variadics.
   per apply.
 - cgo: exact and dependency-free, but ends cross-compiling darwin from another OS.
 
-Leaning: `codesign` first; FFI only if the process spawn proves a problem. Also decide
-whether a build without a Team ID is refused on darwin or skips the gate with a
-warning.
+Leaning: `codesign` first; FFI only if the process spawn proves a problem. A build
+without a Team ID follows the proposal in IDN-31: no requirement compiled in, no gate.
+On Apple Silicon the linker's ad-hoc signature is still needed for anything to run;
+that is the build's concern, not the gate's.
 
 ### IDN-29 — Install and restart (§6.1, §14.3) — **done (Windows, Linux)**
 A running application that applied or deferred an update can ask to be started
@@ -463,6 +464,129 @@ Launch Services — only on success, and only if the application was running.
 
 The helper takes the same three scalars as the elevated `apply` verb and no path from
 its caller; for a system-wide install it is the thing IDN-08 elevates.
+
+### IDN-31 — Windows: Authenticode as a gate before the swap (§13)
+The Windows counterpart of IDN-27, under the same AGENTS.md §1.2 carve-out: after TUF
+accepted every byte, and only as an additional refusal. Smart App Control and
+WDAC/AppLocker publisher rules refuse an unsigned or wrongly signed exe or DLL; without
+a gate that surfaces only after the swap, as an application that does not start.
+
+`WinVerifyTrust` (`WINTRUST_ACTION_GENERIC_VERIFY_V2`) is in `golang.org/x/sys/windows`
+— no cgo, no new dependency. Every staged file of kind `exe` and `lib` is checked, and
+the signer is pinned against a value built into the binary (leaf certificate subject or
+the publisher's certificate thumbprints, with room for a rotation), not against the
+signature of the installed version, so a tampered installation cannot lower the bar.
+
+Open: revocation. A full chain check goes to the network; a gate that fails every
+offline update is unusable, a gate that silently skips revocation is weaker than it
+looks. Candidates: `WTD_REVOKE_WHOLECHAIN` with `WTD_CACHE_ONLY_URL_RETRIEVAL`, or
+`WTD_REVOKE_NONE` with the reason written down.
+
+**Unsigned applications stay supported.** Plenty of publishers have no certificate —
+open source projects, internal line-of-business tools, test builds — and TUF, not
+Authenticode, is what makes an idunn update trustworthy. Proposed, for IDN-27 and this
+item alike:
+- **No pinned publisher: no gate.** The zero value keeps today's behaviour; the updater
+  applies unsigned files as it does now. Unlike the `OnBusy` case (IDN-21) this is not
+  a forgotten line changing behaviour: leaving the pin out changes nothing. The
+  launcher and installer say once, in their log, that the platform signature is not
+  checked.
+- **A pinned publisher makes the signature mandatory**, for every `exe` and `lib`
+  file of every later release: unsigned, signed by someone else, or invalid is a
+  refusal before the swap, classified as its own error (not `verify` — the bytes are
+  the publisher's, the OS would not run them).
+- **The pin travels with the binary that checks**, so transitions follow from which
+  version is installed: an unsigned 1.0 updates to a signed 1.1 that introduces the
+  pin (1.0 has no gate), and from then on every release must be signed. Dropping
+  signing again takes a signed release whose binary no longer carries the pin; an
+  unsigned release published straight after would be refused by every client still on
+  a pinned version. The packer gate (IDN-32) is where that mistake is caught before it
+  ships.
+- A pin never lets through anything TUF refused, and an unsigned application never
+  gains from a gate it does not have — the gate only narrows.
+- Windows itself may still refuse an unsigned application (Smart App Control, WDAC);
+  that is the host's deployment question, which the gate would only make visible
+  earlier.
+
+### IDN-35 — Uninstall (§5, §6.1)
+Nothing removes an installation today; only the helper has uninstall scripts. Decided:
+uninstall is a **verb of the launcher** (`launcher uninstall [--quiet] [--purge]`), not
+a separate binary — the launcher is the one file that stays on disk above `versions/`,
+replaces itself (IDN-17) and needs no network and no keys, and one binary less is one
+binary less to sign and ship. The logic lives in a `core/uninstall` package, so a host
+that writes its own launcher gets the same behaviour.
+
+Wanted:
+- **Offline.** No TUF client, no fetch; it works with the server gone and the metadata
+  expired.
+- **Only what idunn owns.** The root is accepted only if it holds a valid idunn state
+  file whose application ID matches the one compiled in; otherwise refuse with no
+  change. Only layout names are removed (`current`, `versions/`, the meta directory,
+  the launcher); the root itself only if it is empty afterwards. The walk never follows
+  a symlink, junction or other reparse point — `os.RemoveAll` is not relied on for that.
+- **Crash-safe.** An `uninstalling` record in the journal, then: pointer removed (the
+  application can no longer start), integrations removed (IDN-36), `versions/` deleted,
+  meta directory last. A launcher that finds the record completes the uninstall instead
+  of starting the application. Every step is idempotent.
+- **Running instances** are handled as for an update: the lock and `hook.Coordinator`;
+  refuse or ask, never delete under a live process.
+- **Host hooks**, compiled in (AGENTS.md §1.3): `BeforeUninstall` may veto,
+  `PurgeData` removes the application's own data under `--purge`. The TUF cache and the
+  time floor belong to idunn and are always removed.
+- **System-wide installs** require administrator rights directly (UAC, pkexec,
+  authorization on macOS): the service or daemon is stopped and unregistered (the logic
+  of `uninstall-service.ps1` and `uninstall.sh`, in Go). The privileged helper gets
+  **no** uninstall verb — an allowed caller must not be able to remove a system-wide
+  application without administrator rights.
+
+Open: how the launcher removes itself on Windows, where a running image and its
+directory cannot be deleted. A copy started from `%TEMP%` (NSIS, Inno Setup) collides
+with Defender ASR rules for unknown executables; `MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)`
+needs administrator rights and leaves files until a reboot; a delayed `cmd /c` removal
+looks like malware to EDR. Leaning: remove everything but the launcher, then schedule
+the launcher and the empty root for removal.
+
+Negative tests: a root without a valid state file or with another application ID; a
+junction or symlink below the root pointing outside, whose target must survive; crash
+injection at every journal boundary; a running instance; a system-wide uninstall
+without administrator rights; a helper caller asking to uninstall.
+
+### IDN-36 — OS integrations as a recorded manifest; Windows "Installed apps" (§5, §13)
+The installer registers things outside the root — the Windows uninstall entry, Start
+menu shortcuts, file associations, URL protocols, autostart, a scheduled task, the
+helper service. Uninstall (IDN-35) must remove exactly those and guess nothing, so what
+was registered is recorded, as MSI does: `<meta>/integrations.json`, written before each
+registration takes effect, reversed by `Unregister`. A `core/integrate` package with a
+per-OS implementation provides `Register`, `Refresh` and `Unregister`.
+
+Windows uninstall entry, `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\<id>`
+(user) or the same key in the 64-bit view of `HKLM` (machine): `DisplayName`,
+`Publisher`, `DisplayIcon`, `DisplayVersion`, `InstallLocation`, `InstallDate`,
+`EstimatedSize`, `UninstallString` and `QuietUninstallString` naming the launcher verb.
+When an MSI installed the application (IDN-34), Windows Installer owns the entry and
+idunn writes none of its own.
+
+- **`DisplayVersion` is derived state, never a source of truth.** winget, Intune and
+  SCCM detect the installed version through it, so a stale value makes them "upgrade"
+  forever. It is refreshed after a commit and reconciled against the pointer by the
+  launcher at start; a failed write is reported and never rolls back a committed
+  update (the swap is the transaction, the registry is not part of it). In a
+  system-wide install the refresh is the helper's, which can write `HKLM`.
+- **Modify and repair belong to the sidecar.** Decided: idunn exposes the API to set
+  and manage the entry — including `ModifyPath`, `NoModify` and `NoRepair` — and the
+  actions behind it (update now, repair, uninstall), but core registers no modify
+  command itself: without a UI there is nothing sensible for "Modify" to open, so the
+  default is `NoModify=1`, `NoRepair=1`. A sidecar (`idunn-fyne`, `idunn-web`, …)
+  calls the API to register its own entry point and presents the dialog. Settings has
+  no "update" button for Win32 applications; "Modify" is the only hook.
+- **Repair** is a core operation the sidecar calls: re-verify every installed file of
+  the current version against its TUF target hash and re-materialize what differs
+  (the verification already exists for reuse, IDN-10). Unlike uninstall it needs the
+  network when a file has to be fetched.
+
+macOS and Linux integrations (`.desktop` entries, icons, `~/.local/bin` links, systemd
+user units, `SMAppService` registration) use the same manifest; their specifics are
+IDN-37.
 
 
 ---
@@ -835,3 +959,119 @@ in the apply path — an update that quietly stays staged and lands at the next 
 a host that never asked for one. Deferral remains what §14.3 recommends to a host whose
 running application updates itself; a host that wants it says so.
 `TestUnsetOnBusyAbortsRatherThanDefers` (`core/updater`) pins the zero value.
+
+### IDN-32 — Packer: require platform signatures at publish time (§9, T13)
+The OS signature must be inside the bytes before the packer hashes them; a file signed
+after `publish` fails its TUF hash on every client, and a file never signed fails only
+on the machines that enforce signatures. Both are publish-time mistakes, and the packer
+already refuses what would fail on every client (a `dst` `safepath` rejects).
+
+Wanted: an optional `platform_signature` block in `pack.yaml` — required or not, and
+per OS the expected identity (Windows: certificate subject or thumbprints; darwin: Team
+ID and identifier) — checked for every `exe` and `lib` file and for bundles. The packer
+**verifies only**; it never signs. OS signing keys live in HSMs, Azure Trusted Signing
+or the keychain, and notarization is a network round trip to Apple; neither belongs in
+the tool that holds the TUF keys.
+
+Open: a full chain check is only possible on the target OS (`WinVerifyTrust`,
+`codesign`); on another OS the packer can only check that a signature is present and
+names the expected signer. Whether that weaker check is offered, or the gate requires
+publishing from the target OS, is to decide.
+
+### IDN-33 — Signing without losing dedup and reproducibility (§4.1, §9, IDN-18)
+A signature carries a timestamp, so re-signing an unchanged DLL produces new bytes: a new
+content-addressed payload target, no reuse on the client, a pointless patch. And signed
+bytes are not reproducible, which IDN-18's comparison does not cover.
+
+Wanted: a signing step keyed by the digest of the *unsigned* build — a file whose
+unsigned digest equals the previous release's is not re-signed; the signed file is
+taken from that release. Publish the unsigned digests next to the signed ones, so an
+independent rebuild can be related to what shipped. For Authenticode the signed hash
+excludes the checksum and the certificate table; whether the unsigned build's
+Authenticode digest matches the signed file's (padding added when signing) is
+**unverified**. For Mach-O, whether `codesign --remove-signature` restores the unsigned
+bytes is **unverified**.
+
+### IDN-34 — Installer packages and the publishing pipeline (§5, §9)
+The signature of an installer package is checked when the package installs and never
+again; an update bypasses the package and places files directly. So every file idunn
+ships must carry its own OS signature, and a package is only the wrapper around the
+first install. The order, to be documented: build, sign each file (inside out on
+macOS), notarize and staple, `packer publish`, then package, sign the package, notarize
+the package.
+
+Wanted: scripts (not `core`) and documentation, generalising `scripts/macos` and
+`scripts/windows` from the helper to the application:
+
+| OS | fits idunn | does not |
+|---|---|---|
+| Windows | signed `cmd/installer`; an MSI (WiX) that installs only the launcher and the bootstrap | MSIX / Microsoft Store: read-only install location, updates only through the Store or App Installer |
+| macOS | a notarized `.dmg` with the `.app` (user scope); a `.pkg` signed with a Developer ID Installer certificate (system scope with the helper daemon) | Mac App Store: self-updating is not permitted |
+| Linux | a tarball or installer; a deb/rpm that installs only the launcher | Flatpak, Snap: read-only, their own update mechanism |
+
+An MSI or deb/rpm must not list anything below `versions/` among its files, or a
+Windows Installer repair or a package verification reverts or flags what idunn
+updated. A deb/rpm's `prerm`/`postrm` calls the launcher's uninstall verb (IDN-35).
+Worth evaluating: an offline installer — `cmd/installer` with a TUF snapshot of the
+first release embedded, so the bytes are still TUF-verified and the package signature
+stays a wrapper.
+
+idunn sets no Mark-of-the-Web and no `com.apple.quarantine` on what it downloads, so
+SmartScreen and Gatekeeper's first-launch assessment see only the first installer —
+another reason for the gates in IDN-27 and IDN-31.
+
+### IDN-37 — Uninstall on macOS and Linux: leftovers and registrations (IDN-35, IDN-36)
+- **macOS, user scope:** a user drags the `.app` to the Trash, and nothing runs;
+  `~/Library/Application Support/<bid>` with `versions/` and the TUF cache stay behind.
+  The uninstall verb is reachable from the application (a menu item through the
+  sidecar, or the helper in `Contents/Helpers`, IDN-28); the leftovers of a bundle that
+  was only trashed are documented, not cleaned up — nothing starts again to do it.
+- **macOS, system scope:** `SMAppService.unregister` for the daemon, removal of the
+  bundle with administrator rights, `pkgutil --forget` for a `.pkg` install.
+  **Unverified:** whether macOS 13+ Background Task Management disables the daemon on
+  its own when the bundle is trashed.
+- **Linux:** the verb removes the `.desktop` entry, icons, the `~/.local/bin` link and
+  systemd user units from the manifest, and the helper unit for a system-wide install.
+
+### IDN-38 — Release notes, signed and delivered with the release (§3, §8, §9)
+idunn delivers the update and the sidecars show it, so the question "what changes?"
+belongs to the same path. Today a host has to fetch notes from somewhere else, with
+nothing tying them to the release a user is asked to install.
+
+Wanted, as data and never as code (AGENTS.md §1.3):
+
+- **Delivered as TUF targets, discovered by name**, the way patches are (§3 of
+  `packer.md`): `notes/v<major>/<version>/index.json` plus one file per language,
+  `notes/v<major>/<version>/<lang>.md`. The index lists the languages and an optional
+  link; the signed metadata answers whether notes exist at all. **The descriptor is not
+  touched:** `release.ParseDescriptor` refuses unknown fields, so a `notes` field would
+  make every deployed client refuse every new release. A client that knows nothing
+  about notes never asks for the path. The release-line delegation takes the pattern
+  `notes/v<major>/*` next to `payloads/v<major>/*` — a re-sign of `targets`, disjoint
+  like the others, no client migration.
+- **Link, embedded text, or both.** A publisher who keeps notes on a website ships
+  only the index with `url`; one who wants them offline and bound to the release ships
+  the text. The URL is `https` only, without credentials, validated by the packer and
+  again by the client, and handed to the sidecar as a value — core opens nothing.
+- **Bounded and strict.** The index goes through a strict parser like the descriptor
+  (schema version, no unknown fields, fuzzed); a language tag is validated (BCP 47
+  subset) before it becomes part of a path; the text has a size ceiling checked
+  against the signed length before a byte is fetched.
+- **Plain Markdown, rendered by the sidecar as untrusted text:** no raw HTML, no
+  images or other remote content loaded automatically, links shown before they open.
+  What the notes say is signed; what a renderer would do with active content is not.
+- **API, called by the sidecar**, in line with IDN-36: something like
+  `Updater.ReleaseNotes(ctx, rel, NotesOptions{Languages, Since})`, returning one entry
+  per version with its language, text and link. `Since` is the installed version, so
+  an update from 1.0 to 1.3 shows 1.1, 1.2 and 1.3 — the versions come from the signed
+  targets metadata, as for multi-hop patches. The fallback order of languages is the
+  caller's; with no match, the first language in the index. Notes are fetched on
+  request, before `Apply`, and never required: a missing, oversized or malformed note
+  is reported and does not block the update. Headless hosts never fetch them.
+- **Packer:** `pack.yaml` takes `notes: { url: …, files: { en: CHANGELOG.md, de: … } }`;
+  the notes are retired with their release (IDN-03).
+
+Open: whether one release's notes may differ per platform (a `<os>-<arch>` override
+next to the shared file) or stay one text per version; and whether `hook.Prompter`,
+which today takes a plain question, grows a variant that carries the notes, or the
+sidecar composes the question itself from the API.
