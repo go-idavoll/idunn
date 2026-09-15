@@ -141,7 +141,7 @@ func setup() (int, error) {
 		{"./cmd/installer", &suite.installer, ""},
 		// The launcher bakes in what it starts; the application lives at the
 		// same install-relative path in every release.
-		{"./cmd/launcher", &suite.launcher, "-X main.appBinary=" + appDst},
+		{"./cmd/launcher", &suite.launcher, "-X main.appBinary=" + appDst + " -X main.releaseName=hostapp"},
 	} {
 		out := filepath.Join(suite.binDir, exe(filepath.Base(b.pkg)))
 		if err := goBuild(out, b.pkg, b.ldflags); err != nil {

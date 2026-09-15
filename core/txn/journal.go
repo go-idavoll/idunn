@@ -30,7 +30,8 @@ import (
 
 // State is a journal record. The sequence is BEGIN -> (STAGED -> MIGRATED ->
 // SWAPPED)* -> COMMITTED, or ROLLED_BACK, or — when the application would not
-// quiesce — STAGED -> DEFERRED and then the rest of it at the next start. Values
+// quiesce — STAGED -> DEFERRED and then the rest of it at the next start. Any
+// resting state may be followed by UNINSTALLING, which nothing follows. Values
 // are persisted, so they are append-only: never renumber or reuse them.
 type State string
 
@@ -54,6 +55,14 @@ const (
 	// would otherwise sweep up as litter. The launcher finishes it while no
 	// instance is running (ResumeDeferred).
 	StateDeferred State = "DEFERRED"
+
+	// StateUninstalling marks an installation that is being removed
+	// (core/uninstall, IDN-35). It is terminal: no update may begin on top of
+	// it and no recovery undoes it. The pointer goes right after it is written,
+	// and the journal holding it is the last file an uninstall deletes, so a
+	// crash anywhere in between leaves a record that says "finish removing
+	// this" — never an installation that looks whole with half its files gone.
+	StateUninstalling State = "UNINSTALLING"
 )
 
 // Record is one durably written journal entry.
@@ -74,6 +83,12 @@ type Record struct {
 // ErrJournal is the class of every rejection here: a malformed journal, an
 // impossible state transition, a recovery that cannot reach a valid state.
 var ErrJournal = errors.New("journal")
+
+// ErrUninstalling reports a journal whose last record is StateUninstalling: the
+// installation is being removed. Recovery, rollback and a new transaction all
+// refuse it, so neither the launcher nor the updater can bring back to life a
+// tree an interrupted uninstall has already started to take apart.
+var ErrUninstalling = fmt.Errorf("%w: the installation is being uninstalled; run the uninstall again to finish it", ErrJournal)
 
 // JournalSchema is the on-disk format version. Unknown means unknown semantics,
 // and a journal we cannot read is not one we may act on.
@@ -104,13 +119,18 @@ var allowed = map[State][]State{
 	StateStaged:    {StateMigrated, StateRolledBack, StateDeferred},
 	StateMigrated:  {StateSwapped, StateRolledBack},
 	StateSwapped:   {StateCommitted, StateRolledBack},
-	StateCommitted: {StateBegin},
+	StateCommitted: {StateBegin, StateUninstalling},
 
-	// A deferred transaction is resumed (MIGRATED), abandoned (ROLLED_BACK), or
-	// superseded by a newer update that begins while it is still waiting.
-	StateDeferred: {StateMigrated, StateRolledBack, StateBegin},
+	// A deferred transaction is resumed (MIGRATED), abandoned (ROLLED_BACK),
+	// superseded by a newer update that begins while it is still waiting, or
+	// dropped together with the installation it was waiting to update.
+	StateDeferred: {StateMigrated, StateRolledBack, StateBegin, StateUninstalling},
 
-	StateRolledBack: {StateBegin},
+	StateRolledBack: {StateBegin, StateUninstalling},
+
+	// Terminal. An uninstall that was interrupted is finished by running it
+	// again, never by starting something new in a tree that is half gone.
+	StateUninstalling: {},
 }
 
 // Journal appends transaction records durably (write + fsync + atomic rename) so
@@ -177,8 +197,8 @@ func parse(raw []byte) (*document, error) {
 	// appends is corrupt, whatever produced it. Recovery reads the last record
 	// and acts on it, so the history it comes from has to be one we could have
 	// written.
-	if doc.Records[0].State != StateBegin {
-		return nil, fmt.Errorf("%w: history starts at %q, not %q", ErrJournal, doc.Records[0].State, StateBegin)
+	if first := doc.Records[0].State; first != StateBegin && first != StateUninstalling {
+		return nil, fmt.Errorf("%w: history starts at %q, not %q", ErrJournal, first, StateBegin)
 	}
 	for i := 1; i < len(doc.Records); i++ {
 		if err := checkTransition(doc.Records[i-1], doc.Records[i]); err != nil {
@@ -231,7 +251,9 @@ func (j *Journal) Append(r Record) error {
 	next := append([]Record(nil), j.records...)
 	switch {
 	case len(j.records) == 0:
-		if r.State != StateBegin {
+		// An installation whose journal is gone can still be uninstalled, so
+		// an empty journal may open with UNINSTALLING as well as with BEGIN.
+		if r.State != StateBegin && r.State != StateUninstalling {
 			return fmt.Errorf("%w: a transaction must open with %q, not %q", ErrJournal, StateBegin, r.State)
 		}
 		next = []Record{r}

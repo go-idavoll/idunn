@@ -27,8 +27,6 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -48,6 +46,7 @@ import (
 	"github.com/go-idavoll/idunn/core/release"
 	"github.com/go-idavoll/idunn/core/trust"
 	"github.com/go-idavoll/idunn/core/updater"
+	"github.com/go-idavoll/idunn/internal/layout"
 )
 
 // Exit codes. They are the contract with whatever runs this — a shell script, an
@@ -601,8 +600,7 @@ func defaultCacheDir(root string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("no cache directory (%w); pass --cache", err)
 	}
-	sum := sha256.Sum256([]byte(root))
-	return filepath.Join(base, "idunn", "installer", hex.EncodeToString(sum[:8])), nil
+	return layout.InstallerCache(base, root), nil
 }
 
 // progress renders lifecycle events as lines. It is the smallest possible

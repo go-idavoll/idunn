@@ -39,8 +39,11 @@
 package layout
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"path/filepath"
 
 	"github.com/go-idavoll/idunn/core/fsx"
 	"github.com/go-idavoll/idunn/core/release"
@@ -109,6 +112,20 @@ func Clock(root string) string { return fsx.Join(root, MetaName, ClockName) }
 
 // Staging is where verified files are assembled before the swap.
 func Staging(root string) string { return fsx.Join(root, MetaName, StagingName) }
+
+// InstallerCache is where cmd/installer keeps the trusted TUF metadata and
+// target cache of the install at root: below the user's cache directory
+// (os.UserCacheDir), keyed by the root so two installs never share trusted
+// state. It lives outside the root — which may not exist yet when the installer
+// runs, and may be one it cannot write — and it is named here so the uninstall
+// that removes the root can remove it too.
+//
+// root is the absolute root as the installer resolved it; a different spelling
+// of the same directory names a different cache.
+func InstallerCache(userCacheDir, root string) string {
+	sum := sha256.Sum256([]byte(root))
+	return filepath.Join(userCacheDir, "idunn", "installer", hex.EncodeToString(sum[:8]))
+}
 
 // VersionDir returns the directory of one version.
 //

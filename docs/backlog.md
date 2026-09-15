@@ -25,7 +25,6 @@ An item that is partly done stays open until what it still lists is done.
 | [IDN-28](idn/IDN-28.md) | macOS: install on quit and relaunch (§14.3) | open |
 | [IDN-30](idn/IDN-30.md) | Replacing the privileged helper itself (§14.2) | open |
 | [IDN-31](idn/IDN-31.md) | Windows: Authenticode as a gate before the swap (§13) | open |
-| [IDN-35](idn/IDN-35.md) | Uninstall (§5, §6.1) | open |
 | [IDN-36](idn/IDN-36.md) | OS integrations as a recorded manifest; Windows "Installed apps" (§5, §13) | open |
 
 ### P2 — hardening and reach
@@ -39,7 +38,7 @@ An item that is partly done stays open until what it still lists is done.
 | [IDN-32](idn/IDN-32.md) | Packer: require platform signatures at publish time (§9, T13) | open |
 | [IDN-33](idn/IDN-33.md) | Signing without losing dedup and reproducibility (§4.1, §9, IDN-18) | open |
 | [IDN-34](idn/IDN-34.md) | Installer packages and the publishing pipeline (§5, §9) | open |
-| [IDN-37](idn/IDN-37.md) | Uninstall on macOS and Linux: leftovers and registrations (IDN-35, IDN-36) | open |
+| [IDN-37](idn/IDN-37.md) | Uninstall on macOS and Linux: leftovers and registrations ([IDN-35](idn/done/IDN-35.md), IDN-36) | open |
 | [IDN-38](idn/IDN-38.md) | Release notes, signed and delivered with the release (§3, §8, §9) | open |
 
 ## Done
@@ -63,5 +62,7 @@ An item that is partly done stays open until what it still lists is done.
 | [IDN-22](idn/done/IDN-22.md) | The elevated helper vets the install root it is asked to write (§14.2, T16) | P2 |
 | [IDN-24](idn/done/IDN-24.md) | A default install root that follows the platform's conventions (§5, §6.1, §14.2) | P1 |
 | [IDN-29](idn/done/IDN-29.md) | Install and restart (§6.1, §14.3) | P1 |
+| [IDN-35](idn/done/IDN-35.md) | Uninstall (§5, §6.1) | P1 |
+
 When an item is implemented, `git mv` its file to `idn/done/`, mark its heading
 **done**, and move its row to the table above.

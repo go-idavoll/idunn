@@ -29,8 +29,12 @@
 //	<root>/.updater/          journal, install state, known-good clock,
 //	                          and launcher.next/<name>, a launcher to swap in
 //
+// It is also the uninstaller: `launcher --uninstall` removes the installation it
+// belongs to, and then itself (core/uninstall, IDN-35). One binary fewer to build,
+// sign and ship, and it is the one file that stays on disk above versions/.
+//
 // A host that wants its own launcher can have one: everything here beyond flag
-// parsing and the hand-over lives in core/launch.
+// parsing and the hand-over lives in core/launch and core/uninstall.
 package main
 
 import (
@@ -40,6 +44,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"time"
@@ -47,6 +52,8 @@ import (
 	"github.com/go-idavoll/idunn/core/fsx"
 	"github.com/go-idavoll/idunn/core/hook"
 	"github.com/go-idavoll/idunn/core/launch"
+	"github.com/go-idavoll/idunn/core/txn"
+	"github.com/go-idavoll/idunn/core/uninstall"
 	"github.com/go-idavoll/idunn/internal/layout"
 	"github.com/go-idavoll/idunn/internal/safepath"
 )
@@ -58,6 +65,13 @@ const (
 	exitOK    = 0 // the launcher answered a question and did not start anything.
 	exitError = 1 // there is nothing to launch, or it could not be started.
 	exitUsage = 2 // the command line was wrong.
+
+	// --uninstall only. The same numbers cmd/installer gives the same
+	// situations, so a script or an MDM reads both alike.
+	exitRefused    = 3 // not an installation of this application, or the application refused.
+	exitIncomplete = 4 // the application is running, or something is still in use; run again.
+	exitPrivileges = 5 // the install root needs administrator rights.
+	exitUnsafeRoot = 6 // administrator rights, but the root is not administrators-only.
 )
 
 // appBinary is the install-relative path of the application to start, set at
@@ -77,6 +91,16 @@ var appBinary = "app"
 // necessarily the one that was installed, and `--version` is how an operator
 // finds out which one is actually there. A build that leaves it unset says so.
 var launcherVersion = ""
+
+// releaseName is the name the application's releases are published under — the
+// `name` of its pack.yaml, which the install state records — set at build time:
+//
+//	go build -ldflags "-X main.releaseName=acme-app" ./cmd/launcher
+//
+// `--uninstall` refuses a root that holds another application when it is set. A
+// build that leaves it unset still refuses a root that holds no installation at
+// all, and removes only the root this launcher sits in.
+var releaseName = ""
 
 // execFn hands control to the application. It is a variable so the tests can
 // exercise everything up to the hand-over on every platform — the real
@@ -110,6 +134,11 @@ var (
 )
 
 func main() {
+	// The copy an uninstall starts to remove this launcher (Windows). It is
+	// dispatched before anything else is parsed: it is not a start.
+	if len(os.Args) > 1 && os.Args[1] == uninstall.FinishArg {
+		os.Exit(finishUninstall(os.Args[2:]))
+	}
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, execApp))
 }
 
@@ -123,6 +152,7 @@ func run(args []string, stdout, stderr io.Writer, exec execFn) int {
 		quiet  = fs.Bool("quiet", false, "suppress progress output")
 		after  = fs.Int("after-pid", 0, "wait for this process to exit first (set by launch.Relaunch)")
 		show   = fs.Bool("version", false, "print this launcher's own version and exit")
+		remove = fs.Bool("uninstall", false, "remove this installation and this launcher instead of starting the application")
 	)
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
@@ -166,6 +196,10 @@ func run(args []string, stdout, stderr io.Writer, exec execFn) int {
 	if !*quiet {
 		o.Observe = &progress{w: stdout}
 	}
+	if *remove && fs.NArg() != 0 {
+		_, _ = fmt.Fprintf(stderr, "idunn launcher: --uninstall starts nothing, so it takes no arguments for the application (%q)\n", fs.Arg(0))
+		return exitUsage
+	}
 
 	// Started by launch.Relaunch beside the instance that asked for it: nothing
 	// is applied, and nothing is started, while that instance is still up. A
@@ -176,6 +210,10 @@ func run(args []string, stdout, stderr io.Writer, exec execFn) int {
 			_, _ = fmt.Fprintf(stderr, "idunn launcher: %v\n", err)
 			return exitError
 		}
+	}
+
+	if *remove {
+		return uninstallRoot(installRoot, o.SelfPath, o.Observe, stderr)
 	}
 
 	quick := 0
@@ -202,6 +240,15 @@ func run(args []string, stdout, stderr io.Writer, exec execFn) int {
 	}
 }
 
+// finishUninstall runs the copy that removes the launcher an uninstall left
+// behind (Windows only; uninstall.Finish refuses it elsewhere).
+func finishUninstall(args []string) int {
+	if err := uninstall.Finish(args); err != nil { //nolint:staticcheck // SA4023: Finish returns nil only on Windows; this dispatch is Windows-only in practice.
+		return exitError
+	}
+	return exitOK
+}
+
 // lastStart is when startOnce last handed over to the application.
 var lastStart time.Time
 
@@ -214,6 +261,13 @@ func startOnce(o launch.Options, installRoot, rel string, args []string, stderr 
 	// refusing to launch an application because an update it did not ask for
 	// could not be applied would be the worse outcome by far.
 	res, err := launch.Start(context.Background(), o)
+	if errors.Is(err, txn.ErrUninstalling) {
+		// The one failure a start does not go past: an uninstall began, and the
+		// tree it has partly removed is not an installation to run.
+		_, _ = fmt.Fprintln(stderr, "idunn launcher: an uninstall of this installation was interrupted; "+
+			"run the launcher with --uninstall to finish it")
+		return exitError, err
+	}
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "idunn launcher: the pending update was not applied: %v\n", err)
 	}
@@ -239,6 +293,61 @@ func startOnce(o launch.Options, installRoot, rel string, args []string, stderr 
 		return exitError, err
 	}
 	return code, nil
+}
+
+// uninstallRoot removes the installation this launcher belongs to (IDN-35).
+//
+// It takes no path from its caller: the root is the one this launcher sits in,
+// the same judgement a launcher makes before it swaps a staged launcher over
+// itself. A --root that names another directory is refused rather than removed,
+// so a launcher cannot be talked into deleting an installation it is not part of.
+func uninstallRoot(root, self string, observe hook.Observer, stderr io.Writer) int {
+	if self == "" {
+		_, _ = fmt.Fprintln(stderr, "idunn launcher: --uninstall needs to know where this launcher is, and it could not be located")
+		return exitError
+	}
+	if fsx.Dir(self) != fsx.Clean(fsx.Slash(root)) {
+		_, _ = fmt.Fprintf(stderr, "idunn launcher: --uninstall removes only the installation this launcher is in; %s is not in %s\n",
+			self, root)
+		return exitUsage
+	}
+
+	o := uninstall.Options{
+		FS:       fsx.OS(),
+		Root:     fsx.Slash(root),
+		Name:     releaseName,
+		SelfPath: self,
+		Observe:  observe,
+	}
+	// The installer's TUF cache for this root goes with it. A different
+	// spelling of the root names a different cache, which then stays behind:
+	// it holds public metadata and nothing else.
+	if cache, err := os.UserCacheDir(); err == nil {
+		o.Caches = []string{fsx.Slash(layout.InstallerCache(cache, root))}
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	res, err := uninstall.Run(ctx, o)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "idunn launcher: %v\n", err)
+		switch {
+		case errors.Is(err, uninstall.ErrNotInstalled), errors.Is(err, uninstall.ErrRefused):
+			return exitRefused
+		case errors.Is(err, uninstall.ErrBusy), errors.Is(err, uninstall.ErrIncomplete):
+			return exitIncomplete
+		case errors.Is(err, uninstall.ErrNotWritable):
+			return exitPrivileges
+		case errors.Is(err, uninstall.ErrUnsafeRoot):
+			return exitUnsafeRoot
+		default:
+			return exitError
+		}
+	}
+	if len(res.Kept) > 0 {
+		_, _ = fmt.Fprintf(stderr, "idunn launcher: %s was kept, because it holds files idunn did not install\n", root)
+	}
+	return exitOK
 }
 
 // selfPath is the running executable with symlinks resolved, in the form
