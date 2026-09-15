@@ -60,7 +60,11 @@ check; `core/txn` tests for the `UNINSTALLING` transitions and the recovery refu
 and `test/e2e/local` `TestUninstall` drives `cmd/launcher --uninstall` as real
 processes — removal (including the Windows self-delete copy), a kept user file, an
 interrupted uninstall refused a start and finished by a second run, and a refusal to
-remove another application.
+remove another application. It skips when the test process is elevated (root, or an
+elevated Windows token): a user-owned install root is then refused by the
+privileged-root check by design, so the per-user path — and, on the elevated GitHub
+Windows runner, the self-delete copy with it — is exercised only unelevated. The unit
+tests cover the same logic with the root check stubbed.
 
 Still open, tracked elsewhere:
 

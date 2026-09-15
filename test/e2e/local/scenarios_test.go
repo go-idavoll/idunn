@@ -499,6 +499,13 @@ func TestInstallAndRestart(t *testing.T) {
 
 func TestUninstall(t *testing.T) {
 	t.Parallel()
+	if elevated() {
+		// A user-scope install root is user-owned, which an elevated process is
+		// refused (elevate.CheckPrivilegedRoot, §14.8). System-scope uninstall by
+		// an elevated process is IDN-37/IDN-23; here it would only test the
+		// refusal. The unit tests cover the logic with the root check stubbed.
+		t.Skip("running elevated/root: the per-user uninstall path is refused by the privileged-root check")
+	}
 
 	// launcherInRoot copies the built launcher to <root>/launcher(.exe), where a
 	// real installation keeps it: above versions/, the one file that stays. The
