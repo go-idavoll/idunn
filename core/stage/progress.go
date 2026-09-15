@@ -98,7 +98,12 @@ type counter struct {
 // newCounter starts counting one file. r carries everything already known about
 // it — its destination, its position in the release, its signed length, and the
 // release total so far.
+//
+// The per-file counter is zeroed rather than taken from r: r is the report the
+// previous file ended on, and carrying its FileDone into this one would make the
+// first begin rewind the release by the length of a file that is already staged.
 func newCounter(on Progress, r Report) *counter {
+	r.FileDone = 0
 	return &counter{w: io.Discard, report: r, on: on}
 }
 

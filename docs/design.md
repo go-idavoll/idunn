@@ -549,6 +549,19 @@ one installation per release.
   full target. Minimal attack surface.
 - Worthwhile only for large binaries that change slightly.
 
+**Memory: one window, not one release.** Nothing above is ever held whole. `core/trust`
+hands a verified target to an `io.Writer` (`Materialize`) and gives a verdict on a
+reader (`VerifyStream`); `core/stage` produces every staged file through
+`fsx.WriteStreamAtomic`, with the verifier teed into the very bytes that land — so the
+bytes that were checked are the bytes a reader will see, rather than a buffer that was
+checked and then written. A reuse candidate is copied and verified in one pass; a delta
+reads its base and its patch **at offsets** from files and spills the intermediate hops
+of a chain beside the staging tree; a source that does not verify takes its scratch file
+with it and the next one is tried against a fresh one. One buffer the size of a target
+still exists on the first download, because go-tuf's `Fetcher` contract returns
+`[]byte` — that is the remainder of IDN-12 and is bounded by
+`trust.Options.MaxTargetBytes`.
+
 **The security invariant is untouched:** every byte on disk — reused from the TUF cache,
 downloaded as a target, or patched — is checked against the **TUF-signed target hash**.
 Delta only changes *how* bytes are obtained, never *what* is trusted. Local files reused
@@ -610,6 +623,12 @@ type Migrator interface {
 
 // Observer receives lifecycle events. UI sidecars implement this to render
 // progress. Headless operation simply registers no Observer.
+//
+// While a release is being written, an Event also carries the file being
+// staged, where its bytes are coming from (reuse / patch / download), and how
+// far the release has got in bytes against a total known before the first byte
+// moves. An Observer is called synchronously from the update goroutine, so a UI
+// records the event and repaints on its own schedule.
 type Observer interface {
     OnEvent(Event)
 }

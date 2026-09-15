@@ -20,10 +20,10 @@ piece of the section is missing; **open** — contract only, or nothing.
 | §6.1 | Blue/green layout + pointer | **done** — `internal/layout`, symlink (POSIX) / pointer file (Windows), plus the launcher shim (`core/launch`, `cmd/launcher`), which also restarts an application that asks for it (exit code 42 / `launch.Relaunch`, IDN-29) |
 | §6.2 | Transaction flow, journal, recovery | **done** — `core/txn`, crash-injection tests |
 | §6.3 | Updater API (`CheckForUpdate`, `Apply`) | **done** — `Apply` installs the releases a migration floor demands in between, in order, each its own transaction (§6.4). `Policy` has no expiry switch: metadata expiry is go-tuf's alone, tested through the updater (IDN-15) |
-| §6.4 | Delta stage 1 (content-addressed reuse) | **partial** — go-tuf cache reuse works, and an unchanged file is now taken from `current`/a retained version and verified against its signed target before it is staged (IDN-10); two named pieces are still missing: the reuse is a copy rather than a reflink/hardlink, and a file that changed destination between releases is not looked up by content hash |
+| §6.4 | Delta stage 1 (content-addressed reuse) | **partial** — go-tuf cache reuse works, and an unchanged file is now taken from `current`/a retained version and verified against its signed target before it is staged (IDN-10), streamed rather than buffered (IDN-12); two named pieces are still missing: the reuse is a copy rather than a reflink/hardlink, and a file that changed destination between releases is not looked up by content hash |
 | §6.4 | Delta stage 2 (binary patches) | **done** — the format on both sides (`stage.ApplyPatch`, `internal/delta`), the walk a skipped-releases client follows (`release.Chain`, `trust.Versions`), staging that rebuilds a changed file from the cheapest published patches and verifies every hop, a packer that emits patch targets against the last N releases (`delta:` in pack.yaml), and a `MinFromVersion` floor that is now walked rather than refused where the repository publishes releases that bridge it. Three corpus cases attack the patches (IDN-14) |
 | §7 | Hook system | **done** — all six hooks defined and wired |
-| §8 | Headless default, UI sidecars | **done** in `core` (no UI dependency); `idunn-fyne` is the first out-of-tree sidecar and exercises the `Observer`/`Prompter` surface end to end (IDN-19) |
+| §8 | Headless default, UI sidecars | **done** in `core` (no UI dependency); `idunn-fyne` is the first out-of-tree sidecar and exercises the `Observer`/`Prompter` surface end to end (IDN-19). `Event` carries byte-level staging progress, so a sidecar renders a real bar rather than deriving one from the phase (IDN-12) |
 | §9 | Packer | **done** — `cmd/packer publish` builds and signs a release end to end (`internal/packer`), including retention (step 4, IDN-03) |
 | §10 | TUF repository layout | **done** — the packer produces it, the client resolves it, a golden test pins the emitted bytes |
 | §11 | Security concept | **done** as a document; per-threat coverage below |
@@ -58,7 +58,10 @@ Not yet enforced:
   on Windows it also builds the pipe DACL, refuses a squatted pipe name and remote
   clients; on macOS it can additionally require the caller's code signature
   (`PeerRequirement`). The fd hand-off (T23) and a client-side check of the pipe's server are
-  open. The
+  open; the other half of T23 — an oversized file planted in the local target cache being
+  read whole by `Updater.FindCachedTarget`'s unbounded `os.ReadFile` — is closed, because
+  `trust.Materialize` reads the cache itself, bounded by the signed length, and removes an
+  entry that does not verify (IDN-12). The
   Windows and Linux interactive paths enforce their half: three
   validated scalars cross the boundary, nothing else; the helper validates them
   again, resolves the channel head itself and refuses any other version, and keeps

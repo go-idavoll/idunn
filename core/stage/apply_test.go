@@ -45,11 +45,20 @@ type targets struct {
 	// (trust.Options.MaxTargetBytes): every method refuses a target longer
 	// than it, as the real client does before it fetches or reads anything.
 	ceiling int64
-	asked   []string
+	// cutAfter, when set for a target, makes Materialize write that many bytes
+	// and then fail. It models the one thing a streaming trust client can do
+	// that a buffering one cannot: hand over a prefix and only then refuse.
+	cutAfter map[string]int
+	asked    []string
 }
 
 func newTargets(files map[string][]byte) *targets {
-	return &targets{files: files, fail: map[string]error{}, lenErr: map[string]error{}}
+	return &targets{
+		files:    files,
+		fail:     map[string]error{},
+		lenErr:   map[string]error{},
+		cutAfter: map[string]int{},
+	}
 }
 
 // aboveCeiling is the fake's version of the trust client's refusal.
@@ -71,6 +80,12 @@ func (t *targets) Materialize(path string, w io.Writer) error {
 	data, ok := t.files[path]
 	if !ok {
 		return errors.New("no such target: " + path)
+	}
+	if n, cut := t.cutAfter[path]; cut {
+		if _, err := w.Write(data[:min(n, len(data))]); err != nil {
+			return err
+		}
+		return errors.New("the stream stopped short: " + path)
 	}
 	_, err := w.Write(data)
 	return err

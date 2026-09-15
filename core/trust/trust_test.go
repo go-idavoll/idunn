@@ -1149,3 +1149,24 @@ func TestVerifyStreamReportsAReaderThatFails(t *testing.T) {
 type errorReader struct{}
 
 func (errorReader) Read([]byte) (int, error) { return 0, errors.New("the medium stopped answering") }
+
+// A target that is not cached and cannot be fetched is a refusal that writes
+// nothing: the caller's writer must not be left holding a prefix of a download
+// that never finished.
+func TestMaterializeReportsAnUnreachableRepository(t *testing.T) {
+	f := refreshed(t, nil)
+	d, err := f.client.LatestRelease(testChannel, testOS, testArch)
+	if err != nil {
+		t.Fatalf("LatestRelease: %v", err)
+	}
+	target := d.Files[0].Target
+	f.srv.Close()
+
+	var got bytes.Buffer
+	if err := f.client.Materialize(target, &got); !errors.Is(err, trust.ErrTrust) {
+		t.Fatalf("err = %v, want ErrTrust", err)
+	}
+	if got.Len() != 0 {
+		t.Errorf("a failed materialization wrote %d bytes", got.Len())
+	}
+}

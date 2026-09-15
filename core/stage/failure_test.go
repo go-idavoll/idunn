@@ -46,6 +46,12 @@ func TestStageReportsFilesystemFailures(t *testing.T) {
 			fail: func(op, name string) bool { return op == "mkdirall" && name == stageDir },
 		},
 		{
+			name: "cannot create the delta scratch area",
+			fail: func(op, name string) bool {
+				return op == "mkdirall" && name == fsx.Join(layout.Staging(root), ".scratch")
+			},
+		},
+		{
 			name: "cannot create a destination directory",
 			fail: func(op, name string) bool {
 				return op == "mkdirall" && name == fsx.Join(stageDir, "lib")
@@ -167,5 +173,41 @@ func TestSwapReportsFailureWithoutMovingThePointer(t *testing.T) {
 		if strings.Contains(e.Name(), ".idunn-") {
 			t.Fatalf("a failed swap left the scratch link %q behind", e.Name())
 		}
+	}
+}
+
+// A stream that hands over a prefix and only then refuses is what a streaming
+// trust client can do and a buffering one could not. The prefix must not
+// survive: nothing at the destination, no scratch file left beside it, and no
+// version directory anything else would take for a real one.
+func TestStageDiscardsAStreamThatStopsShort(t *testing.T) {
+	m := newRoot(t)
+	tr := newTargets(map[string][]byte{
+		"targets/app":       []byte("the binary"),
+		"targets/plugin.so": []byte("the library that never arrives"),
+	})
+	tr.cutAfter["targets/plugin.so"] = 7
+	s := &stage.Stager{FS: m, Trust: tr, Root: root}
+
+	_, err := s.Stage(context.Background(), descriptor(
+		ref("targets/app", "app", release.KindExe, 0o755),
+		ref("targets/plugin.so", "lib/plugin.so", release.KindLib, 0o644),
+	), nil)
+	if err == nil {
+		t.Fatal("staging reported success although the stream stopped short")
+	}
+	if _, err := m.Stat("/opt/app/versions/1.3.0"); err == nil {
+		t.Fatal("a failed staging left a version directory behind")
+	}
+
+	// The staging tree is deliberately left as evidence, so the half-written
+	// file is exactly where it would be found if it had survived.
+	dir := fsx.Join(layout.Staging(root), "1.3.0", "lib")
+	entries, err := m.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir(%s): %v", dir, err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("the refused stream left %d files in %s", len(entries), dir)
 	}
 }
