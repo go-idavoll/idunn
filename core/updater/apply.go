@@ -58,6 +58,11 @@ func (u *Updater) Apply(ctx context.Context, r *Release) error {
 		return u.applyElevated(ctx, r)
 	}
 
+	// A launcher an interrupted swap left missing is put back before anything
+	// else. It is not part of the transaction and never fails it: the update
+	// is as good with or without it, and the report says what happened.
+	u.repairLauncher()
+
 	from := r.FromVersion
 	for i, step := range u.plan(ctx, r) {
 		if err := u.applyRelease(ctx, &Release{Descriptor: step, FromVersion: from}); err != nil {
@@ -403,10 +408,20 @@ func (u *Updater) apply(ctx context.Context, r *Release) (hook.Phase, func(), er
 	}
 	u.emit(hook.PhaseCommit, "installed "+d.Version, nil)
 
-	// The staging tree has served its purpose. Removing it here rather than
-	// leaving it for the next recovery keeps a committed install free of
-	// anything that looks like an unfinished one.
-	if err := u.fs.RemoveAll(layout.Staging(u.root)); err != nil {
+	// The launcher this release carries, if any, is staged for the next start
+	// now and not a moment earlier: the COMMITTED record is durable, so no
+	// launcher is ever staged for an update that did not happen. A crash before
+	// this line leaves it pending in the staging tree, and the next recovery
+	// sees COMMITTED and promotes it (txn, IDN-17).
+	//
+	// A promotion that fails does not unmake a committed update. It is reported,
+	// and the staging tree is kept so the next recovery tries again.
+	if err := layout.PromoteLauncher(u.fs, u.root, d.Version); err != nil {
+		u.emit(hook.PhaseCommit, "the new launcher could not be staged; the next update check retries", err)
+	} else if err := u.fs.RemoveAll(layout.Staging(u.root)); err != nil {
+		// The staging tree has served its purpose. Removing it here rather
+		// than leaving it for the next recovery keeps a committed install free
+		// of anything that looks like an unfinished one.
 		u.emit(hook.PhaseGC, "could not remove the staging tree", err)
 	}
 

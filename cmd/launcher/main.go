@@ -26,7 +26,8 @@
 //
 //	<root>/current            -> versions/<version>   (symlink or pointer file)
 //	<root>/versions/<version>/<app>
-//	<root>/.updater/          journal, install state, known-good clock
+//	<root>/.updater/          journal, install state, known-good clock,
+//	                          and launcher.next/<name>, a launcher to swap in
 //
 // A host that wants its own launcher can have one: everything here beyond flag
 // parsing and the hand-over lives in core/launch.
@@ -54,6 +55,7 @@ import (
 // platform makes that necessary, so these are only about failing before it ever
 // starts.
 const (
+	exitOK    = 0 // the launcher answered a question and did not start anything.
 	exitError = 1 // there is nothing to launch, or it could not be started.
 	exitUsage = 2 // the command line was wrong.
 )
@@ -66,6 +68,15 @@ const (
 // A host bakes it in rather than passing it at runtime, because the launcher is
 // what a user clicks: it should need no arguments to do its job.
 var appBinary = "app"
+
+// launcherVersion is this launcher's own version, set at build time:
+//
+//	go build -ldflags "-X main.launcherVersion=1.3.0" ./cmd/launcher
+//
+// Once the launcher can replace itself, the one in the install root is no longer
+// necessarily the one that was installed, and `--version` is how an operator
+// finds out which one is actually there. A build that leaves it unset says so.
+var launcherVersion = ""
 
 // execFn hands control to the application. It is a variable so the tests can
 // exercise everything up to the hand-over on every platform — the real
@@ -111,9 +122,18 @@ func run(args []string, stdout, stderr io.Writer, exec execFn) int {
 		retain = fs.Int("retain", 0, "version directories to keep after applying a deferred update")
 		quiet  = fs.Bool("quiet", false, "suppress progress output")
 		after  = fs.Int("after-pid", 0, "wait for this process to exit first (set by launch.Relaunch)")
+		show   = fs.Bool("version", false, "print this launcher's own version and exit")
 	)
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
+	}
+	if *show {
+		v := launcherVersion
+		if v == "" {
+			v = "unknown (this build stamped no version)"
+		}
+		_, _ = fmt.Fprintf(stdout, "idunn launcher %s\n", v)
+		return exitOK
 	}
 
 	installRoot, err := resolveRoot(*root)
@@ -131,6 +151,17 @@ func run(args []string, stdout, stderr io.Writer, exec execFn) int {
 		FS:             fsx.OS(),
 		Root:           installRoot,
 		RetainVersions: *retain,
+	}
+	// The file a staged launcher replaces is the one this process was started
+	// from, not a name derived from the root or the command line: a host may
+	// install the launcher under any name, and the only authority on which it
+	// chose is the running image. core/launch swaps in only what a committed
+	// update staged for exactly that name, and only if it sits directly in the
+	// root served (docs/design.md §13, IDN-17). No flag can point it elsewhere.
+	if self, err := selfPath(); err != nil {
+		_, _ = fmt.Fprintf(stderr, "idunn launcher: cannot locate this executable, so it will not be replaced: %v\n", err)
+	} else {
+		o.SelfPath = self
 	}
 	if !*quiet {
 		o.Observe = &progress{w: stdout}
@@ -182,8 +213,16 @@ func startOnce(o launch.Options, installRoot, rel string, args []string, stderr 
 	// fails: the installation that is live is complete and runnable, and
 	// refusing to launch an application because an update it did not ask for
 	// could not be applied would be the worse outcome by far.
-	if _, err := launch.Start(context.Background(), o); err != nil {
+	res, err := launch.Start(context.Background(), o)
+	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "idunn launcher: the pending update was not applied: %v\n", err)
+	}
+	// Likewise a launcher that could not replace itself: it is reported on every
+	// start until it is fixed, and the application starts regardless. In a
+	// system-wide install this is the expected outcome for an unprivileged user
+	// (ErrSelfNotWritable, IDN-23).
+	if res.SelfErr != nil {
+		_, _ = fmt.Fprintf(stderr, "idunn launcher: this launcher was not replaced: %v\n", res.SelfErr)
 	}
 
 	// Resolved again on every start: after a relaunch, `current` may name a
@@ -200,6 +239,21 @@ func startOnce(o launch.Options, installRoot, rel string, args []string, stderr 
 		return exitError, err
 	}
 	return code, nil
+}
+
+// selfPath is the running executable with symlinks resolved, in the form
+// core/launch works with. It is a variable so the tests can stand a file in for
+// the test binary, which they must not replace.
+var selfPath = func() (string, error) {
+	self, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	self, err = filepath.EvalSymlinks(self)
+	if err != nil {
+		return "", err
+	}
+	return fsx.Slash(self), nil
 }
 
 // resolveRoot picks the install root: the flag, or the directory this binary

@@ -401,3 +401,115 @@ func TestRootDefaultsToTheBinarysDirectory(t *testing.T) {
 		t.Errorf("resolveRoot() = %q, want %q", got, filepath.Dir(self))
 	}
 }
+
+// --version answers which launcher is sitting in the install root — the question
+// that has no other answer once the launcher can replace itself — and starts
+// nothing.
+func TestVersionPrintsTheStampAndStartsNothing(t *testing.T) {
+	for stamp, want := range map[string]string{"1.3.0": "idunn launcher 1.3.0", "": "unknown"} {
+		old := launcherVersion
+		launcherVersion = stamp
+		var out bytes.Buffer
+		s := &started{}
+		code := run([]string{"--version"}, &out, &out, s.exec)
+		launcherVersion = old
+		if code != exitOK || !strings.Contains(out.String(), want) {
+			t.Errorf("stamp %q: run = %d, %q", stamp, code, out.String())
+		}
+		if s.path != "" {
+			t.Errorf("--version started %q", s.path)
+		}
+	}
+}
+
+// selfInstall is an install for which a committed update staged a new launcher,
+// and whose root holds the old one. selfPath points at that old one for the
+// length of the test: the test binary itself must not be replaced.
+func selfInstall(t *testing.T, staged string) (root, shim string) {
+	t.Helper()
+	root = install(t, []string{"1.2.0"}, "1.2.0")
+	fs := fsx.OS()
+	shim = fsx.Join(fsx.Slash(root), "launcher")
+	next, err := layout.LauncherNext(root, "launcher")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.MkdirAll(layout.LauncherNextDir(root), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := fsx.WriteFileAtomic(fs, next, []byte(staged), layout.MetaFileMode); err != nil {
+		t.Fatal(err)
+	}
+	if err := fsx.WriteFileAtomic(fs, shim, []byte("launcher v1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	oldSelf := selfPath
+	selfPath = func() (string, error) { return shim, nil }
+	t.Cleanup(func() { selfPath = oldSelf })
+	return root, shim
+}
+
+func TestTheLauncherSwapsInTheStagedOneAndLaunches(t *testing.T) {
+	root, shim := selfInstall(t, "launcher v2")
+	var out bytes.Buffer
+	s := &started{}
+
+	if code := run([]string{"--root", root, "--quiet"}, &out, &out, s.exec); code != 0 {
+		t.Fatalf("run = %d\n%s", code, &out)
+	}
+	if s.path == "" {
+		t.Fatal("the application was not started")
+	}
+	if got, _ := os.ReadFile(shim); string(got) != "launcher v2" { //nolint:gosec // G304: test fixture.
+		t.Errorf("the launcher reads %q\n%s", got, &out)
+	}
+	next, _ := layout.LauncherNext(root, "launcher")
+	if _, err := os.Lstat(next); !os.IsNotExist(err) {
+		t.Errorf("the staged launcher is still there after the swap: %v", err)
+	}
+}
+
+// Nothing staged is the ordinary start: nothing is replaced and nothing is said.
+func TestNothingStagedIsSilent(t *testing.T) {
+	root, shim := selfInstall(t, "launcher v2")
+	if err := os.RemoveAll(layout.LauncherNextDir(root)); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	s := &started{}
+	if code := run([]string{"--root", root, "--quiet"}, &out, &out, s.exec); code != 0 || out.Len() != 0 {
+		t.Fatalf("run = %d, output %q", code, &out)
+	}
+	if got, _ := os.ReadFile(shim); string(got) != "launcher v1" { //nolint:gosec // G304: test fixture.
+		t.Errorf("the launcher reads %q", got)
+	}
+}
+
+// Negative: a staged launcher that is not a regular file is refused, the refusal
+// is reported, and the application still starts.
+func TestARefusedStagedLauncherIsReportedAndTheAppStillStarts(t *testing.T) {
+	root, shim := selfInstall(t, "launcher v2")
+	next, _ := layout.LauncherNext(root, "launcher")
+	if err := os.Remove(next); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(next, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	s := &started{}
+
+	if code := run([]string{"--root", root, "--quiet"}, &out, &out, s.exec); code != 0 {
+		t.Fatalf("run = %d\n%s", code, &out)
+	}
+	if s.path == "" {
+		t.Fatal("the application was not started")
+	}
+	if !strings.Contains(out.String(), "was not replaced") {
+		t.Errorf("the refusal was not reported: %q", out.String())
+	}
+	if got, _ := os.ReadFile(shim); string(got) != "launcher v1" { //nolint:gosec // G304: test fixture.
+		t.Errorf("the launcher reads %q", got)
+	}
+}

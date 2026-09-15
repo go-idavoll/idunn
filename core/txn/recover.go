@@ -75,8 +75,15 @@ func RecoverResult(ctx context.Context, f fsx.FS, root string, m hook.Migrator) 
 	res := Result{Recovered: true, FromVersion: last.FromVersion, ToVersion: last.ToVersion}
 
 	switch last.State {
-	case StateCommitted, StateRolledBack:
-		// A terminal state. Nothing to decide; only litter to remove.
+	case StateCommitted:
+		// A terminal state. Nothing to decide, except that a crash right after
+		// the commit record may have kept the launcher it carries from being
+		// promoted; then only litter to remove.
+		return Result{}, settleCommitted(f, root, last)
+
+	case StateRolledBack:
+		// A terminal state. Nothing to decide; only litter to remove — which
+		// includes the pending launcher of the update that did not happen.
 		return Result{}, cleanOrphans(f, root)
 
 	case StateDeferred:
@@ -150,7 +157,9 @@ func Rollback(ctx context.Context, f fsx.FS, root string, m hook.Migrator) error
 		return cleanOrphans(f, root)
 	}
 	switch last.State {
-	case StateCommitted, StateRolledBack:
+	case StateCommitted:
+		return settleCommitted(f, root, last)
+	case StateRolledBack:
 		return cleanOrphans(f, root)
 	case StateBegin:
 		// Nothing beyond the journal write happened, so there is no migration
@@ -278,14 +287,51 @@ func complete(f fsx.FS, root string, j *Journal, last Record) error {
 	}); err != nil {
 		return err
 	}
-	if err := j.Append(Record{
+	committed := Record{
 		State:       StateCommitted,
 		Name:        last.Name,
 		FromVersion: last.FromVersion,
 		ToVersion:   last.ToVersion,
 		Phase:       hook.PhaseCommit,
-	}); err != nil {
+	}
+	if err := j.Append(committed); err != nil {
 		return err
+	}
+	return settleCommitted(f, root, committed)
+}
+
+// settleCommitted tidies up after a committed transaction: it promotes the
+// launcher the transaction carries, if any, and then removes the litter.
+//
+// The order is the point. The pending launcher lives in the staging tree, which
+// cleanOrphans removes; promoting first means a crash anywhere between the commit
+// record and the end of this function leaves either the pending launcher (and the
+// next recovery promotes it) or the staged one, never neither. And it runs only
+// here, behind a COMMITTED record, so no update that did not commit can produce a
+// staged launcher (layout.PromoteLauncher, IDN-17).
+//
+// A `current` that no longer names the committed version is a tree something
+// else has changed since; its launcher is not promoted, only swept away.
+//
+// A failed promotion is returned, and the staging tree is left as it is so the
+// next recovery can try again: a pending launcher of a committed update is not
+// litter.
+func settleCommitted(f fsx.FS, root string, last Record) error {
+	pending, err := layout.LauncherPendingDir(root, last.ToVersion)
+	if err != nil {
+		return err
+	}
+	if _, err := fsx.Lstat(f, pending); fsx.IsNotExist(err) {
+		return cleanOrphans(f, root) // the ordinary case: no launcher rode along.
+	}
+	live, err := layout.PointerTarget(f, root)
+	if err != nil {
+		return err
+	}
+	if live == last.ToVersion {
+		if err := layout.PromoteLauncher(f, root, last.ToVersion); err != nil {
+			return fmt.Errorf("%w: %w", ErrJournal, err)
+		}
 	}
 	return cleanOrphans(f, root)
 }
