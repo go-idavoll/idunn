@@ -15,8 +15,12 @@
 package stage
 
 import (
+	"fmt"
+	"io"
+	"io/fs"
 	"math"
 
+	"github.com/go-idavoll/idunn/core/fsx"
 	"github.com/go-idavoll/idunn/core/release"
 )
 
@@ -43,8 +47,8 @@ type hop struct {
 	to    string
 }
 
-// patched reconstructs f's target from a local file plus patches, or returns nil
-// if that cannot be done or is not worth doing.
+// patched writes f's target into the staging tree from a local file plus
+// patches, and reports whether it could.
 //
 // Nothing here can lower the bar for what gets installed. Each hop's output is
 // checked against the signed target of the release that hop belongs to before
@@ -52,52 +56,150 @@ type hop struct {
 // a direct download — and any failure along the way is answered by fetching the
 // full target, never by accepting bytes that did not verify. A repository that
 // serves a broken patch therefore costs its clients bandwidth and nothing else.
-func (s *Stager) patched(f *release.FileRef, dst string, sources []string, route Route) []byte {
+//
+// Everything a hop needs is a file rather than a buffer: the base, the patch,
+// and the intermediate outputs of a multi-hop chain. That is what keeps a delta
+// affordable in memory as well as on the wire — the old form held a base, a
+// patch and an output at once, three allocations the size of a payload, which
+// for the release this optimisation exists for is gigabytes (IDN-12).
+func (s *Stager) patched(full string, f *release.FileRef, dst string, sources []string, route Route, scratch string, c *counter) bool {
 	lineage := collapse(route[dst])
 	if len(lineage) < 2 || lineage[len(lineage)-1] != f.Target {
 		// No history, or a history that does not end at the file this
 		// descriptor installs. The second is a caller bug rather than an
 		// attack — the route is local data — but it is not something to
 		// patch towards on a guess.
-		return nil
+		return false
 	}
-	full, err := s.Trust.TargetLength(f.Target)
+	size, err := s.Trust.TargetLength(f.Target)
 	if err != nil {
-		return nil
+		return false
 	}
 
 	hops, cost := cheapest(lineage, s.Trust)
-	if hops == nil || cost >= full {
+	if hops == nil || cost >= size {
 		// Either the repository does not publish patches that span the walk, or
 		// the ones it publishes come to more than the file itself. Downloading
 		// is then simply better, and it is always available.
-		return nil
+		return false
 	}
 
-	data := s.local(lineage[0], dst, sources)
-	if data == nil {
+	base, ok := s.localBase(lineage[0], dst, sources)
+	if !ok {
 		// Nothing on disk still holds the bytes this walk starts from.
-		return nil
+		return false
 	}
-	for _, h := range hops {
-		patch, err := s.Trust.Target(h.patch)
-		if err != nil {
-			return nil
+
+	// Intermediate hops land in the scratch area, never in the staging tree:
+	// what becomes versions/<v> must hold the release and nothing else, and a
+	// chain abandoned halfway must leave nothing behind that a later pass could
+	// mistake for a staged file.
+	var spills []string
+	defer func() {
+		for _, name := range spills {
+			_ = s.FS.RemoveAll(name)
+		}
+	}()
+
+	for i, h := range hops {
+		patch, ok := s.spill(scratch, fmt.Sprintf("patch%d", i), h.patch, &spills)
+		if !ok {
+			return false
 		}
 		want, err := s.Trust.TargetLength(h.to)
 		if err != nil {
-			return nil
+			return false
 		}
-		out, err := ApplyPatch(data, patch, want)
+
+		// Each hop writes a name of its own. Rewriting the previous one would
+		// mean renaming over a file this hop still has open, which POSIX
+		// tolerates and Windows refuses — and the whole point of the scratch
+		// area is that nothing here depends on that difference.
+		last := i == len(hops)-1
+		out, outMode := fsx.Join(scratch, fmt.Sprintf("hop%d", i)), fs.FileMode(0o600)
+		if last {
+			out, outMode = full, mode(f)
+		} else {
+			spills = append(spills, out)
+		}
+
+		err = fsx.WriteStreamAtomic(s.FS, out, outMode, func(w io.Writer) error {
+			if last {
+				c.begin(w, SourcePatch)
+				w = c
+			}
+			return s.hop(base, patch, h.to, want, w)
+		})
 		if err != nil {
-			return nil
+			return false
 		}
-		if err := s.Trust.VerifyTarget(h.to, out); err != nil {
-			return nil
-		}
-		data = out
+		base = out
 	}
-	return data
+	return true
+}
+
+// hop applies one patch and returns the trust layer's verdict on what came out.
+//
+// The reconstruction is streamed straight into w with a verifier teed off it, so
+// the bytes that were checked are the bytes that landed and neither the base nor
+// the output is ever held whole. A verdict that refuses discards the scratch
+// file through fsx.WriteStreamAtomic, so a failed hop leaves nothing to be
+// mistaken for a reconstruction that worked.
+func (s *Stager) hop(base, patch, target string, want int64, w io.Writer) error {
+	bf, baseLen, err := fsx.OpenReaderAt(s.FS, base)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = bf.Close() }()
+
+	pf, patchLen, err := fsx.OpenReaderAt(s.FS, patch)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = pf.Close() }()
+
+	// The verifier is fed by a pipe rather than by a tee, because a patch
+	// produces its output instead of reading it: there is no reader to tee off,
+	// only a writer to fan out to.
+	pr, pw := io.Pipe()
+	verdict := make(chan error, 1)
+	go func() {
+		err := s.Trust.VerifyStream(target, pr)
+		// Closing the read side is not tidiness: a verifier that stops early —
+		// because it refused the target outright, or because the stream ran
+		// past the signed length — leaves nobody reading the pipe, and the
+		// apply below would block on it forever.
+		_ = pr.CloseWithError(err)
+		verdict <- err
+	}()
+
+	err = ApplyPatchStream(bf, baseLen, pf, patchLen, io.MultiWriter(w, pw), want)
+	// Closing with the error stops the verifier's read rather than leaving it
+	// blocked on a stream that will never be finished.
+	_ = pw.CloseWithError(err)
+	if verr := <-verdict; err == nil {
+		err = verr
+	}
+	return err
+}
+
+// spill materializes a patch into the scratch area so it can be read at offsets:
+// the three streams of a patch container are consumed together, not one after
+// another, so a sequential reader will not do.
+//
+// A patch is untrusted data whose only job is to be cheaper than the file it
+// rebuilds, and it is bounded by its signed length like every other target —
+// what admits its output is the signed hash of the result, checked in hop.
+func (s *Stager) spill(scratch, name, target string, spills *[]string) (string, bool) {
+	name = fsx.Join(scratch, name)
+	err := fsx.WriteStreamAtomic(s.FS, name, 0o600, func(w io.Writer) error {
+		return s.Trust.Materialize(target, w)
+	})
+	if err != nil {
+		return "", false
+	}
+	*spills = append(*spills, name)
+	return name, true
 }
 
 // cheapest picks the hops that reconstruct the last payload of a lineage from

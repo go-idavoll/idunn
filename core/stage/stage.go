@@ -25,6 +25,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"sort"
 
@@ -49,6 +50,12 @@ var ErrIncompleteGC = errors.New("garbage collection incomplete")
 // rollback target beside the running version.
 const MinRetain = 2
 
+// scratchName is the directory beside the staging tree where a delta puts the
+// files it has to read at offsets. It is not a version, so InstalledVersions
+// never sees it, and it lives under .updater/staging, which recovery removes
+// whole.
+const scratchName = ".scratch"
+
 // Materializer is the narrow slice of the trust client that staging needs: bytes
 // that go-tuf has already checked against the signed target hash and length.
 //
@@ -56,23 +63,28 @@ const MinRetain = 2
 // tests (docs/design.md §12) — and so the split stays visible in the type
 // system: trust decides what may be trusted, this package decides only where the
 // bytes go.
+//
+// Every method here streams. Staging never receives a payload as a []byte, so
+// the memory one file costs is a copy window and not its length, whichever of
+// the three ways it is produced (IDN-12).
 type Materializer interface {
-	// Target returns the verified bytes of one target, fetching it if the
-	// go-tuf cache does not already hold it.
-	Target(targetPath string) ([]byte, error)
+	// Materialize streams the verified bytes of one target into w, fetching it
+	// if the go-tuf cache does not already hold it. A target whose bytes do not
+	// verify fails the call; w is never told that what it received was good.
+	Materialize(targetPath string, w io.Writer) error
 
 	// TargetLength returns the signed length of a target without fetching it,
 	// so a local reuse candidate of the wrong size can be dismissed before it
-	// is read. Every read and allocation staging makes beside Target is sized by
-	// it, so a trust client that will not hold a target (the ceiling of IDN-12)
-	// refuses here as well, and staging treats that like any other refusal.
+	// is read. Every read staging makes beside Materialize is sized by it, so a
+	// trust client that will not hold a target (the ceiling of IDN-12) refuses
+	// here as well, and staging treats that like any other refusal.
 	TargetLength(targetPath string) (int64, error)
 
-	// VerifyTarget reports whether data are exactly the signed bytes of a
-	// target. Bytes that did not come from Target — reused from an installed
-	// version, later reconstructed from a patch — are admitted only by this,
-	// so staging never holds a signed hash and never compares one itself.
-	VerifyTarget(targetPath string, data []byte) error
+	// VerifyStream reports whether r yields exactly the signed bytes of a
+	// target. Bytes that did not come from Materialize — reused from an
+	// installed version, reconstructed from a patch — are admitted only by
+	// this, so staging never holds a signed hash and never compares one itself.
+	VerifyStream(targetPath string, r io.Reader) error
 }
 
 // Stager writes verified files into a staging directory and swaps them in.
@@ -80,6 +92,11 @@ type Stager struct {
 	FS    fsx.FS
 	Trust Materializer
 	Root  string
+
+	// Progress, if set, receives a Report as the release is written. It is
+	// optional and headless staging leaves it nil; see Progress for what a UI
+	// may and may not do inside it.
+	Progress Progress
 }
 
 // SanitizeDst validates an install-relative destination from a descriptor: it must
@@ -144,20 +161,46 @@ func (s *Stager) Stage(ctx context.Context, d *release.Descriptor, route Route) 
 		return "", fmt.Errorf("%w: create staging: %w", ErrStage, err)
 	}
 
+	// Where a delta puts the files it needs to read at offsets: the patch it
+	// fetched, and the output of each hop but the last. It is a sibling of the
+	// staging tree rather than part of it, so what becomes versions/<v> holds
+	// the release and nothing else — and it is removed either way, because
+	// unlike the staging tree a half-finished patch chain is not evidence
+	// anybody reads.
+	scratch := fsx.Join(layout.Staging(s.Root), scratchName)
+	if err := s.FS.MkdirAll(scratch, layout.DirMode); err != nil {
+		return "", fmt.Errorf("%w: create staging scratch: %w", ErrStage, err)
+	}
+	defer func() { _ = s.FS.RemoveAll(scratch) }()
+
 	// Which installed versions may donate unchanged files. Computed once: the
 	// listing is the same for every file, and a release is thousands of them.
 	sources := s.reuseSources(live, d.Version)
+
+	// The release total is the sum of the signed lengths, so it is known before
+	// a byte moves and never revised: a progress bar built on it cannot jump
+	// when a file turns out to be reused rather than downloaded.
+	progress := Report{Files: len(d.Files)}
+	for i := range d.Files {
+		if n, err := s.Trust.TargetLength(d.Files[i].Target); err == nil {
+			progress.Total += n
+		}
+	}
 
 	for i := range d.Files {
 		if err := ctx.Err(); err != nil {
 			return "", fmt.Errorf("%w: %w", ErrStage, err)
 		}
-		if err := s.stageFile(stageDir, &d.Files[i], sources, route); err != nil {
+		progress.Index, progress.Dst = i+1, d.Files[i].Dst
+		progress.FileSize, _ = s.Trust.TargetLength(d.Files[i].Target)
+		next, err := s.stageFile(stageDir, &d.Files[i], sources, route, scratch, progress)
+		if err != nil {
 			// Leave the staging tree where it is; the transaction's rollback
 			// and the next recovery both remove it, and removing it here would
 			// destroy the evidence of what went wrong.
 			return "", err
 		}
+		progress = next
 	}
 
 	// The version directory must not exist yet. If it does, an earlier
@@ -189,12 +232,19 @@ func (s *Stager) Stage(ctx context.Context, d *release.Descriptor, route Route) 
 }
 
 // stageFile writes one payload file into the staging tree, taking its bytes from
-// an installed version when one holds exactly the signed content and from the
-// trust layer otherwise.
-func (s *Stager) stageFile(stageDir string, f *release.FileRef, sources []string, route Route) error {
+// an installed version when one holds exactly the signed content, from a delta
+// patch when that is cheaper than the file, and from the trust layer otherwise.
+// It returns the release's progress once the file is in place.
+//
+// Each source writes through fsx.WriteStreamAtomic, which means each is tried
+// against a scratch file of its own and leaves nothing behind when it is
+// refused. That is what makes "verify the bytes that actually landed" possible:
+// the alternative — verify a buffer, then write it — checks bytes that are not
+// necessarily the ones a reader will later see.
+func (s *Stager) stageFile(stageDir string, f *release.FileRef, sources []string, route Route, scratch string, progress Report) (Report, error) {
 	dst, err := SanitizeDst(f.Dst)
 	if err != nil {
-		return fmt.Errorf("%w: %s: %w", ErrStage, f.Target, err)
+		return progress, fmt.Errorf("%w: %s: %w", ErrStage, f.Target, err)
 	}
 
 	// Create the destination's parents one component at a time, checking each
@@ -203,38 +253,41 @@ func (s *Stager) stageFile(stageDir string, f *release.FileRef, sources []string
 	// out of the tree no matter how clean the text was (T7).
 	dir, err := s.makeDirs(stageDir, fsx.Dir(dst))
 	if err != nil {
-		return err
+		return progress, err
 	}
 	full := fsx.Join(dir, fsx.Base(dst))
 	if err := s.refuseSymlink(full); err != nil {
-		return err
+		return progress, err
 	}
+
+	c := newCounter(s.Progress, progress)
 
 	// An unchanged file is taken from a version already on disk (delta stage 1,
 	// docs/design.md §6.4) — verified against the signed target, so what is
-	// reused is the content, never the trust. Everything else is fetched.
+	// reused is the content, never the trust.
 	//
 	// TODO(stage): reuse still copies the bytes. Reflink/CoW, else hardlink,
 	// would make an unchanged payload free rather than cheap; both need an fsx
 	// operation that does not exist yet.
-	data := s.reuse(f, dst, sources)
-	if data == nil {
-		// A changed file may still be mostly the old one. Reconstructing it
-		// from what is on disk plus the patches the repository publishes is
-		// delta stage 2; it produces bytes that are verified exactly like
-		// downloaded ones, and falls back to the download whenever it cannot.
-		data = s.patched(f, dst, sources, route)
+	if s.reuse(full, f, dst, sources, c) {
+		return c.done(), nil
 	}
-	if data == nil {
-		var err error
-		if data, err = s.Trust.Target(f.Target); err != nil {
-			return err
-		}
+	// A changed file may still be mostly the old one. Reconstructing it from
+	// what is on disk plus the patches the repository publishes is delta stage
+	// 2; it produces bytes that are verified exactly like downloaded ones, and
+	// falls back to the download whenever it cannot.
+	if s.patched(full, f, dst, sources, route, scratch, c) {
+		return c.done(), nil
 	}
-	if err := fsx.WriteFileAtomic(s.FS, full, data, mode(f)); err != nil {
-		return fmt.Errorf("%w: %w", ErrStage, err)
+
+	err = fsx.WriteStreamAtomic(s.FS, full, mode(f), func(w io.Writer) error {
+		c.begin(w, SourceDownload)
+		return s.Trust.Materialize(f.Target, c)
+	})
+	if err != nil {
+		return progress, err
 	}
-	return nil
+	return c.done(), nil
 }
 
 // makeDirs creates the relative directory chain under base and returns the

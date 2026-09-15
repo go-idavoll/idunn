@@ -443,22 +443,33 @@ func (u *Updater) verifyInstalled(ctx context.Context, d *release.Descriptor, ve
 			return err
 		}
 		f := &d.Files[i]
-		want, err := u.trust.TargetLength(f.Target)
-		if err != nil {
-			return err
-		}
 		dst, err := stage.SanitizeDst(f.Dst)
 		if err != nil {
 			return err
 		}
-		got, err := fsx.ReadFile(u.fs, fsx.Join(versionDir, dst), max(want, 1))
-		if err != nil {
-			return fmt.Errorf("%w: %w", ErrVerify, err)
+		if err := u.verifyFile(fsx.Join(versionDir, dst), f.Target); err != nil {
+			return err
 		}
-		if err := u.trust.VerifyTarget(f.Target, got); err != nil {
-			// No paths, no contents: this string can reach a Reporter.
-			return fmt.Errorf("%w: an installed file does not match its verified target", ErrVerify)
-		}
+	}
+	return nil
+}
+
+// verifyFile streams one installed file past the trust layer's verdict.
+//
+// Streaming is what makes this affordable to turn on: the re-read used to hold
+// each file whole, so the belt-and-braces check cost as much memory as the
+// install did, on top of an install that had just finished. Now it costs a copy
+// window (IDN-12).
+func (u *Updater) verifyFile(name, target string) error {
+	f, err := u.fs.Open(name)
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrVerify, err)
+	}
+	defer func() { _ = f.Close() }()
+
+	if err := u.trust.VerifyStream(target, f); err != nil {
+		// No paths, no contents: this string can reach a Reporter.
+		return fmt.Errorf("%w: an installed file does not match its verified target", ErrVerify)
 	}
 	return nil
 }
@@ -588,13 +599,65 @@ func phaseIsTransactional(phase hook.Phase) bool {
 }
 
 // emit delivers one lifecycle event. A nil Observer is the headless default, and
-// an Observer that panics is the host's problem, not something to guard against
-// here — it runs in the host's own process, as its own compiled code.
+// an Observer that panics is the host's problem, not something to be caught
+// here: swallowing it would hide a bug in the very code that renders the update.
 func (u *Updater) emit(phase hook.Phase, message string, err error) {
 	if u.observe == nil {
 		return
 	}
 	u.observe.OnEvent(hook.Event{Phase: phase, Message: message, Progress: -1, Err: err})
+}
+
+// stageProgress turns staging's byte reports into Observer events.
+//
+// It returns nil when nobody is watching, which is what keeps the streaming path
+// free of a per-write callback on a headless install: a nil stage.Progress is
+// never called at all.
+//
+// Progress is the fraction of the release written, and it is derived here rather
+// than in core/stage because it is a presentation question — staging deals in
+// bytes, which is the quantity that is actually true. A release whose signed
+// lengths sum to zero has no fraction to report, and says so with -1 rather than
+// with a bar that is either always full or always empty.
+func (u *Updater) stageProgress() stage.Progress {
+	if u.observe == nil {
+		return nil
+	}
+	return func(r stage.Report) {
+		fraction := -1.0
+		if r.Total > 0 {
+			fraction = min(float64(r.Done)/float64(r.Total), 1)
+		}
+		u.observe.OnEvent(hook.Event{
+			Phase:      hook.PhaseDownload,
+			Message:    stageMessage(r),
+			Progress:   fraction,
+			File:       r.Dst,
+			FileIndex:  r.Index,
+			FileCount:  r.Files,
+			Source:     hook.Source(r.Source),
+			BytesDone:  r.Done,
+			BytesTotal: r.Total,
+			FileDone:   r.FileDone,
+			FileSize:   r.FileSize,
+		})
+	}
+}
+
+// stageMessage describes one file in the words of what it is actually costing,
+// so a UI that shows nothing but the message still tells the truth about whether
+// this is the network or the local disk.
+func stageMessage(r stage.Report) string {
+	verb := "staging"
+	switch r.Source {
+	case stage.SourceReuse:
+		verb = "reusing"
+	case stage.SourcePatch:
+		verb = "patching"
+	case stage.SourceDownload:
+		verb = "downloading"
+	}
+	return verb + " " + r.Dst
 }
 
 // checkFailed emits a failure event for the check phase and returns the error

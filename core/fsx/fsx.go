@@ -213,3 +213,114 @@ func WriteFileAtomic(f FS, name string, data []byte, mode fs.FileMode) error {
 	}
 	return nil
 }
+
+// ReaderAtCloser is a file that can be read at an offset and closed. It is what
+// a patch base and a patch container are consumed through: a delta walks
+// backwards through its base as often as forwards, so a sequential reader will
+// not do, and holding the whole file to get random access is exactly the
+// allocation streaming exists to avoid (docs/design.md §6.4, IDN-12).
+type ReaderAtCloser interface {
+	io.ReaderAt
+	io.Closer
+}
+
+// OpenReaderAt opens name for random access and reports its size.
+//
+// A filesystem whose files cannot be read at an offset is an error rather than a
+// silent fallback that buffers the file: the callers use this precisely to keep
+// a multi-hundred-megabyte base file out of memory, and quietly reading it whole
+// would undo the property they asked for.
+func OpenReaderAt(f FS, name string) (ReaderAtCloser, int64, error) {
+	file, err := f.Open(name)
+	if err != nil {
+		return nil, 0, err
+	}
+	ra, ok := file.(ReaderAtCloser)
+	if !ok {
+		_ = file.Close()
+		return nil, 0, fmt.Errorf("%w: ReadAt on %s", ErrNotSupported, name)
+	}
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, 0, err
+	}
+	if !info.Mode().IsRegular() {
+		_ = file.Close()
+		return nil, 0, fmt.Errorf("fsx: open %s: not a regular file", name)
+	}
+	return ra, info.Size(), nil
+}
+
+// WriteStreamAtomic is WriteFileAtomic for a payload that is produced rather
+// than held: produce writes the contents into w, and the result becomes visible
+// at name only if it returns nil.
+//
+// It exists so a staged file never has to exist in memory first. The scratch
+// file is fsynced and renamed exactly as in WriteFileAtomic, so a reader still
+// sees either the previous contents or the complete new ones — and a produce
+// that fails, including one that refuses its own output because it did not
+// verify, leaves nothing behind but the removed scratch file.
+func WriteStreamAtomic(f FS, name string, mode fs.FileMode, produce func(w io.Writer) error) error {
+	dir := Dir(name)
+	tmp := TempName(name)
+
+	w, err := f.Create(tmp, mode)
+	if err != nil {
+		return fmt.Errorf("fsx: create %s: %w", tmp, err)
+	}
+	// From here on the scratch file exists; every failure path must remove it,
+	// or a crashed write would leave litter that later looks like state.
+	if err := produce(w); err != nil {
+		_ = w.Close()
+		_ = f.Remove(tmp)
+		return err
+	}
+	if s, ok := w.(Syncer); ok {
+		if err := s.Sync(); err != nil {
+			_ = w.Close()
+			_ = f.Remove(tmp)
+			return fmt.Errorf("fsx: sync %s: %w", tmp, err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		_ = f.Remove(tmp)
+		return fmt.Errorf("fsx: close %s: %w", tmp, err)
+	}
+	if err := f.Rename(tmp, name); err != nil {
+		_ = f.Remove(tmp)
+		return fmt.Errorf("fsx: rename %s -> %s: %w", tmp, name, err)
+	}
+	if err := SyncDir(f, dir); err != nil {
+		return fmt.Errorf("fsx: sync dir %s: %w", dir, err)
+	}
+	return nil
+}
+
+// CopyBufferSize is the window every streaming copy in idunn runs with. It is
+// the whole point of streaming: the memory one file costs is this, not its
+// length.
+const CopyBufferSize = 256 << 10
+
+// Copy streams from src to dst through a CopyBufferSize window, refusing to move
+// more than limit bytes.
+//
+// The limit is mandatory for the same reason ReadFile's is: every stream in the
+// apply path has a signed length, and a source that produces more than that is a
+// source that must be refused rather than followed.
+func Copy(dst io.Writer, src io.Reader, limit int64) (int64, error) {
+	if limit < 0 {
+		return 0, errors.New("fsx: copy: negative limit")
+	}
+	buf := make([]byte, CopyBufferSize)
+	// Read one byte past the limit so an overlong source is detected here
+	// rather than silently truncated into something that still verifies.
+	n, err := io.CopyBuffer(dst, io.LimitReader(src, limit+1), buf)
+	if err != nil {
+		return n, err
+	}
+	if n > limit {
+		return n, fmt.Errorf("fsx: copy: source is longer than %d bytes", limit)
+	}
+	return n, nil
+}

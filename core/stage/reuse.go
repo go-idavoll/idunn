@@ -15,6 +15,7 @@
 package stage
 
 import (
+	"io"
 	"sort"
 
 	"github.com/go-idavoll/idunn/core/fsx"
@@ -67,8 +68,8 @@ func (s *Stager) reuseSources(live, staging string) []string {
 	return dirs
 }
 
-// reuse returns the bytes of f's target from a version already installed, or nil
-// if no local copy can stand in for it. dst must already be sanitized.
+// reuse writes f's target into the staging tree from a version already installed
+// and reports whether it could. dst must already be sanitized.
 //
 // This is the local half of delta stage 1 (docs/design.md §6.4): unchanged files
 // come off the disk instead of the network. The saving is the whole point for a
@@ -77,63 +78,98 @@ func (s *Stager) reuseSources(live, staging string) []string {
 // and this is where a verified base comes from.
 //
 // What makes it safe is that nothing here decides anything about trust: a
-// candidate is admitted only by Trust.VerifyTarget, the same check a download
+// candidate is admitted only by Trust.VerifyStream, the same check a download
 // passes. A locally tampered, bit-rotted, or simply changed file fails that
 // check and is skipped — reuse never degrades into "close enough", it degrades
 // into a download (AGENTS.md §1.5).
-func (s *Stager) reuse(f *release.FileRef, dst string, sources []string) []byte {
-	return s.local(f.Target, dst, sources)
-}
-
-// local returns the bytes of a payload target from an installed version, or nil
-// if no version on disk holds them at dst.
 //
-// The target need not be the one being installed: the same lookup finds the base
-// a delta patch starts from, which is a payload of an older release. That the
-// two share this code is the point — a base is admitted by the same verdict as a
-// reused file, so a patch cannot start from bytes a reuse would have refused.
-func (s *Stager) local(target, dst string, sources []string) []byte {
-	if len(sources) == 0 {
-		return nil
-	}
-	want, err := s.Trust.TargetLength(target)
+// The copy and the verification are the same pass: the bytes are teed into the
+// scratch file as they are hashed, so what was checked is exactly what landed,
+// and neither side is ever held whole in memory. A candidate that fails takes
+// its scratch file with it (fsx.WriteStreamAtomic) and the next source is tried
+// against a fresh one.
+func (s *Stager) reuse(full string, f *release.FileRef, dst string, sources []string, c *counter) bool {
+	want, err := s.Trust.TargetLength(f.Target)
 	if err != nil || want <= 0 {
 		// A zero-length target is not worth a filesystem walk: fetching it
-		// costs nothing, and fsx.ReadFile has no meaningful limit to run with.
-		return nil
+		// costs nothing and there is nothing to save.
+		return false
 	}
-
 	for _, dir := range sources {
-		if data := s.candidate(fsx.Join(dir, dst), want, target); data != nil {
-			return data
+		name := fsx.Join(dir, dst)
+		if !s.plausible(name, want) {
+			continue
+		}
+		err := fsx.WriteStreamAtomic(s.FS, full, mode(f), func(w io.Writer) error {
+			c.begin(w, SourceReuse)
+			return s.copyVerified(name, f.Target, c)
+		})
+		if err == nil {
+			return true
 		}
 	}
-	return nil
+	return false
 }
 
-// candidate reads one possible source file and returns its bytes if they are the
-// signed content of target, nil otherwise.
+// localBase finds a file on disk that holds exactly the signed bytes of target
+// at dst, and returns the name it lives under.
 //
-// The size check in front of the read is what keeps this affordable: for a
+// It is what a delta patch starts from. That it answers with a *name* rather
+// than with bytes is the streaming half of the same idea: a patch walks
+// backwards through its base as often as forwards, so the base is read at
+// offsets from the file it already occupies instead of being copied into memory
+// first.
+//
+// The verdict is the same one reuse gets — Trust.VerifyStream, nothing else — so
+// a patch can never start from bytes a reuse would have refused. The file is
+// verified and then opened again to be used, and what happens in between does
+// not weaken anything: a base that changed produces a reconstruction that fails
+// its own signed hash, which is where the patched file is admitted or refused
+// anyway.
+func (s *Stager) localBase(target, dst string, sources []string) (string, bool) {
+	want, err := s.Trust.TargetLength(target)
+	if err != nil || want <= 0 {
+		return "", false
+	}
+	for _, dir := range sources {
+		name := fsx.Join(dir, dst)
+		if !s.plausible(name, want) {
+			continue
+		}
+		if err := s.copyVerified(name, target, io.Discard); err == nil {
+			return name, true
+		}
+	}
+	return "", false
+}
+
+// plausible is the cheap pre-filter in front of every candidate read: for a
 // changed multi-hundred-megabyte binary the answer is usually "different length"
-// and costs a stat. A symlink is refused outright — not because verification
-// would miss what it points at (it would not), but because following one turns a
-// bounded read of our own install tree into a read of whatever a local attacker
-// aimed it at. A symlinked *parent* directory can still redirect the read, and
-// is left to the same verdict: what comes back is verified, the read is bounded
-// by the signed length, and nothing about a rejected candidate is reported, so
-// the redirect buys a wasted read and nothing else.
-func (s *Stager) candidate(name string, want int64, target string) []byte {
+// and costs a stat rather than a full read and a full scratch write.
+//
+// A symlink is refused outright — not because verification would miss what it
+// points at (it would not), but because following one turns a bounded read of
+// our own install tree into a read of whatever a local attacker aimed it at. A
+// symlinked *parent* directory can still redirect the read, and is left to the
+// same verdict: what comes back is verified, the read is bounded by the signed
+// length, and nothing about a rejected candidate is reported, so the redirect
+// buys a wasted read and nothing else.
+func (s *Stager) plausible(name string, want int64) bool {
 	info, err := fsx.Lstat(s.FS, name)
-	if err != nil || !info.Mode().IsRegular() || info.Size() != want {
-		return nil
-	}
-	data, err := fsx.ReadFile(s.FS, name, want)
+	return err == nil && info.Mode().IsRegular() && info.Size() == want
+}
+
+// copyVerified streams name into w and returns the trust layer's verdict on what
+// it read.
+//
+// The tee is the point: the verifier and w see the same bytes, so a caller that
+// only gets a nil error back knows that what it wrote is what was signed. w may
+// be io.Discard when only the verdict is wanted.
+func (s *Stager) copyVerified(name, target string, w io.Writer) error {
+	src, err := s.FS.Open(name)
 	if err != nil {
-		return nil
+		return err
 	}
-	if err := s.Trust.VerifyTarget(target, data); err != nil {
-		return nil
-	}
-	return data
+	defer func() { _ = src.Close() }()
+	return s.Trust.VerifyStream(target, io.TeeReader(src, w))
 }

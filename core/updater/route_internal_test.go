@@ -17,6 +17,7 @@ package updater
 import (
 	"errors"
 	"fmt"
+	"io"
 	"slices"
 	"strings"
 	"testing"
@@ -72,9 +73,9 @@ func (h *history) LatestRelease(string, string, string) (*release.Descriptor, er
 	return nil, errors.New("not used here")
 }
 
-func (h *history) Target(string) ([]byte, error)      { return nil, errors.New("not used here") }
-func (h *history) TargetLength(string) (int64, error) { return 0, errors.New("not used here") }
-func (h *history) VerifyTarget(string, []byte) error  { return errors.New("not used here") }
+func (h *history) Materialize(string, io.Writer) error  { return errors.New("not used here") }
+func (h *history) TargetLength(string) (int64, error)   { return 0, errors.New("not used here") }
+func (h *history) VerifyStream(string, io.Reader) error { return errors.New("not used here") }
 func (h *history) Versions(_, _ string) []string {
 	var out []string
 	for v := range h.releases {
@@ -269,6 +270,6 @@ func (plainResolver) Refresh() error { return nil }
 func (plainResolver) LatestRelease(string, string, string) (*release.Descriptor, error) {
 	return nil, errors.New("not used here")
 }
-func (plainResolver) Target(string) ([]byte, error)      { return nil, errors.New("not used here") }
-func (plainResolver) TargetLength(string) (int64, error) { return 0, errors.New("not used here") }
-func (plainResolver) VerifyTarget(string, []byte) error  { return errors.New("not used here") }
+func (plainResolver) Materialize(string, io.Writer) error  { return errors.New("not used here") }
+func (plainResolver) TargetLength(string) (int64, error)   { return 0, errors.New("not used here") }
+func (plainResolver) VerifyStream(string, io.Reader) error { return errors.New("not used here") }
