@@ -97,6 +97,53 @@ type Stager struct {
 	// optional and headless staging leaves it nil; see Progress for what a UI
 	// may and may not do inside it.
 	Progress Progress
+
+	// Launcher names the host's launcher, for a host whose releases carry it
+	// (IDN-17). The zero value means they do not, and staging writes nothing
+	// beyond the version directory.
+	Launcher Launcher
+}
+
+// Launcher is which file of a release is the launcher, and what it is called in
+// the install root.
+//
+// Both are host knowledge, compiled into the host exactly like the path of the
+// application itself, and never read from a descriptor: a release cannot nominate
+// which of its files becomes the program everyone starts next, nor where it goes.
+type Launcher struct {
+	// Source is the install-relative destination (a descriptor's Dst) at which
+	// a release ships the launcher, e.g. "bin/acme-launcher.exe".
+	Source string
+
+	// Name is the launcher's file name directly in the install root, e.g.
+	// "acme.exe".
+	Name string
+}
+
+// Enabled reports whether a launcher is configured at all.
+func (l Launcher) Enabled() bool { return l.Source != "" || l.Name != "" }
+
+// Validate refuses a launcher configuration that is incomplete or that could
+// address anything but one file inside a version directory and one file name
+// directly in the root.
+func (l Launcher) Validate() error {
+	if !l.Enabled() {
+		return nil
+	}
+	if l.Source == "" || l.Name == "" {
+		return fmt.Errorf("%w: a launcher needs both a Source and a Name", ErrStage)
+	}
+	src, err := SanitizeDst(l.Source)
+	if err != nil {
+		return fmt.Errorf("%w: launcher source: %w", ErrStage, err)
+	}
+	if src != l.Source {
+		return fmt.Errorf("%w: launcher source %q is not in clean form (%q)", ErrStage, l.Source, src)
+	}
+	if err := layout.ValidateLauncherName(l.Name); err != nil {
+		return fmt.Errorf("%w: %w", ErrStage, err)
+	}
+	return nil
 }
 
 // SanitizeDst validates an install-relative destination from a descriptor: it must
@@ -133,6 +180,9 @@ func (s *Stager) Stage(ctx context.Context, d *release.Descriptor, route Route) 
 	if d == nil {
 		return "", fmt.Errorf("%w: no descriptor", ErrStage)
 	}
+	if err := s.Launcher.Validate(); err != nil {
+		return "", err
+	}
 	versionDir, err := layout.VersionDir(s.Root, d.Version)
 	if err != nil {
 		return "", err
@@ -159,6 +209,10 @@ func (s *Stager) Stage(ctx context.Context, d *release.Descriptor, route Route) 
 	// directory must have: executable by the users who run the application.
 	if err := s.FS.MkdirAll(stageDir, layout.DirMode); err != nil {
 		return "", fmt.Errorf("%w: create staging: %w", ErrStage, err)
+	}
+	// Likewise its pending launcher: this release may not ship one.
+	if err := layout.RemoveLauncherPending(s.FS, s.Root, d.Version); err != nil {
+		return "", fmt.Errorf("%w: clear staging: %w", ErrStage, err)
 	}
 
 	// Where a delta puts the files it needs to read at offsets: the patch it
@@ -193,7 +247,7 @@ func (s *Stager) Stage(ctx context.Context, d *release.Descriptor, route Route) 
 		}
 		progress.Index, progress.Dst = i+1, d.Files[i].Dst
 		progress.FileSize, _ = s.Trust.TargetLength(d.Files[i].Target)
-		next, err := s.stageFile(stageDir, &d.Files[i], sources, route, scratch, progress)
+		next, err := s.stageFile(stageDir, d.Version, &d.Files[i], sources, route, scratch, progress)
 		if err != nil {
 			// Leave the staging tree where it is; the transaction's rollback
 			// and the next recovery both remove it, and removing it here would
@@ -241,7 +295,14 @@ func (s *Stager) Stage(ctx context.Context, d *release.Descriptor, route Route) 
 // refused. That is what makes "verify the bytes that actually landed" possible:
 // the alternative — verify a buffer, then write it — checks bytes that are not
 // necessarily the ones a reader will later see.
-func (s *Stager) stageFile(stageDir string, f *release.FileRef, sources []string, route Route, scratch string, progress Report) (Report, error) {
+//
+// When the file is the host's launcher, it also becomes the transaction's
+// pending launcher (layout.WriteLauncherPending, IDN-17). Since nothing here
+// holds the bytes any more, that copy is made from the staged file — and it is
+// made through Trust.VerifyStream, the same door every other byte comes through,
+// so what is recorded is the signed content and not merely whatever the staging
+// tree happened to hold a moment later.
+func (s *Stager) stageFile(stageDir, version string, f *release.FileRef, sources []string, route Route, scratch string, progress Report) (Report, error) {
 	dst, err := SanitizeDst(f.Dst)
 	if err != nil {
 		return progress, fmt.Errorf("%w: %s: %w", ErrStage, f.Target, err)
@@ -269,23 +330,31 @@ func (s *Stager) stageFile(stageDir string, f *release.FileRef, sources []string
 	// TODO(stage): reuse still copies the bytes. Reflink/CoW, else hardlink,
 	// would make an unchanged payload free rather than cheap; both need an fsx
 	// operation that does not exist yet.
-	if s.reuse(full, f, dst, sources, c) {
-		return c.done(), nil
-	}
+	//
 	// A changed file may still be mostly the old one. Reconstructing it from
 	// what is on disk plus the patches the repository publishes is delta stage
 	// 2; it produces bytes that are verified exactly like downloaded ones, and
 	// falls back to the download whenever it cannot.
-	if s.patched(full, f, dst, sources, route, scratch, c) {
-		return c.done(), nil
+	//
+	// All three end in the same place on purpose: whichever produced the file,
+	// what happens next to it — the launcher below — must not depend on which,
+	// and an early return per source is how that stops being true.
+	if !s.reuse(full, f, dst, sources, c) && !s.patched(full, f, dst, sources, route, scratch, c) {
+		err = fsx.WriteStreamAtomic(s.FS, full, mode(f), func(w io.Writer) error {
+			c.begin(w, SourceDownload)
+			return s.Trust.Materialize(f.Target, c)
+		})
+		if err != nil {
+			return progress, err
+		}
 	}
 
-	err = fsx.WriteStreamAtomic(s.FS, full, mode(f), func(w io.Writer) error {
-		c.begin(w, SourceDownload)
-		return s.Trust.Materialize(f.Target, c)
-	})
-	if err != nil {
-		return progress, err
+	if s.Launcher.Enabled() && dst == s.Launcher.Source {
+		err := layout.WriteLauncherPendingStream(s.FS, s.Root, version, s.Launcher.Name,
+			func(w io.Writer) error { return s.copyVerified(full, f.Target, w) })
+		if err != nil {
+			return progress, fmt.Errorf("%w: %w", ErrStage, err)
+		}
 	}
 	return c.done(), nil
 }

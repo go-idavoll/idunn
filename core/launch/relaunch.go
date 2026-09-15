@@ -22,6 +22,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+
+	"github.com/go-idavoll/idunn/core/fsx"
+	"github.com/go-idavoll/idunn/internal/launcherfile"
 )
 
 // RelaunchExitCode is the exit code with which an application asks the launcher
@@ -77,11 +80,33 @@ func Relaunch(o RelaunchOptions) (int, error) {
 	if getenv(SupervisedEnv) == "1" {
 		return RelaunchExitCode, nil
 	}
+	// The launcher this is about to start may be the one an interrupted
+	// self-replacement left missing (IDN-17): the only process that would repair
+	// that at its start is the one that is not there. So the application repairs
+	// it first. A repair that fails is reported with the refusal that follows,
+	// because a missing launcher is what relaunchArgv then finds.
+	repairErr := repairLauncher(o.Launcher)
 	argv, err := relaunchArgv(o)
 	if err != nil {
+		if repairErr != nil {
+			return 0, errors.Join(err, repairErr)
+		}
 		return 0, err
 	}
 	return startLauncher(o.Launcher, argv)
+}
+
+// repairLauncher undoes an interrupted replacement of the launcher at path, the
+// same repair a start runs (launcherfile.Repair). A relative path is left to
+// relaunchArgv to refuse.
+func repairLauncher(path string) error {
+	if !filepath.IsAbs(path) {
+		return nil
+	}
+	if _, err := launcherfile.Repair(fsx.OS(), fsx.Slash(path)); err != nil {
+		return fmt.Errorf("%w: repairing the launcher %q: %w", ErrLaunch, path, err)
+	}
+	return nil
 }
 
 // relaunchArgv validates the options and renders the launcher's argument vector:

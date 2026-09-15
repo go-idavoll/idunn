@@ -24,6 +24,8 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/go-idavoll/idunn/internal/launcherfile"
 )
 
 type launcherCall struct {
@@ -111,6 +113,30 @@ func TestRelaunchRefusesAnUnusableLauncher(t *testing.T) {
 	}
 	if len(*calls) != 0 {
 		t.Fatal("a refused relaunch started something")
+	}
+}
+
+// Negative: a launcher an interrupted self-replacement left missing is repaired
+// from the application's side before it is started — the launcher that would
+// repair it at its own start is the one that is not there (IDN-17).
+func TestRelaunchRepairsAMissingLauncherFirst(t *testing.T) {
+	calls := fakeSystem(t, nil, false)
+	launcher := launcherFile(t)
+	aside := launcher + launcherfile.AsideSuffix + "1"
+	if err := os.Rename(launcher, aside); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Relaunch(RelaunchOptions{Launcher: launcher}); err != nil {
+		t.Fatalf("Relaunch = %v", err)
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("started %d launchers, want 1", len(*calls))
+	}
+	if raw, err := os.ReadFile(launcher); err != nil || string(raw) != "launcher" { //nolint:gosec // G304: test fixture.
+		t.Fatalf("the launcher reads %q, %v", raw, err)
+	}
+	if _, err := os.Lstat(aside); !os.IsNotExist(err) {
+		t.Errorf("the leftover is still there: %v", err)
 	}
 }
 

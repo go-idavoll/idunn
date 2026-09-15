@@ -35,7 +35,8 @@ import (
 //
 // The cost is a supervisor process in the tree for the lifetime of the
 // application, and it is the reason self-replacement of the launcher itself needs
-// its own mechanism on this platform (MoveFileEx with MOVEFILE_DELAY_UNTIL_REBOOT,
+// its own mechanism on this platform (rename aside, then MoveFileEx with
+// MOVEFILE_DELAY_UNTIL_REBOOT for the leftover; internal/launcherfile,
 // docs/design.md §13, backlog IDN-17).
 func execApp(path string, args []string) (int, error) {
 	// The path is the pointer's target joined with a validated, install-relative

@@ -39,7 +39,9 @@ it does is settle whatever the journal still holds.
 Configuration errors are `ErrConfig`, raised at construction rather than mid-
 transaction: no trust client, no filesystem, no root, no channel, `RetainVersions`
 below 2 (that would leave no rollback target), a negative `QuiesceTimeout`, an
-unknown `OnBusy` or elevation mode, or an elevated mode with no `Elevator`.
+unknown `OnBusy` or elevation mode, an elevated mode with no `Elevator`, or a
+`Launcher` that is half set or could address anything but one clean destination in a
+release and one file name directly in the root (see *Updating the launcher*).
 
 There is no switch for metadata expiry, and there is not going to be one. It is
 checked inside go-tuf during `Refresh`, which runs before this package decides
@@ -190,6 +192,34 @@ is replaced by the launcher. On Windows without a launcher in front, a new launc
 is started that waits for this process to exit before it touches anything. An
 application that exits with 42 on its own gets the same treatment from a supervising
 launcher; the code is reserved.
+
+### Updating the launcher
+
+The launcher sits above `versions/`, so an update never replaces it by itself
+(backlog IDN-17). A host that ships its launcher in its releases says which file that
+is and what it is called in the root:
+
+```go
+Launcher: stage.Launcher{
+    Source: "bin/acme-launcher.exe", // the release's Dst of the launcher
+    Name:   "acme.exe",              // the launcher's file name in the install root
+},
+```
+
+Both are host knowledge and compiled in; no descriptor field can choose or move them.
+Staging keeps the verified bytes of `Source` pending for the transaction, and only after
+the commit record are they staged as `.updater/launcher.next/<Name>`. A rolled-back,
+refused or deferred update stages nothing; a crash after the commit is finished by the
+next recovery. The launcher (`core/launch`, `cmd/launcher`) swaps that file in at its
+next start — it checks no hash; the install root's permissions protect the staged file
+exactly as they protect the launcher.
+
+On Windows the swap renames the running launcher aside and the new one in. A crash
+between those two renames leaves no launcher under `Name` — a residual risk, because
+Windows cannot atomically replace a running image. The repair runs at the next launcher
+start and, since a missing launcher cannot start, also at the beginning of `Apply` and
+`ApplyRequested`, in `launch.Relaunch`, and wherever the host calls
+`Updater.RepairLauncher`. None of it can fail an update; failures are Observer events.
 
 ## 6. Crash recovery
 

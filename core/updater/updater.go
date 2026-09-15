@@ -126,6 +126,19 @@ type Options struct {
 	// per-user installs (Policy.Elevation == ElevationNone). See §14.2.
 	Elevator elevate.Elevator
 
+	// Launcher names the host's launcher, for a host whose releases carry a new
+	// one (docs/design.md §13, IDN-17). Source is the destination at which a
+	// release ships it, Name its file name directly in the install root. The
+	// zero value means releases do not carry it.
+	//
+	// When set, the launcher bytes staging takes from the trust layer are also
+	// kept for the transaction, and once it has committed they are staged as
+	// .updater/launcher.next/<Name>, which the launcher swaps in at its next
+	// start. Apply and ApplyRequested also repair a launcher an interrupted swap
+	// left missing (RepairLauncher). Both fields are host knowledge; nothing in
+	// a descriptor can choose or move either.
+	Launcher stage.Launcher
+
 	Policy Policy
 }
 
@@ -252,6 +265,10 @@ func New(o Options) (*Updater, error) {
 		return nil, fmt.Errorf("%w: no channel", ErrConfig)
 	}
 
+	if err := o.Launcher.Validate(); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrConfig, err)
+	}
+
 	p := o.Policy
 	if p.RetainVersions == 0 {
 		p.RetainVersions = stage.MinRetain
@@ -297,7 +314,7 @@ func New(o Options) (*Updater, error) {
 		trust:         o.Trust,
 		fs:            o.FS,
 		now:           now,
-		stager:        &stage.Stager{FS: o.FS, Trust: o.Trust, Root: o.Root},
+		stager:        &stage.Stager{FS: o.FS, Trust: o.Trust, Root: o.Root, Launcher: o.Launcher},
 		root:          o.Root,
 		channel:       o.Channel,
 		goos:          goos,

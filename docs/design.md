@@ -374,7 +374,13 @@ paths exist only once.
 > moves was verified when it was staged. On POSIX it `execve`s the application so nothing
 > of the launcher survives into the running process; Windows has no exec, so it stays as
 > a parent and passes the application's exit code through — which is also why replacing
-> the launcher itself needs its own mechanism there (backlog IDN-17).
+> the launcher itself needs its own mechanism there (backlog IDN-17, and §13).
+>
+> A host whose releases carry the launcher names it to the updater
+> (`updater.Options.Launcher`). Staging then keeps that file's verified bytes as the
+> transaction's pending launcher (`.updater/staging/<version>.launcher/<name>`), and only
+> once the transaction has COMMITTED is it promoted to `.updater/launcher.next/<name>`,
+> which the launcher swaps in at its next start (§13, backlog IDN-17).
 
 Advantages: the **atomic swap** is a single `rename()` of the `current` pointer.
 **Rollback** is resetting the pointer to the previous version directory — plus
@@ -957,6 +963,33 @@ an external audit — not on the coverage number.
   LaunchDaemon (macOS 13+); the only cgo in the repository is its bridge (§14.2).
 
 idunn's own signature is OS-independent and **in addition** to native code signing.
+
+> **As built — the launcher replaces itself (IDN-17).** The launcher sits above
+> `versions/`, so the swap never touches it on any platform. The updater, which holds
+> the bytes go-tuf just verified, stages a new launcher; the launcher, which has no TUF
+> client, only swaps it in. A host that ships the launcher in its releases names it to
+> the updater (`updater.Options.Launcher`: its `Dst` in a release and its file name in
+> the root — host configuration, never descriptor data). Staging keeps those verified
+> bytes pending for the transaction, and only after the COMMITTED record is the pending
+> file renamed to `.updater/launcher.next/<name>` — by `Apply`, or by recovery for a
+> transaction that committed and crashed before the rename; a rolled-back or deferred
+> update never produces one (§6.1). At its next start `core/launch` swaps that file over
+> itself with no hash check — the protection is the install root's permissions, as for
+> the launcher binary — and refuses a link or other non-regular file as the staged file
+> or at its own name, and a launcher that does not sit directly in the root it serves.
+> POSIX renames the new file over the name. Windows writes the new file beside the
+> running one, renames the running image to `<name>.idunn-old-<n>` (allowed while it
+> runs), renames the new one in, and restores the old one if that fails; the leftover is
+> removed later, with `MOVEFILE_DELAY_UNTIL_REBOOT` as the backstop.
+>
+> **Residual risk.** A crash between the two Windows renames leaves the name empty —
+> a window of two adjacent renames, since Windows has no atomic replace of a mapped
+> image. It is repaired from the newest leftover by whatever runs next: `launch.Start`,
+> and, because the missing launcher cannot repair itself, the application's
+> `Updater.Apply`/`ApplyRequested`/`RepairLauncher` and `launch.Relaunch`. Until one of
+> them runs, the name users start is empty. Every failure is reported and none fails a
+> start or an update; in a root the process cannot write (a system-wide install, §14.2)
+> nothing is written and the swap waits for an elevated path (IDN-23).
 
 ---
 
