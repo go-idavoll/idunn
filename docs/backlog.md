@@ -42,6 +42,7 @@ An item that is partly done stays open until what it still lists is done.
 | [IDN-34](idn/IDN-34.md) | Installer packages and the publishing pipeline (§5, §9) | open |
 | [IDN-37](idn/IDN-37.md) | Uninstall on macOS and Linux: leftovers and registrations ([IDN-35](idn/done/IDN-35.md), IDN-36) | open |
 | [IDN-38](idn/IDN-38.md) | Release notes, signed and delivered with the release (§3, §8, §9) | open |
+| [IDN-41](idn/IDN-41.md) | Crash reports: detected at the launcher, collected by the application or the OS, sent by someone else (§8, §14.5, IDN-39) | open |
 
 ## Done
 
