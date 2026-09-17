@@ -33,6 +33,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/go-idavoll/idunn/core/fsx"
 	"github.com/go-idavoll/idunn/core/hook"
@@ -83,6 +84,10 @@ type Options struct {
 	// update is finished. Zero selects the minimum that still leaves a rollback
 	// target.
 	RetainVersions int
+
+	// Now is the clock a failed probation is reported with (IDN-39). Nil is
+	// time.Now.
+	Now func() time.Time
 
 	// SelfPath is where this launcher lives — normally the running executable,
 	// which must sit directly in Root. When the updater has staged a launcher

@@ -16,8 +16,10 @@ package layout_test
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/go-idavoll/idunn/core/fsx"
@@ -128,5 +130,103 @@ func TestSanitizeReason(t *testing.T) {
 	}
 	if layout.SanitizeReason(got) != got {
 		t.Fatal("SanitizeReason is not idempotent on a truncated reason")
+	}
+}
+
+func validOutcome() layout.ProbationOutcome {
+	return layout.ProbationOutcome{
+		FromVersion: "1.2.0", ToVersion: "1.3.0", OS: "linux", Arch: "amd64",
+		Result: layout.ProbationResultRolledBack, Class: layout.ProbationClassUnconfirmed,
+		At: time.Date(2026, 9, 17, 8, 0, 0, 0, time.UTC),
+	}
+}
+
+func TestProbationOutcomesRoundTrip(t *testing.T) {
+	m := newRoot(t)
+	if names, err := layout.ProbationOutcomeNames(m, root); names != nil || err != nil {
+		t.Fatalf("names on an empty root = %v, %v", names, err)
+	}
+	o := validOutcome()
+	// The same outcome written twice is one outcome.
+	for range 2 {
+		if err := layout.WriteProbationOutcome(m, root, o); err != nil {
+			t.Fatalf("WriteProbationOutcome: %v", err)
+		}
+	}
+	names, err := layout.ProbationOutcomeNames(m, root)
+	if err != nil || len(names) != 1 {
+		t.Fatalf("names = %v, %v", names, err)
+	}
+	got, err := layout.ReadProbationOutcome(m, root, names[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	o.SchemaVersion = layout.ProbationOutcomeSchema
+	if *got != o {
+		t.Fatalf("read %+v, want %+v", *got, o)
+	}
+	if err := layout.RemoveProbationOutcome(m, root, names[0]); err != nil {
+		t.Fatal(err)
+	}
+	if names, _ := layout.ProbationOutcomeNames(m, root); len(names) != 0 {
+		t.Fatalf("names after removal = %v", names)
+	}
+}
+
+func TestProbationOutcomesStopAtTheCeiling(t *testing.T) {
+	m := newRoot(t)
+	for i := 0; i < layout.MaxProbationOutcomes; i++ {
+		o := validOutcome()
+		o.ToVersion = fmt.Sprintf("1.3.%d", i)
+		if err := layout.WriteProbationOutcome(m, root, o); err != nil {
+			t.Fatalf("outcome %d: %v", i, err)
+		}
+	}
+	o := validOutcome()
+	o.ToVersion = "2.0.0"
+	if err := layout.WriteProbationOutcome(m, root, o); !errors.Is(err, layout.ErrLayout) {
+		t.Fatalf("an outcome past the ceiling = %v, want ErrLayout", err)
+	}
+	// Rewriting one that is already waiting is not a new one.
+	o.ToVersion = "1.3.0"
+	if err := layout.WriteProbationOutcome(m, root, o); err != nil {
+		t.Fatalf("rewriting a waiting outcome at the ceiling: %v", err)
+	}
+}
+
+func TestProbationOutcomesRefuseWhatTheyCannotReport(t *testing.T) {
+	for name, change := range map[string]func(*layout.ProbationOutcome){
+		"bad from":       func(o *layout.ProbationOutcome) { o.FromVersion = "x" },
+		"path as to":     func(o *layout.ProbationOutcome) { o.ToVersion = "../1.3.0" },
+		"no os":          func(o *layout.ProbationOutcome) { o.OS = "" },
+		"path in arch":   func(o *layout.ProbationOutcome) { o.Arch = "amd64/x" },
+		"unknown result": func(o *layout.ProbationOutcome) { o.Result = "committed" },
+		"free text":      func(o *layout.ProbationOutcome) { o.Class = "database schema 7" },
+		"no time":        func(o *layout.ProbationOutcome) { o.At = time.Time{} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			o := validOutcome()
+			change(&o)
+			if err := layout.WriteProbationOutcome(newRoot(t), root, o); !errors.Is(err, layout.ErrLayout) {
+				t.Fatalf("WriteProbationOutcome = %v, want ErrLayout", err)
+			}
+		})
+	}
+
+	m := newRoot(t)
+	dir := layout.ProbationOutcomes(root)
+	if err := m.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, raw := range map[string]string{
+		"a.json": `{"schema_version":2}`,
+		"b.json": `{"schema_version":1,"from_version":"1.2.0","to_version":"1.3.0","os":"linux","arch":"amd64","result":"rolled_back","class":"unhealthy","at":"2026-09-17T08:00:00Z","reason":"x"}`,
+	} {
+		if err := fsx.WriteFileAtomic(m, dir+"/"+name, []byte(raw), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if o, err := layout.ReadProbationOutcome(m, root, name); o != nil || !errors.Is(err, layout.ErrLayout) {
+			t.Errorf("%s: ReadProbationOutcome = %+v, %v", name, o, err)
+		}
 	}
 }

@@ -439,6 +439,14 @@ a closed vocabulary — `verify`, `network`, `migrate`, `disk`, `permission`,
 `clock_skew`, `policy`, `busy`, `declined`, `check`, `cancelled`, `config`,
 `resolve`, `unknown`. No paths, no raw error strings, no identifiers.
 
+A failed probation (IDN-39) is reported too, after the fact: the launcher that rolls a
+version back writes a pending outcome under `.updater/probation-outcomes/`, and the
+next `CheckForUpdate` hands it to the Reporter and removes it — or keeps it for the
+next check if the Reporter returns an error. It arrives as `Result` `rolled_back` (or
+`kept`, when there was nothing to return to), `FailedPhase` `probation`, and an
+`ErrorClass` of `unconfirmed`, `unhealthy`, `restarts` or `reinstalled`. The
+application's own reason stays on the machine.
+
 Reporting is best-effort and runs under `context.WithoutCancel`; a Reporter error
 reaches the Observer and is then dropped. It never affects the update result, and the
 telemetry backend has no authority over updates.

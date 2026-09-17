@@ -169,12 +169,40 @@ per-release value is the second half of this item. Documented in `updater.md`
   — a release published with `attempts: 1` rolled back after one start where the host
   would have given two, and one published with `attempts: 0` not put on probation.
 
+## As built — telemetry for a failed probation
+
+- **The launcher leaves an outcome, the updater reports it.** The launcher has no
+  Reporter and no network. When it decides a rollback — right after the `reverting`
+  record — or keeps a version, it writes `.updater/probation-outcomes/<version>_<result>_<class>.json`
+  (`internal/layout`, strict, bounded to 16 pending files). The next
+  `CheckForUpdate` of the version that runs hands each to the host's `Reporter` and
+  removes it; one the Reporter refuses stays for the next check, one that does not
+  parse is dropped. An elevated updater leaves them alone.
+- **What is reported** is a `hook.Outcome` like any other: versions, platform,
+  `Result` `rolled_back` (so a publisher's rolled_back rate includes it) or `kept`,
+  `FailedPhase` `probation` (new phase), and `ErrorClass` from a closed vocabulary —
+  `unconfirmed`, `unhealthy`, `restarts`, `reinstalled`. The application's reason is
+  free text and never leaves the machine (§14.5). `At` comes from
+  `launch.Options.Now`.
+- **Once.** The file is named after version, result and class, and written only by
+  the start that decides the rollback, so a rollback finished by a later start is not
+  reported again. A separate directory rather than a field in `probation.json`: a
+  version rolled back to that predates this change would refuse a record with a field
+  it does not know.
+- **Never in the way.** An outcome that cannot be written is an Observer event; the
+  rollback goes on.
+- **Tests:** `internal/layout` (round trip, one file for the same outcome, the
+  ceiling, refusals including free text as a class), `core/launch` (each class, no
+  second report for a finished rollback, kept, a rollback that goes on at the ceiling),
+  `core/updater` (reported once through `launch.Start` and `CheckForUpdate`, offered
+  again after a refusal, waiting without a Reporter, unreadable dropped), and end to
+  end: the rollback in `TestUnconfirmedUpdateIsRolledBackAndNotOfferedAgain` is
+  reported exactly once by the application's own updater.
+
 ## Still open
 
 - **A host ceiling on the release's allowance** (a lower limit for a canary fleet)
   beyond turning `FollowRelease` off.
-- **Telemetry:** a rollback is an Observer event and a launcher line, not yet a
-  `hook.Outcome` (§14.5); the launcher has no Reporter.
 - **The launcher a reverted release staged** stays swapped in; whether a rollback
   should restore the previous launcher too is undecided.
 - How a `Migrator.Rollback` that runs days after `Migrate` handles data the new

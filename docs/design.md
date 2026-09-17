@@ -1377,6 +1377,10 @@ So a publisher does not roll out a broken release blindly:
   `Outcome` data (version transition, os/arch, result, `FailedPhase`, `ErrorClass` — **no**
   paths, **no** raw error strings, **no** PII). The host decides whether and where to
   send.
+- A version that **fails its probation** (IDN-39) is reported the same way: the
+  launcher leaves the outcome under the install root, and the updater of the version
+  that runs next reports it — `rolled_back`, phase `probation`, a class from a closed
+  vocabulary, never the application's own reason.
 - Reporting is **best-effort**: batched, rate-limited, offline-tolerant, and **never
   affects** the update result. Consent/data minimization/retention GDPR-compliant.
 - **Operational counterpart — staged/canary rollout:** the signed index carries a rollout
