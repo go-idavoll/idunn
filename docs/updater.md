@@ -41,7 +41,9 @@ transaction: no trust client, no filesystem, no root, no channel, `RetainVersion
 below 2 (that would leave no rollback target), a negative `QuiesceTimeout`, an
 unknown `OnBusy` or elevation mode, an elevated mode with no `Elevator`, or a
 `Launcher` that is half set or could address anything but one clean destination in a
-release and one file name directly in the root (see *Updating the launcher*).
+release and one file name directly in the root (see *Updating the launcher*), or a
+`Probation` policy outside its bounds or combined with an elevated mode (see
+*Probation*).
 
 There is no switch for metadata expiry, and there is not going to be one. It is
 checked inside go-tuf during `Refresh`, which runs before this package decides
@@ -239,6 +241,50 @@ and never fails or undoes a committed update, and the launcher (`launch.Options.
 reconciles again at every start. An elevated `Apply` refreshes nothing itself — the entry
 of a system-wide installation is in `HKEY_LOCAL_MACHINE`, and the helper that ran the
 transaction sets `Registry` on its own updater.
+
+### Probation
+
+With `Policy.Probation.Attempts` set, a committed update has to show it works on this
+machine (IDN-39):
+
+```go
+Policy: updater.Policy{Probation: updater.ProbationPolicy{Attempts: 3}},
+```
+
+and, in the application, once it is actually ready:
+
+```go
+_ = launch.MarkHealthy(fsx.OS(), root, version)          // or
+_ = launch.MarkUnhealthy(fsx.OS(), root, version, reason) // and exit
+```
+
+- **The record.** Before `BEGIN`, `Apply` writes `.updater/probation.json`: the version
+  it installs, the one it replaces, the attempts allowed. The launcher acts on a record
+  only while `current` names its version, so a transaction that rolls back leaves a
+  record nobody reads, and a deferred one is on probation from the start that applies
+  it. A first install has nothing to return to and gets no record.
+- **Counting.** Every launcher start of that version counts an attempt before it hands
+  over (`launch.Result.Probation`); starts, not seconds, so nothing waits for the
+  application and POSIX keeps `exec`. A restart the application asks for through
+  `launch.Relaunch` is marked by the application before it leaves and counts nothing,
+  up to `Restarts` (default 3).
+- **Rollback.** The start after the last attempt, after `MarkUnhealthy`, or after one
+  restart too many rolls back: record `reverting`, `current` to the previous version,
+  `Migrator.Rollback`, install state, record `reverted`, then the version directory.
+  Every step can be repeated, and a start that finds `reverting` finishes it first. The
+  launcher prints the reason even with `-quiet`. The rollback takes the application
+  lock and waits for a start that gets it.
+- **The journal is not touched.** It still says the update committed. The version
+  rolled back to carries its own copy of this library, which may not know a new journal
+  state and would then refuse the journal for good; `probation.json` is a file it
+  ignores.
+- **Blocked.** `CheckForUpdate` does not offer the version rolled back, and `Apply`
+  refuses it (`ErrPolicy`, `ErrBlocked`); the next release is offered as usual. A
+  version rolled back to that predates probation does not know the block and installs
+  the version again — the launcher then rolls it back again at its next start. Turn
+  probation on in a release whose predecessor already understands it.
+- **Not for system-wide roots.** Neither the launcher nor the application can write
+  the record there (IDN-23), so `New` refuses the combination.
 
 ## 6. Crash recovery
 

@@ -197,6 +197,10 @@ type Policy struct {
 	// start, on a host that never asked for one. The safe reading has to be the
 	// one that wins by accident (AGENTS.md §1.1).
 	OnBusy BusyPolicy
+
+	// Probation makes every committed update prove itself on this machine, and
+	// rolls back one that does not (IDN-39). The zero value is off.
+	Probation ProbationPolicy
 }
 
 // ElevationMode selects how a privileged apply is performed.
@@ -301,6 +305,9 @@ func New(o Options) (*Updater, error) {
 	default:
 		return nil, fmt.Errorf("%w: unknown OnBusy policy %d", ErrConfig, p.OnBusy)
 	}
+	if err := p.Probation.validate(p.Elevation); err != nil {
+		return nil, err
+	}
 	switch p.Elevation {
 	case ElevationNone:
 	case ElevationInteractive, ElevationService:
@@ -399,6 +406,14 @@ func (u *Updater) CheckForUpdate(ctx context.Context) (*Release, error) {
 	}
 	if installed == d.Version {
 		u.emit(hook.PhaseCheck, "already up to date", nil)
+		return nil, nil
+	}
+	// A release this machine already rolled back is not an update to offer;
+	// the next one the channel names is (IDN-39).
+	if reason, err := u.blocked(d.Version); err != nil {
+		return nil, u.checkFailed(err)
+	} else if reason != "" {
+		u.emit(hook.PhaseCheck, d.Version+" was rolled back on this machine ("+reason+"); waiting for a newer release", nil)
 		return nil, nil
 	}
 

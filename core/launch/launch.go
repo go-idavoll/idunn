@@ -143,6 +143,12 @@ type Result struct {
 	// never makes Start fail.
 	IntegrateErr error
 
+	// Probation is what this start did about a version that has to confirm it
+	// is healthy: the attempt it counted, or the rollback it performed (IDN-39).
+	// A rollback has already happened when Start returns, so the version that
+	// runs is the one `current` names now.
+	Probation ProbationResult
+
 	// Skipped is true when a deferred update was found but left waiting,
 	// because the application lock said an instance is still running.
 	Skipped bool
@@ -220,8 +226,7 @@ func Start(ctx context.Context, o Options) (Result, error) {
 	}
 	res := Result{Recovered: rec.Recovered, SelfRestored: restored, SelfErr: repairErr, FromVersion: rec.FromVersion, ToVersion: rec.ToVersion}
 	if !rec.Deferred {
-		o.selfUpdate(&res)
-		o.reconcile(ctx, &res)
+		o.finish(ctx, &res, false)
 		return res, nil
 	}
 
@@ -239,6 +244,7 @@ func Start(ctx context.Context, o Options) (Result, error) {
 			// live, which is the one that instance is already running.
 			o.emit(hook.PhaseQuiesce, "an instance is still running; "+rec.ToVersion+" stays deferred", nil)
 			res.Skipped = true
+			o.probation(ctx, &res, false)
 			o.reconcile(ctx, &res)
 			return res, nil
 		}
@@ -278,9 +284,18 @@ func Start(ctx context.Context, o Options) (Result, error) {
 
 	// The launcher is swapped last: finishing the deferred update is what may
 	// have staged the one it carries.
-	o.selfUpdate(&res)
-	o.reconcile(ctx, &res)
+	o.finish(ctx, &res, o.Lock != nil)
 	return res, nil
+}
+
+// finish is what every start that goes on to run the application does last:
+// the probation first, because a rollback changes which version runs; then the
+// launcher swap and the OS integrations, which follow the version that is live
+// afterwards. locked says whether this start holds the application lock.
+func (o Options) finish(ctx context.Context, res *Result, locked bool) {
+	o.probation(ctx, res, locked)
+	o.selfUpdate(res)
+	o.reconcile(ctx, res)
 }
 
 // reconcile brings the OS integrations in line with the live version and

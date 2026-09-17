@@ -49,6 +49,10 @@ var (
 	// in one step, which is what the releases in between are for.
 	ErrMigrationFloor = errors.New("migration floor")
 
+	// ErrBlocked marks the refusal in ErrPolicy of a release this machine
+	// already rolled back because it failed its probation (IDN-39).
+	ErrBlocked = errors.New("release rolled back on this machine")
+
 	// ErrBusy is a host application that would not stop writing in time.
 	ErrBusy = errors.New("application busy")
 

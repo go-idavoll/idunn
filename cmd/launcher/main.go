@@ -287,6 +287,17 @@ func startOnce(o launch.Options, installRoot, rel string, args []string, stderr 
 	if res.IntegrateErr != nil {
 		_, _ = fmt.Fprintf(stderr, "idunn launcher: %v\n", res.IntegrateErr)
 	}
+	// A version that failed its probation is said out loud, quiet or not: the
+	// user is about to get a different version than the one installed last
+	// (IDN-39).
+	if pr := res.Probation; pr.Reverted {
+		_, _ = fmt.Fprintf(stderr, "idunn launcher: %s failed its probation and was rolled back to %s: %s\n", pr.Version, pr.To, pr.Reason)
+	} else if pr.Kept {
+		_, _ = fmt.Fprintf(stderr, "idunn launcher: %s failed its probation and stays: %s\n", pr.Version, pr.Reason)
+	}
+	if res.Probation.Err != nil {
+		_, _ = fmt.Fprintf(stderr, "idunn launcher: %v\n", res.Probation.Err)
+	}
 
 	// Resolved again on every start: after a relaunch, `current` may name a
 	// newer version than the one that asked for it.

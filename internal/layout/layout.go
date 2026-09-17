@@ -65,6 +65,10 @@ const (
 	// the operating system outside its root (core/integrate, IDN-36).
 	IntegrationsName = "integrations.json"
 
+	// ProbationName is the record of a version that has to confirm it is
+	// healthy, and of the one that did not (IDN-39).
+	ProbationName = "probation.json"
+
 	// TrustCacheName is the privileged helper's TUF cache (elevate.PrivilegedCacheDir).
 	TrustCacheName = "tuf"
 )
@@ -119,6 +123,10 @@ func Clock(root string) string { return fsx.Join(root, MetaName, ClockName) }
 // so that removing them is a reading of the record, never a guess
 // (core/integrate, IDN-36).
 func Integrations(root string) string { return fsx.Join(root, MetaName, IntegrationsName) }
+
+// ProbationFile is the record of the version on probation, and of the last version
+// that was rolled back for failing it (IDN-39).
+func ProbationFile(root string) string { return fsx.Join(root, MetaName, ProbationName) }
 
 // Staging is where verified files are assembled before the swap.
 func Staging(root string) string { return fsx.Join(root, MetaName, StagingName) }

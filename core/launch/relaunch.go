@@ -77,6 +77,13 @@ type RelaunchOptions struct {
 // Relaunch never applies anything itself: finishing an update is the launcher's
 // job, at a moment when this process is gone and cannot be writing.
 func Relaunch(o RelaunchOptions) (int, error) {
+	// The start this asks for is not a failed attempt of a version on
+	// probation (IDN-39), and the next launcher start has to know that. The
+	// application is the only one that can say so on every platform: on POSIX
+	// the launcher saw nothing of this run.
+	if root := relaunchRoot(o); root != "" {
+		markRestart(fsx.OS(), root)
+	}
 	if getenv(SupervisedEnv) == "1" {
 		return RelaunchExitCode, nil
 	}
@@ -94,6 +101,19 @@ func Relaunch(o RelaunchOptions) (int, error) {
 		return 0, err
 	}
 	return startLauncher(o.Launcher, argv)
+}
+
+// relaunchRoot is the install root the relaunched launcher will serve: Root, or
+// the directory the launcher lives in, which is the launcher's own default. It is
+// "" when neither is an absolute path, which relaunchArgv refuses anyway.
+func relaunchRoot(o RelaunchOptions) string {
+	switch {
+	case filepath.IsAbs(o.Root):
+		return fsx.Slash(o.Root)
+	case o.Root == "" && filepath.IsAbs(o.Launcher):
+		return fsx.Slash(filepath.Dir(o.Launcher))
+	}
+	return ""
 }
 
 // repairLauncher undoes an interrupted replacement of the launcher at path, the
