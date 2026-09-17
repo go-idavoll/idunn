@@ -31,6 +31,7 @@
 //	                                application does, so the update defers
 //	  --relaunch-via <launcher>     afterwards, launch.Relaunch through that
 //	                                launcher and exit with its code (IDN-29)
+//	  --probation-attempts N        put what it installs on probation (IDN-39)
 //	hostapp --self-update --service E ...
 //	                                the same, but the install root belongs to a
 //	                                privileged helper listening on E, which
@@ -40,6 +41,9 @@
 //	                                trust client and no resolution on this side:
 //	                                a caller asking for what the channel does not
 //	                                offer
+//	hostapp --root R --mark healthy|unhealthy [--reason S]
+//	                                print "app <version>", then end or fail
+//	                                this version's probation (IDN-39)
 //	hostapp --linger --state D --name N
 //	                                run until a console control event or a
 //	                                termination request arrives, then take
@@ -110,6 +114,9 @@ type config struct {
 	onBusy      string
 	quiesce     time.Duration
 	retain      int
+	probation   int
+	mark        string
+	reason      string
 	data        string
 	failMigrate bool
 	hangAt      string
@@ -144,6 +151,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fs.StringVar(&c.onBusy, "on-busy", "abort", "abort|defer")
 	fs.DurationVar(&c.quiesce, "quiesce", time.Second, "how long to wait for the lock")
 	fs.IntVar(&c.retain, "retain", 2, "version directories to keep after a commit")
+	fs.IntVar(&c.probation, "probation-attempts", 0, "starts an installed update gets to confirm it is healthy; 0 for no probation")
+	fs.StringVar(&c.mark, "mark", "", "healthy|unhealthy: report this version's probation outcome")
+	fs.StringVar(&c.reason, "reason", "", "with --mark unhealthy: why")
 	fs.StringVar(&c.data, "data", "", "host state directory the migration hook works on")
 	fs.BoolVar(&c.failMigrate, "fail-migrate", false, "make the migration fail after it changed host state")
 	fs.StringVar(&c.hangAt, "hang-at", "", "stop and wait to be killed the moment this phase is entered")
@@ -174,8 +184,30 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return doSelfUpdate(c, stdout, stderr)
 	default:
 		_, _ = fmt.Fprintf(stdout, "app %s\n", version)
-		return exitOK
+		return mark(c, stderr)
 	}
+}
+
+// mark reports this version's probation outcome, as a real application does
+// once it knows (IDN-39).
+func mark(c config, stderr io.Writer) int {
+	var err error
+	switch c.mark {
+	case "":
+		return exitOK
+	case "healthy":
+		err = launch.MarkHealthy(fsx.OS(), fsx.Slash(c.root), version)
+	case "unhealthy":
+		err = launch.MarkUnhealthy(fsx.OS(), fsx.Slash(c.root), version, c.reason)
+	default:
+		_, _ = fmt.Fprintf(stderr, "hostapp: --mark: unknown outcome %q\n", c.mark)
+		return exitUsage
+	}
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "hostapp: --mark %s: %v\n", c.mark, err)
+		return exitError
+	}
+	return exitOK
 }
 
 // linger is an application that runs until it is told to stop and then needs
@@ -339,6 +371,7 @@ func doSelfUpdate(c config, stdout, stderr io.Writer) int {
 			VerifyAfterApply: true,
 			QuiesceTimeout:   c.quiesce,
 			OnBusy:           busy,
+			Probation:        updater.ProbationPolicy{Attempts: c.probation},
 		},
 	}
 	if c.lockFile != "" {

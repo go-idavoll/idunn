@@ -88,14 +88,75 @@ Wanted:
   a UI sidecar (IDN-19) can tell the user. The same record is what a later crash
   reporter reads; a reporter itself stays out of the launcher.
 
-Open: how a `Migrator.Rollback` that runs days after `Migrate` handles data the new
-version has written since — whether probation should forbid irreversible migrations,
-or `Migrate` runs on confirmation rather than before the swap; whether services and
-headless hosts count attempts per launcher start or need a supervisor's restart count
-(systemd `Restart=`, the Windows service recovery actions); how probation interacts
-with a system-wide install where neither the launcher nor the application can write
-the install state — the counter, the restart marker and `MarkHealthy` all write there
-(IDN-23); whether GC must pin the previous version while probation lasts, beyond
-`MinRetain`; the default ceiling of `requested_restarts`, and whether the publisher
-sets it next to `K`; and whether the policy target carries more than `K` later (a
-probation deadline in wall-clock time, subject to the time floor of IDN-09).
+## As built — the mechanism, with a host policy
+
+The allowance comes from the host for now (`updater.Policy.Probation`); the signed
+per-release value is the second half of this item. Documented in `updater.md`
+(*Probation*).
+
+- **A record outside the journal.** `.updater/probation.json` (`internal/layout`,
+  strict parser, bounded, schema-versioned): version, previous, status, attempts and
+  restarts with their allowances, reason, and the blocked version. Not new journal
+  states, deliberately: a rollback puts the previous version back, and its copy of
+  `core/txn` would refuse a journal holding a state it does not know — that version
+  could never update again. The journal keeps saying COMMITTED, which is true.
+- **Armed before `BEGIN`** by `Apply` when `Policy.Probation.Attempts` is set, and
+  acted on only while `current` names its version: a rolled-back transaction leaves a
+  record nobody reads, a deferred one is on probation from the start that applies it,
+  and there is no crash window between commit and record. A first install gets none.
+  An unfinished rollback's record is never replaced (`ErrStale`); the blocked version
+  carries over into every new record.
+- **Counted in `launch.Start`**, after recovery and a deferred update and before the
+  launcher swap and the OS integrations, so those follow the version that runs
+  afterwards. `launch.Result.Probation` reports the attempt or the rollback;
+  `cmd/launcher` prints a rollback even with `-quiet`.
+- **`launch.MarkHealthy(fs, root, version)` / `MarkUnhealthy(fs, root, version,
+  reason)`** take the version, so an instance of another version cannot confirm or
+  condemn the one on probation. Both are no-ops without an active record for that
+  version. The reason is sanitized (`layout.SanitizeReason`: valid UTF-8, no control
+  characters, 512 bytes).
+- **The restart marker** is written by `launch.Relaunch` before it hands back 42,
+  starts the launcher or `exec`s it, into the root it relaunches (`Root`, else the
+  launcher's directory), and only while the running version is the one on probation.
+  Best-effort: an application that cannot write it relaunches anyway and spends an
+  attempt. `Restarts` defaults to 3; one past it rolls back.
+- **The rollback** takes the application lock (and waits for a start that gets it),
+  records `reverting`, moves `current`, runs `Migrator.Rollback`, writes the install
+  state, records `reverted` with the version blocked, and removes the version
+  directory last, best-effort. Every step repeats; a start that finds `reverting`
+  finishes it before anything else. A version whose predecessor is gone is `kept`, with
+  the reason saying so.
+- **Blocked in the updater:** `CheckForUpdate` answers "no update" for it, and `Apply`
+  refuses it with `ErrPolicy`/`ErrBlocked`. A blocked version installed again by an
+  updater that predates probation is rolled back again at the next start.
+- **Refused for elevated roots** by `New` (`ErrConfig`): nobody unprivileged could
+  write the record.
+- **Tests:** `internal/layout` (round trip, every refusal, sanitizing), `core/launch`
+  (counting, confirmation, unhealthy, restart marker and its ceiling, stale records,
+  deferred updates and the lock, a rollback that waits for a running instance, one that
+  is interrupted in the host's hook and finished by the next start, kept, blocked
+  version installed again, unreadable record), `core/updater` (policy bounds, arming,
+  the whole cycle through `launch.Start`, the block, an unfinished rollback), and
+  end to end (`test/e2e/local/probation_test.go`): an unconfirmed update rolled back
+  on the third start and not offered again while the next release is and stays once
+  confirmed, and an unhealthy one rolled back with the application's own reason.
+
+## Still open
+
+- **The signed per-release allowance:** `pack.yaml` `probation:`, the
+  `policy/v<major>/<version>.json` target and its parser, fetched with the release and
+  overridden by the host policy.
+- **Telemetry:** a rollback is an Observer event and a launcher line, not yet a
+  `hook.Outcome` (§14.5); the launcher has no Reporter.
+- **The launcher a reverted release staged** stays swapped in; whether a rollback
+  should restore the previous launcher too is undecided.
+- How a `Migrator.Rollback` that runs days after `Migrate` handles data the new
+  version has written since — whether probation should forbid irreversible migrations,
+  or `Migrate` runs on confirmation rather than before the swap.
+- Whether services and headless hosts count attempts per launcher start or need a
+  supervisor's restart count (systemd `Restart=`, the Windows service recovery actions).
+- System-wide installs (IDN-23): refused today.
+- Whether GC must pin the previous version while probation lasts: with `MinRetain` it
+  survives the commit, but a second update during probation moves the window.
+- Whether the policy target carries more than `K` later (a probation deadline in
+  wall-clock time, subject to the time floor of IDN-09).

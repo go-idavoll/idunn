@@ -937,6 +937,12 @@ mitigations, residual risks.
 - The local install state (14.6) is tamperable by a local attacker; the installer's
   downgrade protection defends against mistakes and stale binaries, not against an
   already-privileged local attacker.
+- The probation record (`.updater/probation.json`, IDN-39) is equally tamperable by
+  whoever can write the install root: marking a version unhealthy makes the next start
+  roll back to the previous version, and blocking a version keeps the updater from
+  offering it. Both only choose between releases that were already verified and
+  installed, never introduce bytes, and require the privileges that could replace the
+  installation outright.
 - **Clock skew** (14.7): a grossly wrong local clock pauses updates fail-closed. Without
   authenticated time (Roughtime/NTS) the only recourse is user guidance; the app keeps
   running but is cut off from updates until the clock is fixed. Availability, not a

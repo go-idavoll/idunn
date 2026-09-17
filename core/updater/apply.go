@@ -306,6 +306,11 @@ func (u *Updater) apply(ctx context.Context, r *Release) (hook.Phase, func(), er
 	if err := u.applicable(d, installed); err != nil {
 		return hook.PhaseCheck, unlock, err
 	}
+	if reason, err := u.blocked(d.Version); err != nil {
+		return hook.PhaseCheck, unlock, err
+	} else if reason != "" {
+		return hook.PhaseCheck, unlock, fmt.Errorf("%w: %w: %s failed its probation here: %s", ErrPolicy, ErrBlocked, d.Version, reason)
+	}
 
 	hc := hook.Context{
 		Ctx:         ctx,
@@ -333,6 +338,9 @@ func (u *Updater) apply(ctx context.Context, r *Release) (hook.Phase, func(), er
 
 	j, err := txn.Open(u.fs, u.root)
 	if err != nil {
+		return hook.PhaseCheck, unlock, err
+	}
+	if err := u.armProbation(installed, d.Version); err != nil {
 		return hook.PhaseCheck, unlock, err
 	}
 	record := func(state txn.State, phase hook.Phase) error {
