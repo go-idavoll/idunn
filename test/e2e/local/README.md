@@ -27,6 +27,10 @@ and about two and a half minutes cold.
 | `TestRetentionCollectsOldVersions` | Four self-updates with `--retain 3` and then `--retain 2`. After each commit, exactly the configured window of version directories remains. The retained rollback target still runs (§14.1). |
 | `TestUninstall` | `cmd/launcher --uninstall` as real processes (IDN-35). It removes an installation and then the launcher itself — on Windows through the detached `DELETE_ON_CLOSE` copy, so the self-delete runs for real — leaving nothing under the root; keeps a directory that also holds a file idunn did not install; refuses to start a root marked `UNINSTALLING` and finishes it on a second `--uninstall`; and refuses (exit 3) to remove a root recorded under another application's name, leaving the launcher in place (§5). |
 | `TestInstalledAppsEntry` | Windows only: the "Installed apps" entry through the real registry (IDN-36). `cmd/installer` built with a launcher name registers it for the user at the installed version; a launcher start corrects a `DisplayVersion` set wrong by hand; installing a newer release updates it; and `--uninstall` removes it (skipped when elevated, as in `TestUninstall`). It is the only scenario that registers, because entries are keyed by the release name. |
+| `TestKilledLauncherTakesTheApplicationAlong` | Windows only (IDN-40): the launcher runs `hostapp --linger`, which starts a process of its own. The launcher is killed (TerminateProcess), and the application and its child must end with it instead of running on as orphans. |
+| `TestNormalExitLeavesWhatTheApplicationStarted` | Windows only (IDN-40): the application exits 0 on its own and leaves a process it started running. That process must survive the launcher exiting after it: the job releases its kill-on-close limit after a normal exit. |
+| `TestCtrlBreakIsTheApplicationsToAnswer` | Windows only (IDN-40): Ctrl+Break is sent to the launcher's process group. The application handles it and needs 1.5 s to shut down. The launcher must still be running when it finishes and exit with the application's code 7, not `STATUS_CONTROL_C_EXIT`. Skipped without a console. |
+| `TestClosedConsoleLetsTheApplicationFinish` | Windows only (IDN-40): the launcher and the application share a new, hidden console, and its window gets `WM_CLOSE`. The application sees the close event as `SIGTERM`, and the launcher must not exit before it has shut down cleanly. Skipped when the console is not a conhost window. |
 | `TestServiceModeInstallsAndUpdatesThroughTheHelper` | Linux, as root only (see [Service mode](#service-mode)). `cmd/helper` serves as root and the application runs as uid 65534. A uid nobody allowed is denied (`elevate.ErrDenied`, exit 5) and nothing is created. 1.0.0 is installed and 1.1.0 updated only through the helper's socket: pointer, state and a committed journal agree, everything under the root is owned by root, the helper's TUF cache is `<root>/.updater/tuf`, the application's own cache holds nothing of root's, uid 65534 can write nothing in the root, and it can run the installed application. The helper logs `applied` for each. A bare request for 1.2.0 while the channel names 1.3.0 is refused (`error apply`, exit 6) and nothing changes (§14.2, §14.8, T16, T23). |
 
 Scenarios that `run.sh` already attests are left out on purpose: install, minor
@@ -45,7 +49,8 @@ and major self-update, sequential updates and the migration floor.
 - **The host application.** `cmd/hostapp` is rebuilt from source for each version
   (`-X main.version=…`). Unlike `e2eapp`, it takes the anchor and the URLs as
   flags, because many repositories run side by side. It also adds the seams these
-  scenarios need: `--hold-lock`, `--data`/`--fail-migrate` and `--hang-at`.
+  scenarios need: `--hold-lock`, `--data`/`--fail-migrate`, `--hang-at`, and
+  `--linger` for the launcher lifetime scenarios.
 - **The clock is real.** The binaries under test take no injected clock. The
   packer's reproducibility is pinned by `internal/packer`'s golden test.
 

@@ -40,10 +40,20 @@
 //	                                trust client and no resolution on this side:
 //	                                a caller asking for what the channel does not
 //	                                offer
+//	hostapp --linger --state D --name N
+//	                                run until a console control event or a
+//	                                termination request arrives, then take
+//	                                --work to shut down cleanly (IDN-40)
+//	  --spawn M                     first start a lingering child named M
+//	  --console-window              record the console window handle, for a
+//	                                scenario that closes it
+//	  --exit-after D                exit 0 on its own after D, leaving the
+//	                                --spawn child running
 //
 // Exit codes: 0 ok, 1 error, 2 usage, 3 already up to date, 4 deferred to the
 // next start, 5 denied by the helper (elevate.ErrDenied), 6 the helper refused
-// or failed the apply (elevate.ErrHelper).
+// or failed the apply (elevate.ErrHelper), 7 shut down cleanly after a console
+// control event or termination request (--linger).
 //
 // Build-time configuration:
 //
@@ -57,7 +67,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
+	"os/signal"
 	"path/filepath"
+	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/go-idavoll/idunn/core/elevate"
@@ -82,6 +96,7 @@ const (
 	exitDeferred = 4
 	exitDenied   = 5
 	exitHelper   = 6
+	exitSignaled = 7
 )
 
 func main() {
@@ -104,6 +119,13 @@ type config struct {
 	args           []string // this run's own arguments, for the relaunch
 	service        string
 	requestVersion string
+
+	state         string
+	name          string
+	spawn         string
+	work          time.Duration
+	consoleWindow bool
+	exitAfter     time.Duration
 }
 
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
@@ -129,12 +151,21 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fs.StringVar(&c.relaunchVia, "relaunch-via", "", "after the update, relaunch through this launcher")
 	fs.StringVar(&c.service, "service", "", "endpoint of the privileged helper that owns --root")
 	fs.StringVar(&c.requestVersion, "request-version", "", "with --service: ask the helper for this version, resolving nothing here")
+	lingerMode := fs.Bool("linger", false, "run until a console control event or termination request arrives")
+	fs.StringVar(&c.state, "state", "", "with --linger: directory the process reports into")
+	fs.StringVar(&c.name, "name", "app", "with --linger: the name its files in --state carry")
+	fs.StringVar(&c.spawn, "spawn", "", "with --linger: first start a lingering child of this name")
+	fs.DurationVar(&c.work, "work", time.Second, "with --linger: how long a clean shutdown takes")
+	fs.BoolVar(&c.consoleWindow, "console-window", false, "with --linger: record the console window handle")
+	fs.DurationVar(&c.exitAfter, "exit-after", 0, "with --linger: exit 0 on its own after this long, leaving --spawn running")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
 	c.args = args
 
 	switch {
+	case *lingerMode:
+		return linger(c, stderr)
 	case *holdLock:
 		return hold(c.lockFile, stdin, stdout, stderr)
 	case c.requestVersion != "":
@@ -145,6 +176,88 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stdout, "app %s\n", version)
 		return exitOK
 	}
+}
+
+// linger is an application that runs until it is told to stop and then needs
+// time to stop cleanly: the application a launcher must neither leave behind
+// nor cut short (IDN-40). It reports into --state, one file per fact, rather
+// than on stdout: a pipe held by a process that outlives its parent is exactly
+// what the scenarios provoke, and a reader waiting for its EOF would hang.
+//
+//	<name>.hwnd    the console window handle (--console-window)
+//	<name>.pid     written last during start-up: the handler is installed and,
+//	               with --spawn, the child started
+//	<name>.signal  what arrived
+//	<name>.done    the clean shutdown finished; the process exits 7 right after
+//
+// os.Interrupt is Ctrl+C and Ctrl+Break. On Windows syscall.SIGTERM is a close,
+// logoff or shutdown event, and Go keeps the process alive while it is being
+// handled, so the --work that follows runs inside the grace period Windows
+// gives.
+func linger(c config, stderr io.Writer) int {
+	if c.state == "" {
+		_, _ = fmt.Fprintln(stderr, "hostapp: --linger needs --state")
+		return exitUsage
+	}
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+
+	if c.spawn != "" {
+		self, err := os.Executable()
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "hostapp: %v\n", err)
+			return exitError
+		}
+		//nolint:gosec // G204: the fixture starts itself.
+		child := exec.CommandContext(context.Background(), self,
+			"--linger", "--state", c.state, "--name", c.spawn, "--work", c.work.String())
+		child.Stdout, child.Stderr = os.Stdout, os.Stderr
+		if err := child.Start(); err != nil {
+			_, _ = fmt.Fprintf(stderr, "hostapp: --spawn: %v\n", err)
+			return exitError
+		}
+		// Not waited for: what becomes of it is what the scenario looks at.
+		_ = child.Process.Release()
+	}
+	if c.consoleWindow {
+		if err := report(c, "hwnd", strconv.FormatUint(uint64(consoleWindow()), 10)); err != nil {
+			_, _ = fmt.Fprintf(stderr, "hostapp: %v\n", err)
+			return exitError
+		}
+	}
+	if err := report(c, "pid", strconv.Itoa(os.Getpid())); err != nil {
+		_, _ = fmt.Fprintf(stderr, "hostapp: %v\n", err)
+		return exitError
+	}
+
+	var timeout <-chan time.Time
+	if c.exitAfter > 0 {
+		timeout = time.After(c.exitAfter)
+	}
+	var got os.Signal
+	select {
+	case got = <-sig:
+	case <-timeout:
+		return exitOK
+	}
+	_ = report(c, "signal", got.String())
+	time.Sleep(c.work)
+	if err := report(c, "done", got.String()); err != nil {
+		_, _ = fmt.Fprintf(stderr, "hostapp: %v\n", err)
+		return exitError
+	}
+	return exitSignaled
+}
+
+// report writes one fact into --state atomically, so a reader polling for the
+// file never sees half of it.
+func report(c config, kind, value string) error {
+	final := filepath.Join(c.state, c.name+"."+kind)
+	tmp := final + ".tmp"
+	if err := os.WriteFile(tmp, []byte(value), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, final)
 }
 
 // hold takes the application lock and keeps it until stdin reaches EOF, which is

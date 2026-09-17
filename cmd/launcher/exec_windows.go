@@ -22,6 +22,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
+	"syscall"
 
 	"github.com/go-idavoll/idunn/core/launch"
 )
@@ -38,7 +40,42 @@ import (
 // its own mechanism on this platform (rename aside, then MoveFileEx with
 // MOVEFILE_DELAY_UNTIL_REBOOT for the leftover; internal/launcherfile,
 // docs/design.md §13, backlog IDN-17).
+//
+// That promise holds only while the two live and die together (IDN-40):
+//
+//   - The application does not outlive the launcher: both sit in a kill-on-close
+//     job (lifetimeJob), so a launcher that is killed takes the application
+//     along. Once the application has exited on its own,
+//     the job lets go of what it left running.
+//   - The launcher does not die first. Console control events reach the
+//     application directly, because it shares the launcher's console, so there is
+//     nothing to forward; the launcher only must not act on them itself. Ctrl+C
+//     and Ctrl+Break are the application's to answer, and on a close, logoff or
+//     shutdown event (syscall.SIGTERM) Go holds the launcher's handler open while
+//     the application uses the grace period — a launcher that exited then would
+//     end the application through the job mid-shutdown.
 func execApp(path string, args []string) (int, error) {
+	err := job.join()
+	if err == nil {
+		err = job.rearm()
+	}
+	if err != nil {
+		// Starting the application matters more than supervising it: report and
+		// go on, as a launcher before IDN-40 did.
+		_, _ = fmt.Fprintf(os.Stderr, "idunn launcher: the application will not end with this launcher: %v\n", err)
+	}
+	defer func() {
+		if err := job.release(); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "idunn launcher: what the application left running may end with this launcher: %v\n", err)
+		}
+	}()
+
+	// Nobody reads the channel: being notified is what keeps Go from exiting on
+	// Ctrl+C, and from returning a close event to the default handler.
+	events := make(chan os.Signal, 1)
+	signal.Notify(events, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(events)
+
 	// The path is the pointer's target joined with a validated, install-relative
 	// name (see appPath), not caller-supplied input.
 	//nolint:gosec // G204: the binary to start is the whole purpose of this program.
