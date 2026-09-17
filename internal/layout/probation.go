@@ -214,6 +214,22 @@ func (p *Probation) validate() error {
 	return nil
 }
 
+// ProbationPins returns the versions a probation may still return to, which
+// garbage collection must not remove: the previous version of a record that is
+// on probation, reported unhealthy, or rolling back. A confirmed, kept or
+// reverted record pins nothing.
+func ProbationPins(f fsx.FS, root string) ([]string, error) {
+	p, err := ReadProbation(f, root)
+	if err != nil || p == nil {
+		return nil, err
+	}
+	switch p.Status {
+	case ProbationActive, ProbationUnhealthy, ProbationReverting:
+		return []string{p.Previous}, nil
+	}
+	return nil, nil
+}
+
 // SanitizeReason makes an application's own words safe to store, log and show:
 // valid UTF-8, no control characters, no surrounding space, at most
 // MaxProbationReason bytes cut at a character boundary. The reason travels to

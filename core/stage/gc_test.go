@@ -241,3 +241,51 @@ func TestGCRefusesAnUnreadablePointer(t *testing.T) {
 		t.Fatalf("a refused GC still deleted something: %v", got)
 	}
 }
+
+// The version a probation would return to survives GC for as long as the
+// probation lasts, even outside the window (IDN-39).
+func TestGCKeepsTheVersionAProbationReturnsTo(t *testing.T) {
+	for _, tc := range []struct {
+		status layout.ProbationStatus
+		want   []string
+	}{
+		{layout.ProbationActive, []string{"1.0.0", "1.1.0", "1.2.0"}},
+		{layout.ProbationUnhealthy, []string{"1.0.0", "1.1.0", "1.2.0"}},
+		{layout.ProbationReverting, []string{"1.0.0", "1.1.0", "1.2.0"}},
+		{layout.ProbationConfirmed, []string{"1.1.0", "1.2.0"}},
+	} {
+		t.Run(string(tc.status), func(t *testing.T) {
+			m := withVersions(t, "1.2.0", "0.9.0", "1.0.0", "1.1.0", "1.2.0")
+			if err := layout.WriteProbation(m, root, layout.Probation{
+				Version: "1.2.0", Previous: "1.0.0", Status: tc.status, AttemptsAllowed: 3,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := (&stage.Stager{FS: m, Root: root}).GC(2); err != nil {
+				t.Fatalf("GC: %v", err)
+			}
+			if got := remaining(t, m); strings.Join(got, ",") != strings.Join(tc.want, ",") {
+				t.Fatalf("remaining = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// A probation record GC cannot read may name the one directory a rollback
+// needs, so nothing is collected, and the caller is told it was incomplete.
+func TestGCCollectsNothingPastAnUnreadableProbation(t *testing.T) {
+	m := withVersions(t, "1.2.0", "1.0.0", "1.1.0", "1.2.0")
+	if err := m.MkdirAll(layout.Meta(root), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := fsx.WriteFileAtomic(m, layout.ProbationFile(root), []byte("{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := (&stage.Stager{FS: m, Root: root}).GC(2)
+	if !errors.Is(err, stage.ErrIncompleteGC) {
+		t.Fatalf("GC = %v, want ErrIncompleteGC", err)
+	}
+	if got := remaining(t, m); len(got) != 3 {
+		t.Fatalf("remaining = %v, want nothing collected", got)
+	}
+}

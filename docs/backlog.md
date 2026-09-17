@@ -26,7 +26,6 @@ An item that is partly done stays open until what it still lists is done.
 | [IDN-30](idn/IDN-30.md) | Replacing the privileged helper itself (§14.2) | open |
 | [IDN-31](idn/IDN-31.md) | Windows: Authenticode as a gate before the swap (§13) | open |
 | [IDN-36](idn/IDN-36.md) | OS integrations as a recorded manifest; Windows "Installed apps" (§5, §13) | manifest and uninstall entry done; repair and other integrations open |
-| [IDN-39](idn/IDN-39.md) | Probation: a new version confirms it is healthy, or is rolled back (§6.1, §6.2, §14.3, §14.5) | mechanism, signed per-release allowance and rollback telemetry done; launcher restore and host ceiling open |
 | [IDN-40](idn/IDN-40.md) | Windows: the launcher as the application's parent — job object and console control events (§6.1, §13, §14.3) | job object and console control events done; session end and services open |
 
 ### P2 — hardening and reach
@@ -66,6 +65,7 @@ An item that is partly done stays open until what it still lists is done.
 | [IDN-24](idn/done/IDN-24.md) | A default install root that follows the platform's conventions (§5, §6.1, §14.2) | P1 |
 | [IDN-29](idn/done/IDN-29.md) | Install and restart (§6.1, §14.3) | P1 |
 | [IDN-35](idn/done/IDN-35.md) | Uninstall (§5, §6.1) | P1 |
+| [IDN-39](idn/done/IDN-39.md) | Probation: a new version confirms it is healthy, or is rolled back (§6.1, §6.2, §14.3, §14.5) | P1 |
 
 When an item is implemented, `git mv` its file to `idn/done/`, mark its heading
 **done**, and move its row to the table above.

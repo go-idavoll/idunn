@@ -66,6 +66,12 @@ type ProbationPolicy struct {
 	// apply only to a release that states nothing. The trust client must be a
 	// PolicyResolver.
 	FollowRelease bool
+
+	// MaxAttempts caps the attempts any release gets on this host, 0 for no
+	// cap — a canary fleet that should fall back after one bad start whatever
+	// the publisher allows. It applies to the release's allowance and bounds
+	// Attempts, which may not exceed it.
+	MaxAttempts int
 }
 
 // PolicyResolver is the optional capability of resolving a release's signed
@@ -76,6 +82,9 @@ type PolicyResolver interface {
 
 // validate checks the policy and fills in its defaults.
 func (p *ProbationPolicy) validate(elevation ElevationMode, trust Resolver) error {
+	if p.MaxAttempts < 0 || p.MaxAttempts > layout.MaxProbationAttempts {
+		return fmt.Errorf("%w: probation max attempts %d is not within 0..%d", ErrConfig, p.MaxAttempts, layout.MaxProbationAttempts)
+	}
 	if p.Attempts == 0 && !p.FollowRelease {
 		return nil
 	}
@@ -83,6 +92,9 @@ func (p *ProbationPolicy) validate(elevation ElevationMode, trust Resolver) erro
 		if _, ok := trust.(PolicyResolver); !ok {
 			return fmt.Errorf("%w: probation follows the release, but the trust client cannot resolve release policies", ErrConfig)
 		}
+	}
+	if p.MaxAttempts > 0 && p.Attempts > p.MaxAttempts {
+		return fmt.Errorf("%w: probation attempts %d exceed the host's own ceiling of %d", ErrConfig, p.Attempts, p.MaxAttempts)
 	}
 	if p.Attempts < 0 || p.Attempts > layout.MaxProbationAttempts {
 		return fmt.Errorf("%w: probation attempts %d is not within 1..%d", ErrConfig, p.Attempts, layout.MaxProbationAttempts)
@@ -155,6 +167,15 @@ func (u *Updater) armProbation(installed string, d *release.Descriptor) error {
 				ErrStale, prev.Version)
 		}
 		next.Blocked = prev.Blocked
+		// An update over a version that never confirmed does not make that
+		// version the one to fall back to: it may be the very version this
+		// update fixes. The new probation returns to what the unconfirmed one
+		// would have returned to — the last version known to work here —
+		// which GC has kept pinned all along.
+		unconfirmed := prev.Status == layout.ProbationActive || prev.Status == layout.ProbationUnhealthy
+		if unconfirmed && prev.Version == installed && prev.Previous != version && u.versionInstalled(prev.Previous) {
+			next.Previous = prev.Previous
+		}
 	}
 	return layout.WriteProbation(u.fs, u.root, next)
 }
@@ -185,6 +206,9 @@ func (u *Updater) probationFor(d *release.Descriptor) (attempts, restarts int, e
 				restarts = p.Probation.Restarts
 			}
 		}
+	}
+	if pol.MaxAttempts > 0 && attempts > pol.MaxAttempts {
+		attempts = pol.MaxAttempts
 	}
 	if restarts == 0 {
 		restarts = DefaultProbationRestarts
@@ -239,4 +263,15 @@ func (u *Updater) reportProbationOutcomes(ctx context.Context) {
 			return
 		}
 	}
+}
+
+// versionInstalled reports whether version still has its directory under the
+// root — a record written before GC pinned it may name one that is gone.
+func (u *Updater) versionInstalled(version string) bool {
+	dir, err := layout.VersionDir(u.root, version)
+	if err != nil {
+		return false
+	}
+	_, err = u.fs.Stat(dir)
+	return err == nil
 }

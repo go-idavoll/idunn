@@ -364,3 +364,104 @@ func TestAnUnreadableOutcomeIsDropped(t *testing.T) {
 		t.Fatalf("the unreadable outcome stayed: %v", names)
 	}
 }
+
+// --- an update over a version still on probation ------------------------------
+
+// 1.3.0 never confirmed and the application updates to 1.4.0 anyway. 1.4.0 falls
+// back to 1.2.0, the last version known to work, which GC kept although the
+// window only holds two versions — not to the unconfirmed 1.3.0.
+func TestAnUpdateOverAnUnconfirmedVersionReturnsToTheLastConfirmedOne(t *testing.T) {
+	f := newFixture(t, "1.2.0", "1.3.0")
+	f.opts.Policy.Probation = updater.ProbationPolicy{Attempts: 1}
+	if err := f.run(); err != nil {
+		t.Fatalf("Apply 1.3.0: %v", err)
+	}
+	start := func() launch.Result {
+		t.Helper()
+		res, err := launch.Start(context.Background(), launch.Options{FS: f.fs, Root: root, Migrate: f.hooks})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	start() // 1.3.0's one attempt, never confirmed
+
+	f.trust.descriptor = descriptor("1.4.0", ref("targets/app", "app"))
+	f.trust.targets["targets/app"] = []byte("binary 1.4.0")
+	if err := f.run(); err != nil {
+		t.Fatalf("Apply 1.4.0: %v", err)
+	}
+	if p := f.probation(); p.Version != "1.4.0" || p.Previous != "1.2.0" {
+		t.Fatalf("probation = %+v, want 1.4.0 returning to 1.2.0", p)
+	}
+	if !f.exists("/opt/app/versions/1.2.0") {
+		t.Fatal("GC collected the last confirmed version while a probation still returns to it")
+	}
+
+	start()
+	if res := start(); !res.Probation.Reverted || res.Probation.To != "1.2.0" || f.pointer() != "1.2.0" {
+		t.Fatalf("rollback = %+v, current %s; want 1.2.0", res.Probation, f.pointer())
+	}
+}
+
+// Once a version confirmed, the next update returns to it as usual.
+func TestAnUpdateOverAConfirmedVersionReturnsToIt(t *testing.T) {
+	f := newFixture(t, "1.2.0", "1.3.0")
+	f.opts.Policy.Probation = updater.ProbationPolicy{Attempts: 1}
+	if err := f.run(); err != nil {
+		t.Fatal(err)
+	}
+	if err := launch.MarkHealthy(f.fs, root, "1.3.0"); err != nil {
+		t.Fatal(err)
+	}
+	f.trust.descriptor = descriptor("1.4.0", ref("targets/app", "app"))
+	f.trust.targets["targets/app"] = []byte("binary 1.4.0")
+	if err := f.run(); err != nil {
+		t.Fatal(err)
+	}
+	if p := f.probation(); p.Previous != "1.3.0" {
+		t.Fatalf("probation = %+v, want 1.4.0 returning to the confirmed 1.3.0", p)
+	}
+}
+
+// A record that names a last confirmed version that is already gone — written
+// before GC pinned it — does not become a rollback to nowhere.
+func TestAGoneLastConfirmedVersionIsNotTheTarget(t *testing.T) {
+	f := newFixture(t, "1.3.0", "1.4.0")
+	f.opts.Policy.Probation = updater.ProbationPolicy{Attempts: 1}
+	if err := layout.WriteProbation(f.fs, root, layout.Probation{
+		Version: "1.3.0", Previous: "1.2.0", Status: layout.ProbationActive, AttemptsAllowed: 1, RestartsAllowed: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.run(); err != nil {
+		t.Fatal(err)
+	}
+	if p := f.probation(); p.Previous != "1.3.0" {
+		t.Fatalf("probation = %+v, want 1.4.0 returning to the installed 1.3.0", p)
+	}
+}
+
+func TestMaxAttemptsCapsTheReleasesAllowance(t *testing.T) {
+	f := newFixture(t, "1.2.0", "1.3.0")
+	f.opts.Policy.Probation = updater.ProbationPolicy{FollowRelease: true, MaxAttempts: 1}
+	f.trust.policies = map[string]*release.Policy{"1.3.0": releasePolicy("1.3.0", 5, 0)}
+	if err := f.run(); err != nil {
+		t.Fatal(err)
+	}
+	if p := f.probation(); p == nil || p.AttemptsAllowed != 1 {
+		t.Fatalf("probation = %+v, want the release's 5 attempts capped at 1", p)
+	}
+
+	for _, pol := range []updater.ProbationPolicy{
+		{Attempts: 3, MaxAttempts: 2},
+		{MaxAttempts: -1},
+		{MaxAttempts: layout.MaxProbationAttempts + 1},
+	} {
+		g := newFixture(t, "1.2.0", "1.3.0")
+		g.opts.Policy.Probation = pol
+		if _, err := updater.New(g.opts); !errors.Is(err, updater.ErrConfig) {
+			t.Errorf("New(%+v) = %v, want ErrConfig", pol, err)
+		}
+	}
+}

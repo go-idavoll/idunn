@@ -39,6 +39,14 @@ type Checker interface {
 
 // Migrator performs a stateful migration together with its exact inverse.
 // The packer never contains migration logic; it lives here in the host.
+//
+// With probation (IDN-39) Rollback may run days after Migrate, at a launcher
+// start, over data the new version has written since. Keep Migrate to the
+// steps that can be undone then — add columns, write new files beside old ones
+// ("expand") — and let the application do what cannot be undone — drop the old
+// columns, delete the old files ("contract") — after it has called
+// launch.MarkHealthy. A version that confirmed is never rolled back, so the
+// contract step never has to be.
 type Migrator interface {
 	Migrate(Context) error  // committed only if the whole transaction succeeds.
 	Rollback(Context) error // idempotent; safe even if Migrate partially ran.

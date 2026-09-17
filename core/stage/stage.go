@@ -472,6 +472,17 @@ func (s *Stager) GC(retain int) error {
 	if err != nil {
 		return err
 	}
+	// The version a probation would roll back to stays for as long as the
+	// probation lasts, wherever the window has moved to (IDN-39). A record
+	// that cannot be read pins nothing it can name, so nothing is collected:
+	// deleting the one directory a rollback needs is not a guess to make.
+	pinned, err := layout.ProbationPins(s.FS, s.Root)
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrIncompleteGC, err)
+	}
+	for _, v := range pinned {
+		keep[v] = true
+	}
 
 	var failed []error
 	for _, v := range versions {
