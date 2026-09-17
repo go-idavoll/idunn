@@ -1,4 +1,4 @@
-# IDN-39 — Probation: a new version confirms it is healthy, or is rolled back (§6.1, §6.2, §14.3, §14.5)
+# IDN-39 — Probation: a new version confirms it is healthy, or is rolled back (§6.1, §6.2, §14.3, §14.5) — **done**
 
 **Priority:** P1 — blocks a trustworthy release
 
@@ -199,19 +199,36 @@ per-release value is the second half of this item. Documented in `updater.md`
   end: the rollback in `TestUnconfirmedUpdateIsRolledBackAndNotOfferedAgain` is
   reported exactly once by the application's own updater.
 
-## Still open
+## As built — closing the open questions
 
-- **A host ceiling on the release's allowance** (a lower limit for a canary fleet)
-  beyond turning `FollowRelease` off.
-- **The launcher a reverted release staged** stays swapped in; whether a rollback
-  should restore the previous launcher too is undecided.
-- How a `Migrator.Rollback` that runs days after `Migrate` handles data the new
-  version has written since — whether probation should forbid irreversible migrations,
-  or `Migrate` runs on confirmation rather than before the swap.
-- Whether services and headless hosts count attempts per launcher start or need a
-  supervisor's restart count (systemd `Restart=`, the Windows service recovery actions).
-- System-wide installs (IDN-23): refused today.
-- Whether GC must pin the previous version while probation lasts: with `MinRetain` it
-  survives the commit, but a second update during probation moves the window.
-- Whether the policy target carries more than `K` later (a probation deadline in
-  wall-clock time, subject to the time floor of IDN-09).
+- **A host ceiling:** `ProbationPolicy.MaxAttempts` caps the release's allowance and
+  bounds the host's own `Attempts`; `New` refuses a value outside 0..20 or `Attempts`
+  above it.
+- **An update during probation returns to the last confirmed version.** When the
+  version being replaced is still on probation or reported unhealthy, the new record
+  takes over its `previous` — if that directory is still there — instead of naming the
+  unconfirmed version, which may be the very version the update fixes. Blocking updates
+  during probation was rejected: it would block exactly that fix.
+  `stage.Stager.GC` keeps `previous` of a record that is on probation, unhealthy or
+  rolling back (`layout.ProbationPins`), outside the retention window if need be, and
+  collects nothing (`ErrIncompleteGC`) when the record cannot be read. Mutation-checked:
+  without the pin the updater and GC tests fail.
+- **Migrations — decided, documented:** expand in `Migrate`, contract in the
+  application after `MarkHealthy` (`hook.Migrator`, `updater.md`). No new hook: a
+  finalizer run inside `MarkHealthy` would run host migration code in a call the
+  application makes during its own start-up.
+- **The launcher is not restored — decided.** The launcher is not versioned with the
+  application and has to start older versions; a launcher broken enough to need a
+  rollback could not perform it. Keeping a previous launcher would add code to the
+  component that has to stay smallest.
+- **Services — decided, no special case.** Attempts are counted per launcher start, so
+  a service manager's restart loop through the launcher is a probation that runs out.
+  Windows services behind the launcher belong to IDN-40.
+- **System-wide installs** stay refused by `New`; recovery and deferral for those roots
+  are IDN-23, and probation follows once the helper can write the record there.
+- **No wall-clock deadline — decided.** Counting starts is the point (see above); a
+  deadline would bring back the timer, and with it the clock (IDN-09).
+- **Tests:** GC pins per status and an unreadable record; the full sequence of an update
+  over an unconfirmed version rolled back to the last confirmed one with a retention
+  window of two; an update over a confirmed version; a gone last confirmed version;
+  the ceiling and its refusals.

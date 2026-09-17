@@ -295,6 +295,26 @@ _ = launch.MarkUnhealthy(fsx.OS(), root, version, reason) // and exit
   (`*trust.Client` does). `ReleasePolicy` tells "not published" from "not fetched"
   by the signed target list of the role that owns the release, and a published policy
   that cannot be resolved fails the update before `BEGIN`.
+- **A host ceiling.** `MaxAttempts` caps what any release gets on this host — a canary
+  fleet that should fall back after one bad start — and bounds `Attempts` too.
+- **An update over a version that never confirmed** does not fall back to that version:
+  the new probation returns to the one the unconfirmed version would have returned
+  to, the last version known to work here. GC keeps that version for as long as a
+  probation may return to it (on probation, reported unhealthy, rolling back), outside
+  `RetainVersions` if need be; a probation record GC cannot read stops collection.
+- **Migrations: expand before, contract after.** `Migrator.Rollback` may run days after
+  `Migrate`, over data the new version has written since. Keep `Migrate` to steps that
+  can still be undone then (add, never drop) and let the application run the steps
+  that cannot — dropping old columns, deleting old files — after `MarkHealthy`. A
+  confirmed version is never rolled back, so those steps never need an inverse.
+- **Services.** Nothing special: a service manager that restarts a crashing service
+  through the launcher (`Restart=on-failure`, the Windows recovery actions) spends an
+  attempt per restart, and a crash loop ends in a rollback. The service confirms once
+  it serves. Windows services behind the launcher are an open question of IDN-40.
+- **The launcher is not rolled back.** A rollback leaves in place a launcher the
+  rolled-back release staged. The launcher starts every version under the root and has
+  to stay compatible with older ones (*Updating the launcher*); one broken enough to
+  need rolling back could not perform the rollback.
 
 ## 6. Crash recovery
 
