@@ -102,7 +102,7 @@ func retire(cfg *Config, st *state, blobs []blob, roleTargets map[string]map[str
 
 	// Classify every target of the line before deciding anything.
 	byPlatform := map[string][]string{} // "os-arch" -> versions
-	var payloads, patches []string
+	var payloads, patches, policies []string
 	for _, target := range sortedKeys(line) {
 		if goos, goarch, version, ok := parseDescriptorTarget(target); ok {
 			if majorOf(version) != lineMajor {
@@ -119,7 +119,14 @@ func retire(cfg *Config, st *state, blobs []blob, roleTargets map[string]map[str
 			patches = append(patches, target)
 			continue
 		}
-		return nil, fmt.Errorf("%w: %s holds %s, which is neither a descriptor, a payload nor a patch; retention cannot tell what still needs it",
+		if _, _, version, ok := release.VersionOfPolicyPath(target); ok {
+			if majorOf(version) != lineMajor {
+				return nil, fmt.Errorf("%w: %s holds %s, which belongs to another release line", ErrRepo, lineRole, target)
+			}
+			policies = append(policies, target)
+			continue
+		}
+		return nil, fmt.Errorf("%w: %s holds %s, which is neither a descriptor, a policy, a payload nor a patch; retention cannot tell what still needs it",
 			ErrRepo, lineRole, target)
 	}
 
@@ -165,6 +172,15 @@ func retire(cfg *Config, st *state, blobs []blob, roleTargets map[string]map[str
 
 	for _, target := range payloads {
 		if !refTargets[target] {
+			dropped[target] = true
+		}
+	}
+	// A policy belongs to one release and goes with its descriptor — or stays
+	// behind for no one, when that descriptor is not in the line at all.
+	for _, target := range policies {
+		goos, goarch, version, _ := release.VersionOfPolicyPath(target)
+		desc := release.DescriptorPath(goos, goarch, version)
+		if _, published := line[desc]; dropped[desc] || !published {
 			dropped[target] = true
 		}
 	}

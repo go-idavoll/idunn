@@ -305,7 +305,7 @@ func New(o Options) (*Updater, error) {
 	default:
 		return nil, fmt.Errorf("%w: unknown OnBusy policy %d", ErrConfig, p.OnBusy)
 	}
-	if err := p.Probation.validate(p.Elevation); err != nil {
+	if err := p.Probation.validate(p.Elevation, o.Trust); err != nil {
 		return nil, err
 	}
 	switch p.Elevation {

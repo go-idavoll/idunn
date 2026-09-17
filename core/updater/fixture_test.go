@@ -59,6 +59,18 @@ type fakeTrust struct {
 
 	// openLines are the release lines whose delegated role has been loaded.
 	openLines map[string]bool
+
+	// policies are the signed release policies, keyed by version; policyErr
+	// fails every lookup (IDN-39).
+	policies  map[string]*release.Policy
+	policyErr error
+}
+
+func (f *fakeTrust) ReleasePolicy(_, _, version string) (*release.Policy, error) {
+	if f.policyErr != nil {
+		return nil, f.policyErr
+	}
+	return f.policies[version], nil
 }
 
 // publish adds a release to the repository this fake stands for, with the

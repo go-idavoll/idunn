@@ -32,6 +32,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1212,5 +1213,84 @@ func TestEveryCacheReadRefusesAPlantedEntry(t *testing.T) {
 				t.Errorf("the cache still holds %d bytes, want the %d signed ones", info.Size(), len(want))
 			}
 		})
+	}
+}
+
+// --- release policies (IDN-39) --------------------------------------------
+
+// withPolicy returns a fixture whose repository publishes raw as the policy of
+// the baseline release.
+func withPolicy(t *testing.T, raw []byte) *fixture {
+	t.Helper()
+	return refreshed(t, func(b *harness.Build) error {
+		b.Payloads[release.PolicyPath(b.Opts.OS, b.Opts.Arch, b.Opts.Version)] = raw
+		return nil
+	})
+}
+
+func policyJSON(version string, attempts int) []byte {
+	return []byte(`{"schema_version":1,"name":"app","version":"` + version + `","os":"` + testOS +
+		`","arch":"` + testArch + `","probation":{"attempts":` + strconv.Itoa(attempts) + `,"restarts":2}}`)
+}
+
+func TestReleasePolicyOfAReleaseWithoutOneIsNone(t *testing.T) {
+	f := refreshed(t, nil)
+	p, err := f.client.ReleasePolicy(testOS, testArch, testVersion)
+	if p != nil || err != nil {
+		t.Fatalf("ReleasePolicy = %+v, %v; want none", p, err)
+	}
+}
+
+func TestReleasePolicyIsResolvedAndVerified(t *testing.T) {
+	f := withPolicy(t, policyJSON(testVersion, 4))
+	p, err := f.client.ReleasePolicy(testOS, testArch, testVersion)
+	if err != nil {
+		t.Fatalf("ReleasePolicy: %v", err)
+	}
+	if p.Probation == nil || p.Probation.Attempts != 4 || p.Probation.Restarts != 2 {
+		t.Fatalf("policy = %+v", p)
+	}
+}
+
+func TestReleasePolicyRefusesWhatItCannotUse(t *testing.T) {
+	for name, tc := range map[string]struct {
+		raw  []byte
+		want error
+	}{
+		"malformed":             {[]byte("{"), release.ErrInvalid},
+		"disagrees with a path": {policyJSON("9.9.9", 3), trust.ErrResolve},
+		"out of bounds":         {policyJSON(testVersion, release.MaxProbationAttempts+1), release.ErrInvalid},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := withPolicy(t, tc.raw)
+			if p, err := f.client.ReleasePolicy(testOS, testArch, testVersion); p != nil || !errors.Is(err, tc.want) {
+				t.Fatalf("ReleasePolicy = %+v, %v; want %v", p, err, tc.want)
+			}
+		})
+	}
+}
+
+// A policy of a release the repository does not publish is not "none": there
+// is no release to have one.
+func TestReleasePolicyOfAnUnpublishedReleaseIsRefused(t *testing.T) {
+	f := refreshed(t, nil)
+	if _, err := f.client.ReleasePolicy(testOS, testArch, "9.9.9"); !errors.Is(err, trust.ErrTrust) {
+		t.Fatalf("err = %v, want ErrTrust", err)
+	}
+	if _, err := f.client.ReleasePolicy(testOS, testArch, "../1.2.0"); !errors.Is(err, trust.ErrResolve) {
+		t.Fatalf("err = %v, want ErrResolve", err)
+	}
+}
+
+// A policy never passes for a release, even for a pre-release whose policy path
+// would otherwise read as a valid version.
+func TestVersionsDoesNotListPolicies(t *testing.T) {
+	f := refreshed(t, func(b *harness.Build) error {
+		b.Payloads[release.PolicyPath(b.Opts.OS, b.Opts.Arch, b.Opts.Version)] = policyJSON(b.Opts.Version, 3)
+		b.Payloads[release.PolicyPath(b.Opts.OS, b.Opts.Arch, "1.3.0-rc.1")] = policyJSON("1.3.0-rc.1", 3)
+		return nil
+	})
+	if got := f.client.Versions(testOS, testArch); len(got) != 1 || got[0] != testVersion {
+		t.Fatalf("Versions = %v, want only %s", got, testVersion)
 	}
 }

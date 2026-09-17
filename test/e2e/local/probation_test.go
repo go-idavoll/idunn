@@ -109,3 +109,33 @@ func TestUnhealthyUpdateIsRolledBackAtTheNextStart(t *testing.T) {
 		t.Fatalf("after the rollback: %s", s)
 	}
 }
+
+// The publisher's own allowance, signed with the release: the packer publishes
+// it from pack.yaml, the application's updater follows it, and the launcher
+// holds the release to it — here one start, where the host would have given two.
+func TestReleasePolicyDecidesTheProbation(t *testing.T) {
+	r := newRepo(t)
+	r.publish("1.0.0")
+	in := newInstall(t, r)
+	in.mustInstall("1.0.0")
+
+	r.publishWith("1.1.0", "probation:\n  attempts: 1\n")
+	if code, out := in.selfUpdate("--probation-follow-release", "--probation-attempts", "2"); code != exitOK {
+		t.Fatalf("self-update = %d\n%s", code, out)
+	}
+	in.launchApp("1.1.0")
+	out := in.launchApp("1.0.0")
+	if !strings.Contains(out, "1.1.0 failed its probation and was rolled back to 1.0.0: not confirmed healthy after 1 start") {
+		t.Fatalf("the launcher did not hold 1.1.0 to its own allowance:\n%s", out)
+	}
+
+	// A release that turns probation off is not put on it, whatever the host's
+	// fallback says.
+	r.publishWith("1.2.0", "probation:\n  attempts: 0\n")
+	if code, out := in.selfUpdate("--probation-follow-release", "--probation-attempts", "2"); code != exitOK {
+		t.Fatalf("self-update to 1.2.0 = %d\n%s", code, out)
+	}
+	for range 4 {
+		in.launchApp("1.2.0")
+	}
+}

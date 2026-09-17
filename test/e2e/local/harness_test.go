@@ -342,6 +342,12 @@ func dataContent(version string) []byte { return []byte("release " + version + "
 // data file.
 func (r *repo) publish(version string) {
 	r.t.Helper()
+	r.publishWith(version, "")
+}
+
+// publishWith is publish with extra top-level pack.yaml, placed before targets.
+func (r *repo) publishWith(version, extra string) {
+	r.t.Helper()
 	src := filepath.Join(r.dir, "build", version)
 	if err := os.MkdirAll(filepath.Join(src, "bin"), 0o755); err != nil {
 		r.t.Fatal(err)
@@ -359,13 +365,13 @@ func (r *repo) publish(version string) {
 	cfg := fmt.Sprintf(`name: hostapp
 version: %s
 channel: %s
-targets:
+%stargets:
   - os: %s
     arch: %s
     files:
       - { src: %s, dst: %s, kind: exe, mode: "0755" }
       - { src: version.txt, dst: share/version.txt, kind: data }
-`, version, r.channel, runtime.GOOS, runtime.GOARCH, appDst, appDst)
+`, version, r.channel, extra, runtime.GOOS, runtime.GOARCH, appDst, appDst)
 	cfgPath := filepath.Join(src, "pack.yaml")
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0o644); err != nil {
 		r.t.Fatal(err)

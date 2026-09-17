@@ -144,6 +144,10 @@ that are themselves TUF targets (thus co-signed):
 - **Release descriptor** `releases/<os>-<arch>/<version>.json`: lists the payload target
   paths belonging to the release and carries the former `Requirements`/hook/layout
   information.
+- **Release policy** `releases/<os>-<arch>/<version>_policy.json` (optional, IDN-39):
+  what the publisher asks of a client installing the release — today its probation
+  allowance. Discovered by name beside the descriptor, like a patch, so the descriptor
+  schema stays untouched and a client that knows nothing about policies never asks.
 - **Channel pointer** `channels/<channel>/<os>-<arch>/latest.json`: names the currently
   valid version → its descriptor. Its freshness is guaranteed by snapshot/timestamp
   (freeze defense), the version increment by TUF's rollback protection.

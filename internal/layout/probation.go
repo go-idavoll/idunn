@@ -23,6 +23,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/go-idavoll/idunn/core/fsx"
+	"github.com/go-idavoll/idunn/core/release"
 )
 
 // ProbationSchema is the format version of probation.json. Any other value is
@@ -33,8 +34,8 @@ const ProbationSchema = 1
 // defaults: a host that asks for more attempts or restarts than this is refused
 // when it configures them, so a typo cannot turn probation into "never roll back".
 const (
-	MaxProbationAttempts = 20
-	MaxProbationRestarts = 20
+	MaxProbationAttempts = release.MaxProbationAttempts
+	MaxProbationRestarts = release.MaxProbationRestarts
 	MaxProbationReason   = 512
 	MaxProbationLen      = 16 << 10
 )

@@ -79,6 +79,11 @@ type Config struct {
 	// keeps. Absent means off: nothing is ever removed.
 	Retention Retention `yaml:"retention"`
 
+	// Probation is the allowance this release asks of the clients that install
+	// it, published as its signed policy (release.PolicyPath, IDN-39). Absent
+	// publishes no policy, and each client's own policy decides.
+	Probation *Probation `yaml:"probation"`
+
 	// Targets lists one block per platform. The field is named after the TUF
 	// concept it produces, matching docs/design.md §9.
 	Targets []Platform `yaml:"targets"`
@@ -144,6 +149,20 @@ type Retention struct {
 	// than read as "off": "keep: 0" is as easily meant as "keep nothing", and
 	// a setting that can be read two ways is not one to delete files on.
 	Keep *int `yaml:"keep"`
+}
+
+// Probation is a release's probation allowance. It is a request to the clients
+// that follow release policies (updater.ProbationPolicy.FollowRelease); a client
+// that does not ignores it.
+type Probation struct {
+	// Attempts is how many launcher starts the release gets to confirm it is
+	// healthy. It is required: "attempts: 0" publishes that this release is
+	// not put on probation at all, which is a statement, not a default.
+	Attempts *int `yaml:"attempts"`
+
+	// Restarts is how many restarts it may ask for without spending attempts.
+	// Zero leaves the client's default.
+	Restarts int `yaml:"restarts"`
 }
 
 // MinRetain is the smallest keep window retention runs with.
@@ -257,6 +276,17 @@ func (c *Config) validate() error {
 	}
 	if c.Delta.MaxRatio < 0 || c.Delta.MaxRatio > 1 {
 		return fmt.Errorf("%w: delta.max_ratio %v outside [0,1]", ErrConfig, c.Delta.MaxRatio)
+	}
+	if p := c.Probation; p != nil {
+		if p.Attempts == nil {
+			return fmt.Errorf("%w: probation.attempts is required; 0 says the release is not put on probation", ErrConfig)
+		}
+		if *p.Attempts < 0 || *p.Attempts > release.MaxProbationAttempts {
+			return fmt.Errorf("%w: probation.attempts %d outside [0,%d]", ErrConfig, *p.Attempts, release.MaxProbationAttempts)
+		}
+		if p.Restarts < 0 || p.Restarts > release.MaxProbationRestarts {
+			return fmt.Errorf("%w: probation.restarts %d outside [0,%d]", ErrConfig, p.Restarts, release.MaxProbationRestarts)
+		}
 	}
 	if k := c.Retention.Keep; k != nil && *k < MinRetain {
 		return fmt.Errorf("%w: retention.keep %d is below the minimum of %d; omit retention to keep everything",

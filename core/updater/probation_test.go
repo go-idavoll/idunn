@@ -22,6 +22,8 @@ import (
 
 	"github.com/go-idavoll/idunn/core/fsx"
 	"github.com/go-idavoll/idunn/core/launch"
+	"github.com/go-idavoll/idunn/core/release"
+	"github.com/go-idavoll/idunn/core/trust"
 	"github.com/go-idavoll/idunn/core/updater"
 	"github.com/go-idavoll/idunn/internal/layout"
 )
@@ -185,5 +187,80 @@ func TestAnUnreadableProbationRecordFailsTheCheck(t *testing.T) {
 	}
 	if _, err := f.updater().CheckForUpdate(context.Background()); !errors.Is(err, layout.ErrLayout) {
 		t.Fatalf("CheckForUpdate = %v, want the record refused", err)
+	}
+}
+
+// --- the release's own policy ------------------------------------------------
+
+func releasePolicy(version string, attempts, restarts int) *release.Policy {
+	return &release.Policy{
+		SchemaVersion: release.SchemaVersion, Name: appName, Version: version, OS: "linux", Arch: "amd64",
+		Probation: &release.ProbationPolicy{Attempts: attempts, Restarts: restarts},
+	}
+}
+
+func TestFollowingReleasesTakesTheReleasesAllowance(t *testing.T) {
+	for _, tc := range []struct {
+		name                   string
+		host                   updater.ProbationPolicy
+		policy                 *release.Policy
+		wantAttempts, restarts int // wantAttempts 0: no record at all
+	}{
+		{"release states it", updater.ProbationPolicy{FollowRelease: true, Attempts: 2}, releasePolicy("1.3.0", 5, 4), 5, 4},
+		{"release keeps the host's restarts", updater.ProbationPolicy{FollowRelease: true, Restarts: 6}, releasePolicy("1.3.0", 5, 0), 5, 6},
+		{"release turns it off", updater.ProbationPolicy{FollowRelease: true, Attempts: 2}, releasePolicy("1.3.0", 0, 0), 0, 0},
+		{"release states nothing", updater.ProbationPolicy{FollowRelease: true, Attempts: 2}, nil, 2, updater.DefaultProbationRestarts},
+		{"release without probation", updater.ProbationPolicy{FollowRelease: true, Attempts: 2},
+			&release.Policy{SchemaVersion: 1, Name: appName, Version: "1.3.0", OS: "linux", Arch: "amd64"}, 2, updater.DefaultProbationRestarts},
+		{"nothing anywhere", updater.ProbationPolicy{FollowRelease: true}, nil, 0, 0},
+		// A host that does not follow releases is not put on probation by one.
+		{"host does not follow", updater.ProbationPolicy{}, releasePolicy("1.3.0", 5, 4), 0, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t, "1.2.0", "1.3.0")
+			f.opts.Policy.Probation = tc.host
+			if tc.policy != nil {
+				f.trust.policies = map[string]*release.Policy{"1.3.0": tc.policy}
+			}
+			if err := f.run(); err != nil {
+				t.Fatalf("Apply: %v", err)
+			}
+			p := f.probation()
+			if tc.wantAttempts == 0 {
+				if p != nil {
+					t.Fatalf("probation = %+v, want no record", p)
+				}
+				return
+			}
+			if p == nil || p.AttemptsAllowed != tc.wantAttempts || p.RestartsAllowed != tc.restarts {
+				t.Fatalf("probation = %+v, want %d attempts and %d restarts", p, tc.wantAttempts, tc.restarts)
+			}
+		})
+	}
+}
+
+// A policy the release publishes and that cannot be resolved stops the update
+// before anything is written: installing without the probation the publisher
+// asked for would decide on less than the signed metadata says.
+func TestAnUnresolvablePolicyFailsTheUpdate(t *testing.T) {
+	f := newFixture(t, "1.2.0", "1.3.0")
+	f.opts.Policy.Probation = updater.ProbationPolicy{FollowRelease: true, Attempts: 2}
+	f.trust.policyErr = trust.ErrTrust
+	if err := f.run(); !errors.Is(err, trust.ErrTrust) {
+		t.Fatalf("Apply = %v, want the policy error", err)
+	}
+	if f.pointer() != "1.2.0" || f.probation() != nil || journalState(t, f) != "" {
+		t.Fatalf("the refused update left traces: current %s, probation %+v, journal %q", f.pointer(), f.probation(), journalState(t, f))
+	}
+}
+
+type resolverWithoutPolicies struct{ updater.Resolver }
+
+func TestFollowingReleasesNeedsAPolicyResolver(t *testing.T) {
+	f := newFixture(t, "1.2.0", "1.3.0")
+	f.opts.Trust = resolverWithoutPolicies{f.trust}
+	f.opts.Policy.Probation = updater.ProbationPolicy{FollowRelease: true}
+	if _, err := updater.New(f.opts); !errors.Is(err, updater.ErrConfig) {
+		t.Fatalf("New = %v, want ErrConfig", err)
 	}
 }
