@@ -17,8 +17,11 @@ package launch_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-idavoll/idunn/core/fsx"
 	"github.com/go-idavoll/idunn/core/hook"
@@ -382,5 +385,113 @@ func TestAnUnreadableRecordIsReportedAndTheStartGoesOn(t *testing.T) {
 	res, err := launch.Start(context.Background(), launch.Options{FS: m, Root: root})
 	if err != nil || !errors.Is(res.Probation.Err, layout.ErrLayout) {
 		t.Fatalf("Start = %+v, %v", res.Probation, err)
+	}
+}
+
+// --- what a failed probation leaves for the updater to report ---------------
+
+func pendingOutcomes(t *testing.T, m fsx.FS) []layout.ProbationOutcome {
+	t.Helper()
+	names, err := layout.ProbationOutcomeNames(m, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []layout.ProbationOutcome
+	for _, n := range names {
+		o, err := layout.ReadProbationOutcome(m, root, n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, *o)
+	}
+	return out
+}
+
+func TestAFailedProbationLeavesAnOutcomeWithItsClass(t *testing.T) {
+	at := time.Date(2026, 9, 17, 9, 30, 0, 0, time.UTC)
+	clock := func() time.Time { return at }
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T, m *fsx.Mem)
+		class string
+	}{
+		{"unconfirmed", func(t *testing.T, m *fsx.Mem) {
+			startProbation(t, launch.Options{FS: m})
+		}, layout.ProbationClassUnconfirmed},
+		{"unhealthy", func(t *testing.T, m *fsx.Mem) {
+			if err := launch.MarkUnhealthy(m, root, "1.3.0", "broken"); err != nil {
+				t.Fatal(err)
+			}
+		}, layout.ProbationClassUnhealthy},
+		{"restarts", func(t *testing.T, m *fsx.Mem) {
+			p := readProbation(t, m)
+			p.Restarts, p.RestartPending = p.RestartsAllowed+1, true
+			writeProbation(t, m, *p)
+		}, layout.ProbationClassRestarts},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := onProbation(t, 1)
+			tc.setup(t, m)
+			if res := startProbation(t, launch.Options{FS: m, Now: clock}); !res.Probation.Reverted {
+				t.Fatalf("probation = %+v, want a rollback", res.Probation)
+			}
+			got := pendingOutcomes(t, m)
+			want := layout.ProbationOutcome{
+				SchemaVersion: layout.ProbationOutcomeSchema, FromVersion: "1.2.0", ToVersion: "1.3.0",
+				OS: runtime.GOOS, Arch: runtime.GOARCH, Result: layout.ProbationResultRolledBack, Class: tc.class, At: at,
+			}
+			if len(got) != 1 || got[0] != want {
+				t.Fatalf("outcomes = %+v, want %+v", got, want)
+			}
+		})
+	}
+}
+
+// A rollback finished by a second start is reported once, by the start that
+// decided it.
+func TestAFinishedRollbackIsNotReportedTwice(t *testing.T) {
+	m := onProbation(t, 1)
+	startProbation(t, launch.Options{FS: m})
+	failing := &failingRollback{migrator: &migrator{fs: m}, err: errors.New("database locked")}
+	if _, err := launch.Start(context.Background(), launch.Options{FS: m, Root: root, Migrate: failing}); err != nil {
+		t.Fatal(err)
+	}
+	startProbation(t, launch.Options{FS: m})
+	if got := pendingOutcomes(t, m); len(got) != 1 {
+		t.Fatalf("outcomes = %+v, want one", got)
+	}
+}
+
+func TestAKeptVersionIsReportedAsKept(t *testing.T) {
+	m := tree(t, []string{"1.3.0"}, "1.3.0")
+	writeProbation(t, m, layout.Probation{
+		Version: "1.3.0", Previous: "1.2.0", Status: layout.ProbationUnhealthy, AttemptsAllowed: 1, Reason: "broken",
+	})
+	startProbation(t, launch.Options{FS: m})
+	got := pendingOutcomes(t, m)
+	if len(got) != 1 || got[0].Result != layout.ProbationResultKept || got[0].Class != layout.ProbationClassUnhealthy {
+		t.Fatalf("outcomes = %+v", got)
+	}
+}
+
+// Reporting is never a reason for a rollback to stop.
+func TestARollbackGoesOnWhenItsOutcomeCannotBeWritten(t *testing.T) {
+	m := onProbation(t, 1)
+	startProbation(t, launch.Options{FS: m})
+	for i := 0; i < layout.MaxProbationOutcomes; i++ {
+		if err := layout.WriteProbationOutcome(m, root, layout.ProbationOutcome{
+			FromVersion: "1.0.0", ToVersion: fmt.Sprintf("1.1.%d", i), OS: "linux", Arch: "amd64",
+			Result: layout.ProbationResultRolledBack, Class: layout.ProbationClassUnhealthy, At: time.Unix(1, 0),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ev := &events{}
+	res := startProbation(t, launch.Options{FS: m, Observe: ev})
+	if !res.Probation.Reverted || pointer(t, m) != "1.2.0" {
+		t.Fatalf("probation = %+v", res.Probation)
+	}
+	if !strings.Contains(eventText(ev), "will not be reported") {
+		t.Fatalf("the unwritten outcome was not reported as an event: %q", eventText(ev))
 	}
 }

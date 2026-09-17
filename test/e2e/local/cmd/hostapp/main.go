@@ -33,6 +33,8 @@
 //	                                launcher and exit with its code (IDN-29)
 //	  --probation-attempts N        put what it installs on probation (IDN-39)
 //	  --probation-follow-release    let each release's signed policy decide
+//	  --report-file F               append every reported hook.Outcome to F,
+//	                                one JSON object per line (§14.5)
 //	hostapp --self-update --service E ...
 //	                                the same, but the install root belongs to a
 //	                                privileged helper listening on E, which
@@ -67,6 +69,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -117,6 +120,7 @@ type config struct {
 	retain      int
 	probation   int
 	followRel   bool
+	reportFile  string
 	mark        string
 	reason      string
 	data        string
@@ -154,6 +158,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fs.DurationVar(&c.quiesce, "quiesce", time.Second, "how long to wait for the lock")
 	fs.IntVar(&c.retain, "retain", 2, "version directories to keep after a commit")
 	fs.IntVar(&c.probation, "probation-attempts", 0, "starts an installed update gets to confirm it is healthy; 0 for no probation")
+	fs.StringVar(&c.reportFile, "report-file", "", "append every reported outcome to this file as JSON lines")
 	fs.BoolVar(&c.followRel, "probation-follow-release", false, "let each release's signed policy decide its probation")
 	fs.StringVar(&c.mark, "mark", "", "healthy|unhealthy: report this version's probation outcome")
 	fs.StringVar(&c.reason, "reason", "", "with --mark unhealthy: why")
@@ -380,6 +385,9 @@ func doSelfUpdate(c config, stdout, stderr io.Writer) int {
 	if c.lockFile != "" {
 		o.Lock = &fileLock{path: c.lockFile}
 	}
+	if c.reportFile != "" {
+		o.Report = &fileReporter{path: c.reportFile}
+	}
 	if c.data != "" {
 		o.Migrate = &migrator{dir: c.data, fail: c.failMigrate}
 	}
@@ -563,6 +571,25 @@ func (m *migrator) record(verb string, hc hook.Context) error {
 
 func (m *migrator) writeSchema(v string) error {
 	return os.WriteFile(filepath.Join(m.dir, "schema"), []byte(v), 0o600)
+}
+
+// fileReporter is a Reporter that keeps what it is given, for the suite to read.
+type fileReporter struct{ path string }
+
+func (r *fileReporter) Report(_ context.Context, o hook.Outcome) error {
+	raw, err := json.Marshal(o)
+	if err != nil {
+		return err
+	}
+	f, err := os.OpenFile(r.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(append(raw, '\n')); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 // fileLock is an exclusive lock two processes can contend for: the create is

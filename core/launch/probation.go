@@ -17,6 +17,8 @@ package launch
 import (
 	"context"
 	"fmt"
+	"runtime"
+	"time"
 
 	"github.com/go-idavoll/idunn/core/fsx"
 	"github.com/go-idavoll/idunn/core/hook"
@@ -159,7 +161,7 @@ func (o Options) probation(ctx context.Context, res *Result, locked bool) {
 	if p.Status == layout.ProbationReverting {
 		// A rollback that a previous start did not finish. It is finished
 		// before anything else is decided, wherever `current` points by now.
-		o.revert(ctx, pr, p, p.Reason, locked)
+		o.revert(ctx, pr, p, p.Reason, "", locked)
 		return
 	}
 	live, err := layout.PointerTarget(o.FS, o.Root)
@@ -175,26 +177,26 @@ func (o Options) probation(ctx context.Context, res *Result, locked bool) {
 
 	switch p.Status {
 	case layout.ProbationUnhealthy:
-		o.revert(ctx, pr, p, p.Reason, locked)
+		o.revert(ctx, pr, p, p.Reason, layout.ProbationClassUnhealthy, locked)
 	case layout.ProbationReverted:
 		// The version rolled back is live again: an updater that predates
 		// probation — the one in the version rolled back to — installed it
 		// once more. It has not become any better.
 		o.emit(hook.PhaseRollback, p.Version+" was installed again after it was rolled back", nil)
-		o.revert(ctx, pr, p, p.Reason, locked)
+		o.revert(ctx, pr, p, p.Reason, layout.ProbationClassReinstalled, locked)
 	case layout.ProbationActive:
 		pr.Version = p.Version
 		if p.RestartPending {
 			if p.Restarts > p.RestartsAllowed {
 				o.revert(ctx, pr, p, fmt.Sprintf("asked to be restarted more than %s without confirming it is healthy",
-					plural(p.RestartsAllowed, "time")), locked)
+					plural(p.RestartsAllowed, "time")), layout.ProbationClassRestarts, locked)
 				return
 			}
 			p.RestartPending = false
 			pr.Restart = true
 		} else {
 			if p.Attempts >= p.AttemptsAllowed {
-				o.revert(ctx, pr, p, fmt.Sprintf("not confirmed healthy after %s", plural(p.AttemptsAllowed, "start")), locked)
+				o.revert(ctx, pr, p, fmt.Sprintf("not confirmed healthy after %s", plural(p.AttemptsAllowed, "start")), layout.ProbationClassUnconfirmed, locked)
 				return
 			}
 			p.Attempts++
@@ -219,7 +221,10 @@ func (o Options) probation(ctx context.Context, res *Result, locked bool) {
 // The transaction journal is not touched. It still says the update committed,
 // which it did; recovery reads a COMMITTED record as nothing to do, and the next
 // update begins a new history from whatever `current` names.
-func (o Options) revert(ctx context.Context, pr *ProbationResult, p *layout.Probation, reason string, locked bool) {
+//
+// class is why, for telemetry; empty when a start finishes a rollback an
+// earlier start began and already reported.
+func (o Options) revert(ctx context.Context, pr *ProbationResult, p *layout.Probation, reason, class string, locked bool) {
 	pr.Version = p.Version
 	reason = layout.SanitizeReason(reason)
 
@@ -271,6 +276,7 @@ func (o Options) revert(ctx context.Context, pr *ProbationResult, p *layout.Prob
 		}
 		pr.Kept, pr.Reason = true, p.Reason
 		o.emit(hook.PhaseRollback, p.Version+" failed its probation and cannot be rolled back: "+p.Reason, nil)
+		o.recordOutcome(p, layout.ProbationResultKept, class)
 		return
 	}
 
@@ -281,6 +287,10 @@ func (o Options) revert(ctx context.Context, pr *ProbationResult, p *layout.Prob
 			fail("recording the rollback", err)
 			return
 		}
+		// Reported as soon as the rollback is decided and recorded: from here
+		// every start finishes it, and a start that does is not the one that
+		// knows why it began.
+		o.recordOutcome(p, layout.ProbationResultRolledBack, class)
 	}
 	o.emit(hook.PhaseRollback, "rolling back "+p.Version+" to "+p.Previous+": "+reason, nil)
 
@@ -346,4 +356,30 @@ func plural(n int, noun string) string {
 		return "1 " + noun
 	}
 	return fmt.Sprintf("%d %ss", n, noun)
+}
+
+// recordOutcome leaves a failed probation for the updater to report (§14.5).
+// The launcher has no Reporter and no network; an updater with one picks the
+// outcome up at its next check. Best-effort: an outcome that cannot be written
+// is an event, never a reason for the rollback to stop.
+func (o Options) recordOutcome(p *layout.Probation, result, class string) {
+	if class == "" {
+		return
+	}
+	now := o.Now
+	if now == nil {
+		now = time.Now
+	}
+	err := layout.WriteProbationOutcome(o.FS, o.Root, layout.ProbationOutcome{
+		FromVersion: p.Previous,
+		ToVersion:   p.Version,
+		OS:          runtime.GOOS,
+		Arch:        runtime.GOARCH,
+		Result:      result,
+		Class:       class,
+		At:          now().UTC(),
+	})
+	if err != nil {
+		o.emit(hook.PhaseRollback, "the failed probation of "+p.Version+" will not be reported", err)
+	}
 }

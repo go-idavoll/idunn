@@ -373,6 +373,7 @@ func (u *Updater) CheckForUpdate(ctx context.Context) (*Release, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	u.reportProbationOutcomes(ctx)
 
 	// The clock is an input to expiry, so it is checked before the metadata that
 	// depends on it. A clock below the floor is refused here rather than allowed

@@ -17,10 +17,13 @@ package updater_test
 import (
 	"context"
 	"errors"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-idavoll/idunn/core/fsx"
+	"github.com/go-idavoll/idunn/core/hook"
 	"github.com/go-idavoll/idunn/core/launch"
 	"github.com/go-idavoll/idunn/core/release"
 	"github.com/go-idavoll/idunn/core/trust"
@@ -262,5 +265,102 @@ func TestFollowingReleasesNeedsAPolicyResolver(t *testing.T) {
 	f.opts.Policy.Probation = updater.ProbationPolicy{FollowRelease: true}
 	if _, err := updater.New(f.opts); !errors.Is(err, updater.ErrConfig) {
 		t.Fatalf("New = %v, want ErrConfig", err)
+	}
+}
+
+// --- reporting a failed probation --------------------------------------------
+
+// rolledBack is a fixture whose update to 1.3.0 failed its probation and was
+// rolled back by the launcher at a known time.
+func rolledBack(t *testing.T) (*fixture, time.Time) {
+	t.Helper()
+	f := newFixture(t, "1.2.0", "1.3.0")
+	f.opts.Policy.Probation = updater.ProbationPolicy{Attempts: 1}
+	if err := f.run(); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	at := time.Date(2026, 9, 17, 8, 0, 0, 0, time.UTC)
+	for range 2 {
+		if _, err := launch.Start(context.Background(), launch.Options{
+			FS: f.fs, Root: root, Migrate: f.hooks, Now: func() time.Time { return at },
+		}); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+	}
+	if f.pointer() != "1.2.0" {
+		t.Fatalf("current = %s, want the rollback to have happened", f.pointer())
+	}
+	f.hooks.outcomes = nil
+	return f, at
+}
+
+func TestAFailedProbationIsReportedOnceAtTheNextCheck(t *testing.T) {
+	f, at := rolledBack(t)
+	u := f.updater()
+	if _, err := u.CheckForUpdate(context.Background()); err != nil {
+		t.Fatalf("CheckForUpdate: %v", err)
+	}
+	want := hook.Outcome{
+		FromVersion: "1.2.0", ToVersion: "1.3.0", OS: runtime.GOOS, Arch: runtime.GOARCH,
+		Result: "rolled_back", FailedPhase: hook.PhaseProbation, ErrorClass: "unconfirmed", At: at,
+	}
+	if len(f.hooks.outcomes) != 1 || f.hooks.outcomes[0] != want {
+		t.Fatalf("outcomes = %+v, want %+v", f.hooks.outcomes, want)
+	}
+	if _, err := u.CheckForUpdate(context.Background()); err != nil {
+		t.Fatalf("second CheckForUpdate: %v", err)
+	}
+	if len(f.hooks.outcomes) != 1 {
+		t.Fatalf("the rollback was reported %d times", len(f.hooks.outcomes))
+	}
+}
+
+func TestARefusedReportIsOfferedAgain(t *testing.T) {
+	f, _ := rolledBack(t)
+	f.hooks.reportErr = errors.New("collector down")
+	u := f.updater()
+	if _, err := u.CheckForUpdate(context.Background()); err != nil {
+		t.Fatalf("CheckForUpdate with a failing Reporter: %v", err)
+	}
+	f.hooks.reportErr = nil
+	if _, err := u.CheckForUpdate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.hooks.outcomes) != 2 || f.hooks.outcomes[1].ErrorClass != "unconfirmed" {
+		t.Fatalf("outcomes = %+v, want the refused one offered again", f.hooks.outcomes)
+	}
+	if names, _ := layout.ProbationOutcomeNames(f.fs, root); len(names) != 0 {
+		t.Fatalf("outcomes left after reporting: %v", names)
+	}
+}
+
+func TestWithoutAReporterOutcomesWait(t *testing.T) {
+	f, _ := rolledBack(t)
+	f.opts.Report = nil
+	if _, err := f.updater().CheckForUpdate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if names, _ := layout.ProbationOutcomeNames(f.fs, root); len(names) != 1 {
+		t.Fatalf("pending outcomes = %v, want the one left for a Reporter", names)
+	}
+}
+
+func TestAnUnreadableOutcomeIsDropped(t *testing.T) {
+	f := newFixture(t, "1.2.0", "1.2.0")
+	dir := layout.ProbationOutcomes(root)
+	if err := f.fs.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := fsx.WriteFileAtomic(f.fs, dir+"/1.3.0_rolled_back_unconfirmed.json", []byte("{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.updater().CheckForUpdate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.hooks.outcomes) != 0 {
+		t.Fatalf("outcomes = %+v", f.hooks.outcomes)
+	}
+	if names, _ := layout.ProbationOutcomeNames(f.fs, root); len(names) != 0 {
+		t.Fatalf("the unreadable outcome stayed: %v", names)
 	}
 }

@@ -97,7 +97,7 @@ type Outcome struct {
 	FromVersion string
 	ToVersion   string
 	OS, Arch    string
-	Result      string    // "committed" | "rolled_back" | "aborted".
+	Result      string    // "committed" | "rolled_back" | "aborted" | "deferred" | "kept" (a failed probation that could not be rolled back).
 	FailedPhase Phase     // last phase reached on failure (empty on success).
 	ErrorClass  string    // taxonomy, e.g. "verify", "migrate", "disk", "network", "clock_skew".
 	At          time.Time // set by the updater from its injected clock, never time.Now.
@@ -119,6 +119,11 @@ const (
 	PhaseCommit   Phase = "commit"
 	PhaseGC       Phase = "gc" // prune old version dirs after a successful commit.
 	PhaseRollback Phase = "rollback"
+
+	// PhaseProbation is a committed version failing its probation (IDN-39):
+	// the launcher rolled it back, or kept it for lack of a predecessor. It is
+	// reported after the fact, by the updater of the version that runs next.
+	PhaseProbation Phase = "probation"
 
 	// PhaseUninstall is the removal of an installation (core/uninstall). It is
 	// not a step of an update transaction; it is its own lifecycle event.

@@ -26,7 +26,7 @@ An item that is partly done stays open until what it still lists is done.
 | [IDN-30](idn/IDN-30.md) | Replacing the privileged helper itself (§14.2) | open |
 | [IDN-31](idn/IDN-31.md) | Windows: Authenticode as a gate before the swap (§13) | open |
 | [IDN-36](idn/IDN-36.md) | OS integrations as a recorded manifest; Windows "Installed apps" (§5, §13) | manifest and uninstall entry done; repair and other integrations open |
-| [IDN-39](idn/IDN-39.md) | Probation: a new version confirms it is healthy, or is rolled back (§6.1, §6.2, §14.3, §14.5) | mechanism and signed per-release allowance done; telemetry and launcher restore open |
+| [IDN-39](idn/IDN-39.md) | Probation: a new version confirms it is healthy, or is rolled back (§6.1, §6.2, §14.3, §14.5) | mechanism, signed per-release allowance and rollback telemetry done; launcher restore and host ceiling open |
 | [IDN-40](idn/IDN-40.md) | Windows: the launcher as the application's parent — job object and console control events (§6.1, §13, §14.3) | job object and console control events done; session end and services open |
 
 ### P2 — hardening and reach

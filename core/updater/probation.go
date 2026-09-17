@@ -15,8 +15,10 @@
 package updater
 
 import (
+	"context"
 	"fmt"
 
+	"github.com/go-idavoll/idunn/core/hook"
 	"github.com/go-idavoll/idunn/core/release"
 	"github.com/go-idavoll/idunn/internal/layout"
 )
@@ -188,4 +190,53 @@ func (u *Updater) probationFor(d *release.Descriptor) (attempts, restarts int, e
 		restarts = DefaultProbationRestarts
 	}
 	return attempts, restarts, nil
+}
+
+// reportProbationOutcomes hands the failed probations the launcher left behind
+// to the Reporter (§14.5, IDN-39).
+//
+// A rollback happens in the launcher, which has neither a Reporter nor a
+// network, and the version it leaves running is the one whose updater reports
+// it — at its next check, the call a host makes anyway. The outcome carries a
+// class from a closed vocabulary, never the application's reason.
+//
+// Each outcome is removed once reported. One the Reporter refuses stays and is
+// offered again at the next check; one that cannot be read is removed, because
+// telemetry that never parses would otherwise be retried forever. Like every
+// report it is best-effort and never affects the check. An elevated host leaves
+// them alone: it could not remove them, and would report them on every check.
+func (u *Updater) reportProbationOutcomes(ctx context.Context) {
+	if u.report == nil || u.policy.Elevation != ElevationNone {
+		return
+	}
+	names, err := layout.ProbationOutcomeNames(u.fs, u.root)
+	if err != nil {
+		u.emit(hook.PhaseProbation, "the failed probations could not be listed", err)
+		return
+	}
+	for _, name := range names {
+		o, err := layout.ReadProbationOutcome(u.fs, u.root, name)
+		if err != nil {
+			u.emit(hook.PhaseProbation, "an unreadable probation outcome was dropped", err)
+			_ = layout.RemoveProbationOutcome(u.fs, u.root, name)
+			continue
+		}
+		if err := u.report.Report(context.WithoutCancel(ctx), hook.Outcome{
+			FromVersion: o.FromVersion,
+			ToVersion:   o.ToVersion,
+			OS:          o.OS,
+			Arch:        o.Arch,
+			Result:      o.Result,
+			FailedPhase: hook.PhaseProbation,
+			ErrorClass:  o.Class,
+			At:          o.At,
+		}); err != nil {
+			u.emit(hook.PhaseProbation, "reporting a failed probation failed; it is offered again at the next check", err)
+			return
+		}
+		if err := layout.RemoveProbationOutcome(u.fs, u.root, name); err != nil {
+			u.emit(hook.PhaseProbation, "a reported probation outcome could not be removed", err)
+			return
+		}
+	}
 }

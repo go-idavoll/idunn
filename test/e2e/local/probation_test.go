@@ -17,8 +17,12 @@
 package e2elocal
 
 import (
+	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/go-idavoll/idunn/core/hook"
 )
 
 // ---------------------------------------------------------------------------
@@ -71,10 +75,27 @@ func TestUnconfirmedUpdateIsRolledBackAndNotOfferedAgain(t *testing.T) {
 	}
 	in.launchApp("1.0.0")
 
-	// The application's own updater does not take 1.1.0 again.
-	code, out := in.selfUpdate("--probation-attempts", "2")
+	// The application's own updater does not take 1.1.0 again — and reports
+	// the rollback the launcher left for it, once, in the closed vocabulary.
+	reports := filepath.Join(r.dir, "reports.jsonl")
+	code, out := in.selfUpdate("--probation-attempts", "2", "--report-file", reports)
 	if code != appNoUpdate || !strings.Contains(out, "1.1.0 was rolled back on this machine") {
 		t.Fatalf("self-update over the rolled-back release = %d, want %d\n%s", code, appNoUpdate, out)
+	}
+	if code, out := in.selfUpdate("--probation-attempts", "2", "--report-file", reports); code != appNoUpdate {
+		t.Fatalf("second self-update = %d\n%s", code, out)
+	}
+	lines := strings.Split(strings.TrimSpace(readFile(t, reports)), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("reported %d outcomes, want the rollback once:\n%s", len(lines), readFile(t, reports))
+	}
+	var o hook.Outcome
+	if err := json.Unmarshal([]byte(lines[0]), &o); err != nil {
+		t.Fatal(err)
+	}
+	if o.FromVersion != "1.0.0" || o.ToVersion != "1.1.0" || o.Result != "rolled_back" ||
+		o.FailedPhase != hook.PhaseProbation || o.ErrorClass != "unconfirmed" || o.At.IsZero() {
+		t.Fatalf("reported outcome = %+v", o)
 	}
 
 	// The next release is offered, and one that confirms stays.
