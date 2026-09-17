@@ -292,6 +292,34 @@ func buildRelease(cfg *Config, major, pointerRole, contentRole string) ([]blob, 
 		}
 		blobs = append(blobs, b)
 
+		// The release's policy sits beside its descriptor, in the same role
+		// and under the same pattern, so publishing one changes no delegation.
+		if cfg.Probation != nil {
+			polRaw, err := encodeJSON(&release.Policy{
+				SchemaVersion: release.SchemaVersion,
+				Name:          cfg.Name,
+				Version:       cfg.Version,
+				OS:            p.OS,
+				Arch:          p.Arch,
+				Probation: &release.ProbationPolicy{
+					Attempts: *cfg.Probation.Attempts,
+					Restarts: cfg.Probation.Restarts,
+				},
+			})
+			if err != nil {
+				return nil, fmt.Errorf("%w: encoding policy for %s-%s: %w", ErrConfig, p.OS, p.Arch, err)
+			}
+			if _, err := release.ParsePolicy(polRaw); err != nil {
+				return nil, fmt.Errorf("%w: the policy for %s-%s would be refused by the client: %w",
+					ErrConfig, p.OS, p.Arch, err)
+			}
+			b, err := makeBlob(release.PolicyPath(p.OS, p.Arch, cfg.Version), polRaw, contentRole, false)
+			if err != nil {
+				return nil, err
+			}
+			blobs = append(blobs, b)
+		}
+
 		ptrRaw, err := encodeJSON(&release.Pointer{
 			SchemaVersion: release.SchemaVersion,
 			Channel:       cfg.Channel,

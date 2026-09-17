@@ -56,7 +56,7 @@ func buildPatches(cfg *Config, st *state, contentRole string, blobs []blob) ([]b
 		switch {
 		case strings.HasPrefix(b.target, "payloads/"):
 			payloads[b.target] = b.data
-		case strings.HasPrefix(b.target, "releases/"):
+		case strings.HasPrefix(b.target, "releases/") && !isPolicyTarget(b.target):
 			d, err := release.ParseDescriptor(b.data)
 			if err != nil {
 				return nil, fmt.Errorf("%w: re-reading the descriptor for %s: %w", ErrConfig, b.target, err)
@@ -271,4 +271,11 @@ func sumOf(h []byte) ([sha256.Size]byte, bool) {
 	}
 	copy(sum[:], h)
 	return sum, true
+}
+
+// isPolicyTarget reports whether target is a release policy rather than a
+// descriptor: both live under releases/, and only one of them lists files.
+func isPolicyTarget(target string) bool {
+	_, _, _, ok := release.VersionOfPolicyPath(target)
+	return ok
 }

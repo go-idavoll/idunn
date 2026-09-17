@@ -17,6 +17,7 @@ package updater
 import (
 	"fmt"
 
+	"github.com/go-idavoll/idunn/core/release"
 	"github.com/go-idavoll/idunn/internal/layout"
 )
 
@@ -35,7 +36,10 @@ const DefaultProbationRestarts = 3
 //
 // The zero value is off, and off is what a host gets that never calls
 // MarkHealthy: an application that does not know about probation must not be
-// rolled back for not confirming.
+// rolled back for not confirming. That includes a release whose publisher asks
+// for probation: the release's signed policy is followed only by a host that
+// says so (FollowRelease), because the one who knows whether the application
+// confirms is the host, not whoever signs the release.
 //
 // The version rolled back to has to honour the block too, and only a version
 // built with this library does: an older one installs the blocked version again,
@@ -53,12 +57,30 @@ type ProbationPolicy struct {
 	// starts — without spending attempts. Zero selects
 	// DefaultProbationRestarts; at most layout.MaxProbationRestarts.
 	Restarts int
+
+	// FollowRelease lets each release's signed policy decide
+	// (release.PolicyPath): a release that states a probation allowance gets
+	// that allowance — including none at all — and Attempts and Restarts above
+	// apply only to a release that states nothing. The trust client must be a
+	// PolicyResolver.
+	FollowRelease bool
+}
+
+// PolicyResolver is the optional capability of resolving a release's signed
+// policy, nil when the release has none. *trust.Client implements it.
+type PolicyResolver interface {
+	ReleasePolicy(goos, goarch, version string) (*release.Policy, error)
 }
 
 // validate checks the policy and fills in its defaults.
-func (p *ProbationPolicy) validate(elevation ElevationMode) error {
-	if p.Attempts == 0 {
+func (p *ProbationPolicy) validate(elevation ElevationMode, trust Resolver) error {
+	if p.Attempts == 0 && !p.FollowRelease {
 		return nil
+	}
+	if p.FollowRelease {
+		if _, ok := trust.(PolicyResolver); !ok {
+			return fmt.Errorf("%w: probation follows the release, but the trust client cannot resolve release policies", ErrConfig)
+		}
 	}
 	if p.Attempts < 0 || p.Attempts > layout.MaxProbationAttempts {
 		return fmt.Errorf("%w: probation attempts %d is not within 1..%d", ErrConfig, p.Attempts, layout.MaxProbationAttempts)
@@ -105,11 +127,15 @@ func (u *Updater) blocked(version string) (string, error) {
 // A record of an unfinished rollback is not replaced: it is what makes that
 // rollback finish, and the launcher that finishes it runs before any update.
 // The blocked version survives every new record.
-func (u *Updater) armProbation(installed, version string) error {
-	pol := u.policy.Probation
-	if pol.Attempts == 0 || installed == "" {
+func (u *Updater) armProbation(installed string, d *release.Descriptor) error {
+	if installed == "" {
 		return nil
 	}
+	attempts, restarts, err := u.probationFor(d)
+	if err != nil || attempts == 0 {
+		return err
+	}
+	version := d.Version
 	prev, err := layout.ReadProbation(u.fs, u.root)
 	if err != nil {
 		return err
@@ -118,8 +144,8 @@ func (u *Updater) armProbation(installed, version string) error {
 		Version:         version,
 		Previous:        installed,
 		Status:          layout.ProbationActive,
-		AttemptsAllowed: pol.Attempts,
-		RestartsAllowed: pol.Restarts,
+		AttemptsAllowed: attempts,
+		RestartsAllowed: restarts,
 	}
 	if prev != nil {
 		if prev.Status == layout.ProbationReverting {
@@ -129,4 +155,37 @@ func (u *Updater) armProbation(installed, version string) error {
 		next.Blocked = prev.Blocked
 	}
 	return layout.WriteProbation(u.fs, u.root, next)
+}
+
+// probationFor is the allowance the release d is installed with: its own signed
+// policy where the host follows releases and the release states one, the host's
+// policy otherwise. Zero attempts means no probation.
+//
+// A policy that is published and cannot be resolved fails the update, like any
+// other target that cannot be: installing the release without the probation its
+// publisher asked for would be deciding on less than the signed metadata says.
+func (u *Updater) probationFor(d *release.Descriptor) (attempts, restarts int, err error) {
+	pol := u.policy.Probation
+	attempts, restarts = pol.Attempts, pol.Restarts
+	if pol.FollowRelease {
+		// New refused FollowRelease without a PolicyResolver.
+		resolver, ok := u.trust.(PolicyResolver)
+		if !ok {
+			return 0, 0, fmt.Errorf("%w: the trust client cannot resolve release policies", ErrConfig)
+		}
+		p, err := resolver.ReleasePolicy(u.goos, u.goarch, d.Version)
+		if err != nil {
+			return 0, 0, err
+		}
+		if p != nil && p.Probation != nil {
+			attempts = p.Probation.Attempts
+			if p.Probation.Restarts != 0 {
+				restarts = p.Probation.Restarts
+			}
+		}
+	}
+	if restarts == 0 {
+		restarts = DefaultProbationRestarts
+	}
+	return attempts, restarts, nil
 }

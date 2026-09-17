@@ -141,11 +141,38 @@ per-release value is the second half of this item. Documented in `updater.md`
   on the third start and not offered again while the next release is and stays once
   confirmed, and an unhealthy one rolled back with the application's own reason.
 
+## As built — the release's own allowance
+
+- **A policy target beside the descriptor:** `releases/<os>-<arch>/<version>_policy.json`
+  (`release.PolicyPath`, `release.Policy`, `release.ParsePolicy` — strict, key-checked,
+  fuzzed). Not the `policy/v<major>/…` path sketched above: under the existing
+  `releases/*/<major>.*.json` pattern it needs no delegation change and no re-sign of
+  `targets`. The underscore keeps it from ever parsing as a descriptor path — with a
+  dot, `1.3.0-rc.1.policy.json` would be the descriptor of `1.3.0-rc.1.policy` to
+  every deployed client that lists releases, and to retention.
+- **Packer:** `probation: { attempts, restarts }` in `pack.yaml`, `attempts` required
+  (0 publishes "not on probation"), bounds checked, the emitted policy re-parsed by
+  the client's parser; retention retires a policy with its descriptor.
+- **Trust:** `trust.Client.ReleasePolicy` resolves the descriptor first, which loads the
+  owning role, and treats a policy path absent from the signed target lists as "none";
+  a listed policy that cannot be fetched, parsed or matched to its path is an error.
+- **Updater:** `ProbationPolicy.FollowRelease`. A release's signed allowance applies
+  only to a host that opts in — the host knows whether its application confirms; the
+  host's `Attempts`/`Restarts` are the fallback. A published policy that cannot be
+  resolved fails the update before `BEGIN`. `New` refuses `FollowRelease` without a
+  `PolicyResolver`.
+- **Tests:** parser and path round trips including pre-release and build metadata,
+  fuzzing; the trust client against a signed repository (none, resolved, malformed,
+  mismatched, out of bounds, unpublished release, `Versions` unaffected); packer config,
+  a published policy resolved by the real client, retention with policies (mutation
+  checked); updater precedence table and failure; e2e `TestReleasePolicyDecidesTheProbation`
+  — a release published with `attempts: 1` rolled back after one start where the host
+  would have given two, and one published with `attempts: 0` not put on probation.
+
 ## Still open
 
-- **The signed per-release allowance:** `pack.yaml` `probation:`, the
-  `policy/v<major>/<version>.json` target and its parser, fetched with the release and
-  overridden by the host policy.
+- **A host ceiling on the release's allowance** (a lower limit for a canary fleet)
+  beyond turning `FollowRelease` off.
 - **Telemetry:** a rollback is an Observer event and a launcher line, not yet a
   `hook.Outcome` (§14.5); the launcher has no Reporter.
 - **The launcher a reverted release staged** stays swapped in; whether a rollback

@@ -186,15 +186,15 @@ func (o Options) probation(ctx context.Context, res *Result, locked bool) {
 		pr.Version = p.Version
 		if p.RestartPending {
 			if p.Restarts > p.RestartsAllowed {
-				o.revert(ctx, pr, p, fmt.Sprintf("asked to be restarted more than %d times without confirming it is healthy",
-					p.RestartsAllowed), locked)
+				o.revert(ctx, pr, p, fmt.Sprintf("asked to be restarted more than %s without confirming it is healthy",
+					plural(p.RestartsAllowed, "time")), locked)
 				return
 			}
 			p.RestartPending = false
 			pr.Restart = true
 		} else {
 			if p.Attempts >= p.AttemptsAllowed {
-				o.revert(ctx, pr, p, fmt.Sprintf("not confirmed healthy after %d starts", p.AttemptsAllowed), locked)
+				o.revert(ctx, pr, p, fmt.Sprintf("not confirmed healthy after %s", plural(p.AttemptsAllowed, "start")), locked)
 				return
 			}
 			p.Attempts++
@@ -338,4 +338,12 @@ func (o Options) revert(ctx context.Context, pr *ProbationResult, p *layout.Prob
 			o.emit(hook.PhaseGC, "the rolled-back version could not be removed yet", err)
 		}
 	}
+}
+
+// plural renders a count with its noun, for reasons a user reads.
+func plural(n int, noun string) string {
+	if n == 1 {
+		return "1 " + noun
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
 }

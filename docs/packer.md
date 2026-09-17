@@ -52,6 +52,9 @@ delta:                       # optional; these are the defaults
   max_ratio: 0.5             # only publish a patch under half the file's size
 retention:                   # optional; absent means nothing is ever removed
   keep: 5                    # newest releases per platform of this line (min 2)
+probation:                   # optional; absent publishes no policy (IDN-39)
+  attempts: 3                # starts to confirm healthy, 0..20; 0 = not on probation
+  restarts: 2                # requested restarts that count nothing; 0 = client default
 targets:
   - os: windows
     arch: amd64
@@ -80,6 +83,7 @@ Every artifact below is a TUF target, and therefore signed.
 | `payloads/v<major>/<sha256>` | one payload file, verbatim | `release.PayloadPath` |
 | `patches/v<major>/<old sha256>-<new sha256>` | binary patch between two payloads (§6.4 stage 2) | `release.PatchPath` |
 | `releases/<os>-<arch>/<version>.json` | `release.Descriptor` | `release.DescriptorPath` |
+| `releases/<os>-<arch>/<version>_policy.json` | `release.Policy`, only with `probation:` | `release.PolicyPath` |
 | `channels/<channel>/<os>-<arch>/latest.json` | `release.Pointer` | `release.PointerPath` |
 
 A patch is named after the two content hashes and referenced by nothing: a client
@@ -90,7 +94,16 @@ nothing about patches is unaffected. It is also why a broken or tampered patch c
 only bandwidth: the client checks the reconstructed bytes against the signed target
 hash and falls back to the full payload.
 
-The two path helpers live in `core/release` precisely so that the packer and the
+A policy (IDN-39) is discovered the same way: beside the descriptor, by name, and
+only by a client that follows release policies (`updater.ProbationPolicy.FollowRelease`).
+It lives under the release line's existing pattern `releases/*/<major>.*.json`, so
+publishing one changes no delegation and needs no re-sign of `targets`. The underscore
+is deliberate: SemVer allows it nowhere, so `1.3.0-rc.1_policy.json` can never read as
+the descriptor of a version `1.3.0-rc.1.policy` — not to a deployed client listing
+releases, and not to retention. Retention retires a policy with its descriptor.
+`release.ParsePolicy` is strict and fuzzed like the descriptor parser.
+
+The path helpers live in `core/release` precisely so that the packer and the
 client cannot drift apart: there is one place that knows the layout, and both sides
 import it.
 
@@ -292,6 +305,7 @@ TUF workflow.
   payloads/v1/<sha256>.<sha256>
   patches/v1/<sha256>.<old sha256>-<new sha256>
   releases/windows-amd64/<sha256>.1.3.0.json
+  releases/windows-amd64/<sha256>.1.3.0_policy.json
   channels/stable/windows-amd64/<sha256>.latest.json
 ```
 

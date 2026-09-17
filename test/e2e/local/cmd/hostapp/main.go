@@ -32,6 +32,7 @@
 //	  --relaunch-via <launcher>     afterwards, launch.Relaunch through that
 //	                                launcher and exit with its code (IDN-29)
 //	  --probation-attempts N        put what it installs on probation (IDN-39)
+//	  --probation-follow-release    let each release's signed policy decide
 //	hostapp --self-update --service E ...
 //	                                the same, but the install root belongs to a
 //	                                privileged helper listening on E, which
@@ -115,6 +116,7 @@ type config struct {
 	quiesce     time.Duration
 	retain      int
 	probation   int
+	followRel   bool
 	mark        string
 	reason      string
 	data        string
@@ -152,6 +154,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fs.DurationVar(&c.quiesce, "quiesce", time.Second, "how long to wait for the lock")
 	fs.IntVar(&c.retain, "retain", 2, "version directories to keep after a commit")
 	fs.IntVar(&c.probation, "probation-attempts", 0, "starts an installed update gets to confirm it is healthy; 0 for no probation")
+	fs.BoolVar(&c.followRel, "probation-follow-release", false, "let each release's signed policy decide its probation")
 	fs.StringVar(&c.mark, "mark", "", "healthy|unhealthy: report this version's probation outcome")
 	fs.StringVar(&c.reason, "reason", "", "with --mark unhealthy: why")
 	fs.StringVar(&c.data, "data", "", "host state directory the migration hook works on")
@@ -371,7 +374,7 @@ func doSelfUpdate(c config, stdout, stderr io.Writer) int {
 			VerifyAfterApply: true,
 			QuiesceTimeout:   c.quiesce,
 			OnBusy:           busy,
-			Probation:        updater.ProbationPolicy{Attempts: c.probation},
+			Probation:        updater.ProbationPolicy{Attempts: c.probation, FollowRelease: c.followRel},
 		},
 	}
 	if c.lockFile != "" {

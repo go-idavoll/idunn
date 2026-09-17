@@ -285,6 +285,16 @@ _ = launch.MarkUnhealthy(fsx.OS(), root, version, reason) // and exit
   probation on in a release whose predecessor already understands it.
 - **Not for system-wide roots.** Neither the launcher nor the application can write
   the record there (IDN-23), so `New` refuses the combination.
+- **The release's own allowance.** With `FollowRelease`, each release's signed policy
+  (`releases/<os>-<arch>/<version>_policy.json`, from `probation:` in `pack.yaml`)
+  decides: its `attempts` — `0` meaning not on probation — and its `restarts` where it
+  states them. `Attempts` and `Restarts` are then the fallback for a release that
+  publishes no policy. A host that does not set `FollowRelease` is never put on
+  probation by a release: whether the application calls `MarkHealthy` is the host's
+  knowledge, not the publisher's. The trust client must implement `PolicyResolver`
+  (`*trust.Client` does). `ReleasePolicy` tells "not published" from "not fetched"
+  by the signed target list of the role that owns the release, and a published policy
+  that cannot be resolved fails the update before `BEGIN`.
 
 ## 6. Crash recovery
 

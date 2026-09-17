@@ -340,7 +340,7 @@ func (u *Updater) apply(ctx context.Context, r *Release) (hook.Phase, func(), er
 	if err != nil {
 		return hook.PhaseCheck, unlock, err
 	}
-	if err := u.armProbation(installed, d.Version); err != nil {
+	if err := u.armProbation(installed, d); err != nil {
 		return hook.PhaseCheck, unlock, err
 	}
 	record := func(state txn.State, phase hook.Phase) error {

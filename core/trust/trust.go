@@ -336,6 +336,58 @@ func (c *Client) ReleaseVersion(goos, goarch, version string) (*release.Descript
 	return d, nil
 }
 
+// ReleasePolicy returns the verified policy of one release, or nil when the
+// release has none (IDN-39).
+//
+// A policy is optional, so "not published" has to be told apart from "could not
+// be fetched" — the first means the host's own policy decides, the second is a
+// failure like any other. The distinction is drawn from signed metadata only:
+// resolving the release's descriptor first loads the role that would own the
+// policy, and that role's signed target list either names the policy path or it
+// does not. A policy that is listed and cannot be fetched or parsed is an error,
+// never "none".
+func (c *Client) ReleasePolicy(goos, goarch, version string) (*release.Policy, error) {
+	if !release.ValidVersion(version) {
+		return nil, fmt.Errorf("%w: version %q is not SemVer", ErrResolve, version)
+	}
+	if _, err := c.targetInfo(release.DescriptorPath(goos, goarch, version)); err != nil {
+		return nil, err
+	}
+	policyPath := release.PolicyPath(goos, goarch, version)
+	if !c.listed(policyPath) {
+		return nil, nil
+	}
+	raw, err := c.target(policyPath)
+	if err != nil {
+		return nil, err
+	}
+	p, err := release.ParsePolicy(raw)
+	if err != nil {
+		return nil, fmt.Errorf("%w: policy: %w", ErrTrust, err)
+	}
+	// As for a descriptor, the path states what the document is about.
+	if p.Version != version || p.OS != goos || p.Arch != goarch {
+		return nil, fmt.Errorf("%w: policy for %s-%s@%s describes %s-%s@%s",
+			ErrResolve, goos, goarch, version, p.OS, p.Arch, p.Version)
+	}
+	return p, nil
+}
+
+// listed reports whether any role this client holds verified metadata for lists
+// targetPath. It is a lookup, not a verdict: a path listed by a role that is not
+// delegated for it is still refused when it is fetched.
+func (c *Client) listed(targetPath string) bool {
+	for _, role := range c.up.GetTrustedMetadataSet().Targets {
+		if role == nil {
+			continue
+		}
+		if _, ok := role.Signed.Targets[targetPath]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 // Versions lists the releases the repository publishes for a platform, oldest
 // first, as the signed targets metadata already knows them.
 //
