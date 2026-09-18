@@ -117,7 +117,7 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           check-latest: true
 
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           pattern: e2e-report-*
           path: reports
